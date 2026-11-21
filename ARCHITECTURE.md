@@ -1,0 +1,432 @@
+# Architecture — HD2Lab 青松館 (Aosongkan)
+
+This document describes what ships today (**Option A: pure-browser static/OOXML engines**) and the
+exact shape of the planned AI-assisted mode (**Option B: hybrid AI**), including the interfaces,
+the `Server-HQ` proxy contract, privacy boundaries, merge rules and caching.
+
+The code is the source of truth for the interfaces; the excerpts below are quoted from
+`src/adapters/types.ts` and `src/adapters/registry.ts`.
+
+---
+
+## 1. Top-level structure
+
+```mermaid
+flowchart TB
+  subgraph Browser["Browser tab (no network)"]
+    UI[React shell<br/>top bar · tool switcher · help · kebab]
+    Registry[Engine registry<br/>src/adapters/registry.ts]
+    subgraph Core["Shared analysis core"]
+      Parser[src/lib/source.ts<br/>language-neutral model]
+      Util[src/lib/util.ts<br/>hash · download · copy]
+    end
+    S1[枝織 Shiori adapter]
+    S2[弥生 Yayoi adapter]
+    S3[梢絵 Kozue adapter]
+    S4[春日 Haruhi adapter]
+    S5[琴葉 Kotoha adapter]
+    XML[OOXML reader<br/>src/tools/kotoha/xml.ts]
+    ZIP[JSZip<br/>read/write .docx]
+    IDB[(IndexedDB<br/>style bundles)]
+    MER[Mermaid<br/>public/vendor/mermaid.min.js]
+  end
+  UI --> Registry
+  Registry --> S1 & S2 & S3 & S4 & S5
+  S1 & S2 & S3 & S4 --> Parser
+  S1 & S2 & S3 & S4 & S5 --> Util
+  S5 --> XML --> ZIP
+  S5 --> IDB
+  S3 --> MER
+```
+
+Every tool is a pure function behind the same port. The UI never branches on provider: it asks the
+registry for an adapter and calls `run()`.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as User
+  participant UI as React tool page
+  participant R as Registry
+  participant A as EngineAdapter (local-static)
+  U->>UI: paste / drop / sample
+  UI->>R: adapterFor(toolId)
+  R-->>UI: adapter
+  UI->>A: run(EngineRequest)
+  A->>A: parse → model → generate
+  A-->>UI: EngineResult + diagnostics + cacheKey
+  UI-->>U: preview, exports, status bar
+```
+
+---
+
+## 2. Ports: `EngineAdapter` and `HybridOrchestrator`
+
+Quoted from `src/adapters/types.ts`:
+
+```ts
+export type ToolId = 'shiori' | 'yayoi' | 'kozue' | 'haruhi' | 'kotoha';
+export type ProviderMode = 'local-static' | 'hybrid-ai';
+
+export interface EngineRequest<TOptions = Record<string, unknown>> {
+  toolId: ToolId;
+  sourceName: string;       // uploaded file name: language detection + output naming
+  source: string;           // raw source text (binary tools carry payload in options)
+  options: TOptions;
+  mode: ProviderMode;
+}
+
+export interface EngineDiagnostic {
+  severity: 'info' | 'warn' | 'error';
+  message: string;
+  line?: number;
+}
+
+export interface EngineResult<TOut> {
+  output: TOut;
+  providerMode: ProviderMode;
+  diagnostics: EngineDiagnostic[];
+  elapsedMs: number;
+  cacheKey: string;         // sha256(toolId + providerMode + source + options)
+}
+
+export interface EngineAdapter<TOut, TOptions = Record<string, unknown>> {
+  readonly id: ToolId;
+  readonly title: string;          // English, e.g. "Specification Writer"
+  readonly japaneseTitle: string;  // brand title, e.g. "枝織"
+  readonly providerMode: ProviderMode;
+  readonly capabilities: readonly string[];
+  run(request: EngineRequest<TOptions>): Promise<EngineResult<TOut>>;
+}
+
+export interface ContextBudget {
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  chunkOverlapTokens: number;
+}
+
+export interface PreflightReport {
+  allowed: boolean;
+  reason?: string;
+  estimatedInputTokens: number;
+  estimatedCostUsd?: number;
+  redactions: number;
+}
+
+export interface HybridRequest<TOut, TOptions = Record<string, unknown>>
+  extends EngineRequest<TOptions> {
+  consent: boolean;          // explicit opt-in gate, never implied
+  budget?: ContextBudget;
+  signal?: AbortSignal;
+  _out?: TOut;
+}
+
+export interface HybridOrchestrator<TOut, TOptions = Record<string, unknown>> {
+  readonly adapter: EngineAdapter<TOut, TOptions>;
+  readonly mode: 'hybrid-ai';
+  preflight(request: HybridRequest<TOut, TOptions>): Promise<PreflightReport>;
+  runHybrid(
+    request: HybridRequest<TOut, TOptions>,
+    onDelta?: (chunk: string) => void,
+  ): Promise<EngineResult<TOut>>;
+  merge(local: TOut, remote: TOut): TOut;   // deterministic, local facts win
+}
+```
+
+### Registry contract
+
+`src/adapters/registry.ts` exports `TOOLS: ToolMeta[]`, one entry per tool:
+
+| Field | Contract |
+| --- | --- |
+| `id` | Unique `ToolId`; also the hash route segment and the cache-key prefix. |
+| `path` | `#/<id>` deep link. |
+| `japanese`, `english` | Brand title (Japanese allowed) and English product name used in all UI. |
+| `tagline`, `longDescription` | English copy for the tool head and Help modal. |
+| `adapter` | The live `EngineAdapter`. Swapping the adapter is the only change needed to move a tool from Option A to Option B. |
+
+The UI reads `tool.adapter.capabilities` to explain a tool in Help, and calls `adapter.run()` with
+`mode` set to the adapter's own `providerMode`. There is no other coupling.
+
+---
+
+## 3. Option A — pure browser static / OOXML
+
+### 3.1 Shared static analysis (`src/lib/source.ts`)
+
+One language-neutral model feeds 枝織, 弥生, 梢絵 and 春日:
+
+```mermaid
+flowchart LR
+  SRC[Source text] --> DET{detectLanguage}
+  DET -->|ts/js| JS[JS/TS scanner<br/>braces + signatures]
+  DET -->|python| PY[Indent scanner]
+  DET -->|java| JV[Class/method scanner]
+  DET -->|go| GO[func receiver scanner]
+  JS & PY & JV & GO --> MODEL[ParsedModule]
+  MODEL --> FN[FunctionInfo<br/>params · guards · errors · calls]
+  MODEL --> TY[TypeInfo<br/>members · relations]
+  MODEL --> IM[ImportInfo<br/>external vs local]
+  MODEL --> GL[Globals]
+  FN --> CALLS[callGraph]
+```
+
+The parser is deliberately heuristic: line-oriented scanning with brace/indent block detection,
+string and comment stripping, and top-level comma splitting for parameter lists. It never claims
+AST precision, and diagnostics surface that when nothing is found.
+
+### 3.2 Tool pipelines
+
+| Tool | Pipeline | Output type |
+| --- | --- | --- |
+| 枝織 | model → contracts/rules/deps → Markdown → standalone HTML | `ShioriOutput` |
+| 弥生 | model → statements → style renderer → pseudo lines + `toSource`/`fromSource` maps | `YayoiOutput` |
+| 梢絵 | model → five scored candidates → Mermaid for each kind → render selected | `KozueOutput` |
+| 春日 | model → cases (happy/boundary/guard/error) → framework emitter → checklist | `HaruhiOutput` |
+| 琴葉 | `.docx` bytes → JSZip → XML reader → Markdown + bundle → rebuild `.docx` | `KotohaOutput` |
+
+### 3.3 Kotoha OOXML engine
+
+```mermaid
+flowchart TB
+  DOCX[.docx bytes] --> ZIPIN[JSZip load]
+  ZIPIN --> DOC[word/document.xml]
+  ZIPIN --> PARTS[styles · numbering · settings<br/>theme · headers · footers · media · sectPr]
+  DOC --> XR[Minimal XML reader]
+  XR --> MD[Markdown<br/>headings · runs · lists · tables · links · media]
+  PARTS --> BUNDLE[.kotoha.json bundle]
+  BUNDLE --> IDB[(IndexedDB)]
+  MD --> EDIT[User edits Markdown]
+  EDIT --> WRITE[OOXML writer]
+  BUNDLE --> WRITE
+  WRITE --> OUT[Rebuilt .docx]
+```
+
+Preserved verbatim in the bundle and written back on rebuild: `styles.xml`, `theme/*`,
+`numbering.xml`, `header*.xml`, `footer*.xml`, `settings.xml`, `fontTable.xml`, `media/*`,
+`docProps/*`, `[Content_Types].xml`, package and document relationships, and the section
+properties (`sectPr`, with edited page size/margins patched in place).
+
+The Style & Attribute Inspector edits a typed view of the bundle (`BundleAttributes`): base font,
+body size, line spacing, page margins, heading colours. On rebuild those edits are applied to
+`styles.xml` (docDefaults + Normal + Heading1..3) and to `pgSz`/`pgMar`, so a rebuild both keeps the
+template and honours the edits.
+
+---
+
+## 4. Option B — planned AI hybrid
+
+```mermaid
+flowchart TB
+  subgraph Browser
+    UI[Tool page]
+    ORC[HybridOrchestrator]
+    LOCAL[Local adapter<br/>Option A result]
+    CHUNK[AST-aware chunker<br/>+ context budget]
+    RED[Redactor<br/>secrets · tokens · paths]
+    CACHE[(IndexedDB semantic cache<br/>sha256 source+tool+mode+options)]
+    SSE[SSE reader]
+    MERGE[Schema validator +<br/>deterministic merge]
+    BYOK[BYOK adapters<br/>OpenAI · Anthropic · Gemini]
+  end
+  subgraph ServerHQ["Server-HQ (proxy)"]
+    AUTH[Auth + rate limit]
+    API["POST /api/v1/adop/analyze"]
+    HEALTH["GET /health"]
+  end
+  UI --> ORC
+  ORC --> CACHE
+  ORC --> LOCAL
+  ORC --> CHUNK --> RED --> API
+  RED --> BYOK
+  API --> SSE --> MERGE
+  BYOK --> MERGE
+  MERGE --> ORC
+  ORC --> LOCAL
+```
+
+Both routes exist so the user can choose the proxy (no key handling) or BYOK (no proxy). Neither is
+reachable unless the consent gate below is satisfied.
+
+### 4.1 Consent gate (explicit opt-in)
+
+`runHybrid()` refuses to send anything unless `request.consent === true`, and the UI must obtain that
+consent per request (a checkbox beside the action, remembered only as a setting, never defaulted on).
+`preflight()` returns `{ allowed: false, reason }` for: consent missing, offline, over-budget payload,
+or a tool whose redaction could not be completed. The gate is code, not copy: the request is never
+constructed when `allowed` is false.
+
+### 4.2 Server-HQ proxy contract
+
+Base URL is injected at build time (`VITE_ADOP_PROXY`, default `https://server-hq.hd2lab.dev`).
+
+**`POST /api/v1/adop/analyze`**
+
+```http
+POST /api/v1/adop/analyze
+Authorization: Bearer <session token>
+Content-Type: application/json
+Accept: text/event-stream
+
+{
+  "tool": "shiori",
+  "mode": "hybrid-ai",
+  "language": "typescript",
+  "fileName": "payment-service.ts",
+  "chunks": [
+    { "id": "c1", "kind": "types+signatures", "lineStart": 1, "lineEnd": 90, "text": "…" }
+  ],
+  "options": { "sections": ["contracts", "behaviour"] },
+  "schemaVersion": "1.0",
+  "retention": "zero",
+  "requestId": "0f9c2b6a-…"
+}
+```
+
+Streamed response (SSE):
+
+```
+event: chunk
+data: {"id":"c1","delta":"…"}
+
+event: result
+data: {"tool":"shiori","schemaVersion":"1.0","confidence":0.82,"data":{…}}
+
+event: done
+data: {"usage":{"inputTokens":8120,"outputTokens":1680},"retention":"zero"}
+```
+
+Non-streaming callers get `application/json` with the same `result` payload.
+
+Error model:
+
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| 400 | `schema_invalid` | Request failed schema validation. |
+| 401 | `unauthenticated` | Missing/expired session token. |
+| 402 | `budget_exceeded` | Token/cost budget for the account is exhausted. |
+| 413 | `payload_too_large` | Chunk set above `maxInputTokens`. |
+| 429 | `rate_limited` | Rate limit hit; `Retry-After` in seconds. |
+| 503 | `upstream_unavailable` | Model provider unavailable — client falls back to Option A. |
+| 504 | `upstream_timeout` | Model exceeded the deadline — client falls back to Option A. |
+
+Rate limits: 30 requests / 5 minutes per session, 200k input tokens / hour per account, burst 5
+concurrent streams. Limits are enforced server-side; the client mirrors them only to fail fast.
+
+**`GET /health`**
+
+```json
+{
+  "status": "ok",
+  "version": "1.4.2",
+  "providers": { "openai": "ok", "anthropic": "degraded", "gemini": "ok" },
+  "queueDepth": 3,
+  "uptimeSeconds": 918273
+}
+```
+
+Used by `preflight()` to choose a provider or to disable the hybrid toggle when everything is down.
+
+### 4.3 BYOK adapters
+
+`BrowserProviderAdapter` (one per provider) implements the same request shape locally:
+
+| Provider | Endpoint | Streaming | Notes |
+| --- | --- | --- | --- |
+| OpenAI | `POST /v1/responses` | SSE | key stored in the vault, never in `localStorage`. |
+| Anthropic | `POST /v1/messages` | SSE | `anthropic-dangerous-direct-browser-access` header set explicitly. |
+| Gemini | `POST /v1beta/models/{model}:streamGenerateContent` | JSON array stream | `?alt=sse` for SSE. |
+
+Keys live in the vault and are read through the secret fill path; they are never logged, never put in
+the URL, and never included in an exported bundle.
+
+### 4.4 AST-based chunking and context budget
+
+`chunkSource(model, budget)` cuts on structure, not character count:
+
+1. Split at declaration boundaries from the shared model (type blocks, function blocks, module-level
+   imports).
+2. Merge adjacent blocks until `maxInputTokens` is nearly reached; split a single oversized function
+   at statement boundaries, keeping the signature and the `return`/`throw` paths in the first chunk.
+3. Carry `chunkOverlapTokens` of context between neighbours (imports + type headers).
+4. Tag each chunk with `kind` (`types+signatures`, `body`, `guards`, `tests-context`) so the prompt
+   template and the merge step know what came back.
+
+Budget defaults per tool: 12k input / 2k output tokens, 400-token overlap; 琴葉 uses 20k/4k because
+style mapping needs more surrounding text.
+
+### 4.5 Security and privacy boundary
+
+- **Redaction before send:** API keys, bearer tokens, passwords, connection strings, private keys,
+  email addresses and absolute home paths are replaced with typed placeholders (`<REDACTED:API_KEY>`).
+  `PreflightReport.redactions` reports the count; a payload that still matches a secret pattern is
+  refused.
+- **Explicit opt-in gate:** a per-request consent control with the exact chunks and estimated tokens
+  shown before sending. No default-on setting, no "remember and skip" for new document types.
+- **Zero retention:** requests carry `retention: "zero"`; the proxy must not persist payloads or
+  completions beyond the request, and the response echoes the retention mode so the UI can confirm it.
+- **Local-first results:** the Option A result is produced and displayed before any network call, so a
+  refused, failed or timed-out hybrid request never leaves the user without output.
+- **No silent upgrades:** switching mode changes the `ProviderMode` badge and the `cacheKey`, so cached
+  local results are never mistaken for AI results.
+
+### 4.6 Schema validation, deterministic merge, fallback
+
+Each tool publishes a JSON schema for its AI payload (`schemaVersion: "1.0"`). The client validates
+with a dependency-free validator before merging, and rejects unknown fields rather than coercing them.
+
+Merge rules (`HybridOrchestrator.merge`):
+
+1. Structural facts from the local engine always win: function names, signatures, line numbers, guard
+   conditions, file paths, OOXML parts.
+2. AI output may only fill holes (missing doc strings, alternative naming, cross-chunk summaries) and
+   add annotations tagged `source: "ai"`.
+3. Conflicting values keep the local value and record a diagnostic `{ severity: 'warn' }`.
+4. Ordering is stable: local order first, AI additions appended, so repeated runs are reproducible.
+
+Fallback ladder: validation error → local result; `429` → wait `Retry-After` once, then local; `5xx`,
+timeout (`AbortSignal.timeout(45_000)`), offline → local immediately, with a status-bar note that the
+hybrid pass was skipped.
+
+### 4.7 Streaming UI and semantic cache
+
+- **SSE pipeline:** `fetch` → `ReadableStream` → line splitter → event parser → `onDelta(chunk)`.
+  Each tool renders partial text in its own panel with a "thinking" caret; the final `result` event
+  replaces partial text with validated structured output.
+- **Abort:** `AbortController` wired to the cancel button and to route changes.
+- **Semantic cache:** key `sha256(source + tool + mode + options + schemaVersion)`, stored in
+  IndexedDB with `{ output, providerMode, createdAt, usage }`. Reads are exact-match only (no fuzzy
+  reuse), entries expire after 14 days, and the UI shows a "cached" badge with the original timestamp.
+  Cache hits never cross modes.
+
+### 4.8 琴葉 in Option B
+
+- **Style matching:** given preserved `styles.xml` and the edited Markdown, the model proposes a style
+  per block (`Heading2`, `ListParagraph`, `Quote`) which is validated against styles that actually
+  exist in the bundle; unknown style ids are dropped rather than invented.
+- **Semantic anchor recovery:** each rebuilt block carries an anchor from the previous document
+  (heading path + paragraph hash). The model maps edited blocks to anchors so header/footer references,
+  numbering ids and media relationships stay attached to the right section.
+- **Never model-generated OOXML:** the AI returns only a mapping plan (block → style id, block → anchor).
+  The writer still produces every XML byte locally, so a malformed answer cannot corrupt the document.
+- **Images and sections:** media and `sectPr` remain strictly local; the AI sees their identifiers, not
+  their bytes.
+
+---
+
+## 5. Testing strategy
+
+| Layer | What it proves |
+| --- | --- |
+| `tsc --noEmit` | Strict types across engine, UI and tests. |
+| Vitest (`tests/*.test.ts`) | Parser coverage for four languages; spec Markdown/HTML; pseudocode styles and line maps; all five UML kinds and manual override; four test frameworks; docx ZIP → Markdown → edit → rebuild with styles, headers, footers, media and margins intact; bundle store round trip. |
+| Playwright (`tests/e2e/*.spec.ts`) | Live site: five tools exercised for real, Mermaid actually rendered, docx round trip downloaded, theme switch, kebab menu, help modal, 390px layout with zero horizontal overflow, zero console/network errors. |
+
+## 6. Deployment
+
+- `vite.config.ts` sets `base: '/ADOP0001/'` for GitHub Pages.
+- `.github/workflows/deploy.yml`: `npm ci` → `tsc --noEmit` → `vitest run` → `vite build` →
+  `upload-pages-artifact` → `deploy-pages`.
+- Pages source is **GitHub Actions**; every push to `main` redeploys.
+- Mermaid is served from `public/vendor/mermaid.min.js`, which Vite copies to `dist/vendor/` and the
+  app loads with `import.meta.env.BASE_URL` so the sub-path deployment resolves correctly.
