@@ -103,7 +103,7 @@ the contracts a server-backed hybrid engine must satisfy.
   code generation for Python, C, C++ and MCU (including the 枝織 → 貴音 round trip), a check that
   every generated artifact stays English while the UI stays Japanese, few-shot store CRUD and token
   budgeting and `.fewshot.json` round trips, and the workspace tree builder, filter and file routing.
-- 10 Playwright end-to-end tests against the deployed site: all six tools, 貴音 generating and
+- 11 Playwright end-to-end tests against the deployed site: all six tools, 貴音 generating and
   exporting Python/C/C++/MCU, the export dialog, the few-shot upload/persistence flow, the PC
   workspace rail, the 3-column layout, theme switch, kebab menu, help modal and a 390px mobile pass.
 
