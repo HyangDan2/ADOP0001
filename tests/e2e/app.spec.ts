@@ -24,7 +24,7 @@ async function openTool(page: Page, tool: string) {
   await page.waitForTimeout(700);
 }
 
-test.describe('HD2Lab Aosongkan live application', () => {
+test.describe('HD2Lab Aomatsukan live application', () => {
   test.beforeAll(() => {
     fs.mkdirSync(DOWNLOADS, { recursive: true });
   });
@@ -34,7 +34,17 @@ test.describe('HD2Lab Aosongkan live application', () => {
     await page.goto('./');
     await expect(page.locator('.topbar')).toBeVisible();
     await expect(page.getByText('HD2Lab 青松館')).toBeVisible();
-    for (const tool of ['shiori', 'yayoi', 'kozue', 'haruhi', 'kotoha']) {
+    // The UI chrome is Japanese (docs, samples and tool outputs stay English).
+    await expect(page.getByText('5-in-1 スイート')).toBeVisible();
+    await expect(page.getByTestId('tab-shiori')).toContainText('仕様書作成');
+    await expect(page.getByTestId('tab-yayoi')).toContainText('擬似コード');
+    await expect(page.getByTestId('tab-kozue')).toContainText('UML自動設計');
+    await expect(page.getByTestId('tab-haruhi')).toContainText('テスト生成');
+    await expect(page.getByTestId('tab-kotoha')).toContainText('Docx↔MD往復');
+    await expect(page.getByTestId('tab-takane')).toContainText('仕様書→コード');
+    await expect(page.locator('.tool-head')).toContainText('ブラウザ完結');
+    await expect(page.locator('.tool-head')).toContainText('ローカル静的解析');
+    for (const tool of ['shiori', 'yayoi', 'kozue', 'haruhi', 'kotoha', 'takane']) {
       await expect(page.getByTestId(`tab-${tool}`)).toBeVisible();
     }
     await expect(page.getByTestId('theme-toggle')).toBeVisible();
@@ -43,7 +53,8 @@ test.describe('HD2Lab Aosongkan live application', () => {
 
     await page.getByTestId('help-button').click();
     await expect(page.getByTestId('help-modal')).toBeVisible();
-    await expect(page.getByTestId('help-modal')).toContainText('100%');
+    await expect(page.getByTestId('help-modal')).toContainText('100% ブラウザ完結');
+    await expect(page.getByTestId('help-modal')).toContainText('操作のしかた');
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('help-modal')).toHaveCount(0);
 
@@ -63,6 +74,8 @@ test.describe('HD2Lab Aosongkan live application', () => {
     await expect(preview).toContainText('Contract table');
     await expect(preview).toContainText('charge');
     await expect(preview).toContainText('Behaviour rules');
+    await expect(page.locator('.pane-title').first()).toContainText('ソース入力');
+    await expect(page.locator('.statusbar')).toContainText('ローカル静的解析');
 
     await page.screenshot({ path: path.join(DOWNLOADS, 'adop0001_shiori_dark.png'), fullPage: false });
 
@@ -93,9 +106,9 @@ test.describe('HD2Lab Aosongkan live application', () => {
 
     const pseudoLine = page.locator('.pseudo-line').filter({ hasText: 'IF' }).first();
     await pseudoLine.click();
-    await expect(page.locator('.statusbar')).toContainText('ready');
+    await expect(page.locator('.statusbar')).toContainText('待機中');
 
-    await page.getByRole('group', { name: 'Pseudocode style' }).getByRole('button', { name: 'Narrative English' }).click();
+    await page.getByRole('group', { name: '擬似コードのスタイル' }).getByRole('button', { name: '英語ナラティブ' }).click();
     await expect(page.getByTestId('yayoi-output')).toContainText('When ');
   });
 
@@ -106,10 +119,11 @@ test.describe('HD2Lab Aosongkan live application', () => {
     const diagram = page.getByTestId('kozue-diagram');
     await expect(diagram.locator('svg')).toBeVisible({ timeout: 30_000 });
 
-    await page.getByRole('group', { name: 'Diagram kind' }).getByRole('button', { name: 'Sequence' }).click();
+    await page.getByRole('group', { name: 'ダイアグラムの種類' }).getByRole('button', { name: 'シーケンス' }).click();
+    await expect(page.getByTestId('kozue-detection')).toContainText('信頼度');
     await expect(diagram.locator('svg')).toBeVisible({ timeout: 30_000 });
 
-    await page.getByRole('group', { name: 'Direction' }).getByRole('button', { name: 'LR' }).click();
+    await page.getByRole('group', { name: '方向' }).getByRole('button', { name: 'LR' }).click();
     await expect(diagram.locator('svg')).toBeVisible({ timeout: 30_000 });
 
     const [download] = await Promise.all([
@@ -142,7 +156,7 @@ test.describe('HD2Lab Aosongkan live application', () => {
       await expect(output).toContainText(marker, { timeout: 20_000 });
     }
 
-    await page.getByRole('tab', { name: 'Branch checklist' }).click();
+    await page.getByRole('tab', { name: '分岐チェックリスト' }).click();
     await expect(page.locator('.checklist')).toBeVisible();
 
     const [download] = await Promise.all([
@@ -161,9 +175,11 @@ test.describe('HD2Lab Aosongkan live application', () => {
     await expect(editor).toHaveValue(/\| Layer \| Kept in bundle/);
 
     const inspector = page.getByTestId('kotoha-panel');
-    await expect(inspector).toContainText('Heading 1 colour');
-    await expect(inspector).toContainText('Header preserved');
-    await expect(inspector).toContainText('Footer preserved');
+    await expect(inspector).toContainText('見出し1の色');
+    await expect(inspector).toContainText('ヘッダー保持済み');
+    await expect(inspector).toContainText('フッター保持済み');
+    await expect(inspector).toContainText('基本フォント');
+    await expect(inspector).toContainText('本文サイズ (pt)');
 
     await editor.click();
     await page.keyboard.press('Control+End');
@@ -179,11 +195,11 @@ test.describe('HD2Lab Aosongkan live application', () => {
     await rebuildDownload.saveAs(rebuiltPath);
     expect(fs.statSync(rebuiltPath).size).toBeGreaterThan(2000);
 
-    await page.getByRole('tab', { name: 'Bundle' }).click();
-    await expect(page.getByTestId('kotoha-panel')).toContainText('style records');
+    await page.getByRole('tab', { name: 'バンドル' }).click();
+    await expect(page.getByTestId('kotoha-panel')).toContainText('スタイルレコード');
     const [bundleDownload] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByRole('button', { name: 'Download .kotoha.json' }).first().click(),
+      page.getByRole('button', { name: '.kotoha.json をダウンロード' }).first().click(),
     ]);
     expect(bundleDownload.suggestedFilename()).toMatch(/\.kotoha\.json$/);
     const bundlePath = path.join(DOWNLOADS, 'adop0001_kotoha_bundle.json');
@@ -191,6 +207,47 @@ test.describe('HD2Lab Aosongkan live application', () => {
     const bundle = JSON.parse(fs.readFileSync(bundlePath, 'utf8')) as { bundle: { ooxml: { headers: Record<string, string> } } };
     expect(Object.keys(bundle.bundle.ooxml.headers).length).toBeGreaterThan(0);
 
+  });
+
+  test('Takane scaffolds code from a specification and downloads it', async ({ page }) => {
+    watch(page);
+    await openTool(page, 'takane');
+    const preview = page.getByTestId('takane-preview');
+    await expect(preview).toBeVisible();
+    await expect(preview).toContainText('PaymentService.charge');
+    await expect(preview).toContainText('PaymentRequest');
+
+    await page.getByTestId('takane-tab-code').click();
+    const output = page.getByTestId('takane-output');
+    await expect(output).toContainText('export class PaymentService {');
+    await expect(output).toContainText('async charge(request: PaymentRequest): Promise<PaymentResult> {');
+    await expect(output).toContainText('throw new Error(\'invoiceId is required\');');
+
+    await page.getByRole('group', { name: '生成する言語' }).getByRole('button', { name: 'Python' }).click();
+    await expect(output).toContainText('class PaymentService:');
+    await expect(output).toContainText('@dataclass');
+
+    await page.getByRole('group', { name: '生成する言語' }).getByRole('button', { name: 'TypeScript' }).click();
+    await page.waitForTimeout(400);
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByTestId('takane-download').click(),
+    ]);
+    expect(download.suggestedFilename()).toMatch(/\.ts$/);
+
+    await page.screenshot({ path: path.join(DOWNLOADS, 'adop0001_takane_dark.png'), fullPage: false });
+  });
+
+  test('Takane loads the latest Shiori specification', async ({ page }) => {
+    watch(page);
+    await openTool(page, 'shiori');
+    await expect(page.getByTestId('shiori-preview')).toBeVisible();
+
+    await openTool(page, 'takane');
+    await page.getByTestId('takane-load-shiori').click();
+    await expect(page.locator('.toast')).toContainText('枝織の最新仕様書を読み込みました');
+    await expect(page.getByTestId('takane-preview')).toContainText('PaymentService.charge');
   });
 
   test('holds the 390px mobile layout without horizontal overflow', async ({ page }) => {
@@ -206,7 +263,7 @@ test.describe('HD2Lab Aosongkan live application', () => {
 
     await page.screenshot({ path: path.join(DOWNLOADS, 'adop0001_mobile.png'), fullPage: false });
 
-    for (const tool of ['yayoi', 'kozue', 'haruhi', 'kotoha']) {
+    for (const tool of ['yayoi', 'kozue', 'haruhi', 'kotoha', 'takane']) {
       await page.goto(`./#/${tool}`);
       await page.waitForTimeout(600);
       const width = await page.evaluate(() => document.documentElement.scrollWidth);

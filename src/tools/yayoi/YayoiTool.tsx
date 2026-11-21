@@ -7,9 +7,9 @@ import { YayoiAdapter, type PseudoDepth, type PseudoLine, type PseudoStyle, type
 const adapter = new YayoiAdapter();
 
 const STYLES: { value: PseudoStyle; label: string }[] = [
-  { value: 'standard', label: 'Standard Structured' },
-  { value: 'narrative', label: 'Narrative English' },
-  { value: 'compact', label: 'Compact Steps' },
+  { value: 'standard', label: '標準構造化' },
+  { value: 'narrative', label: '英語ナラティブ' },
+  { value: 'compact', label: 'コンパクト手順' },
 ];
 
 export function YayoiTool() {
@@ -84,11 +84,11 @@ export function YayoiTool() {
     <>
       <div className="panes">
         <ToolPane
-          title="Original source"
+          title="元のソース"
           actions={
             <>
               <label className="btn btn-sm">
-                Upload
+                アップロード
                 <input
                   type="file"
                   accept=".ts,.tsx,.js,.jsx,.mjs,.cjs,.py,.java,.go,.txt"
@@ -102,15 +102,15 @@ export function YayoiTool() {
                 />
               </label>
               <button type="button" className="btn btn-sm btn-ghost" onClick={() => setSource('')}>
-                Clear
+                クリア
               </button>
             </>
           }
           foot={
             <>
               <span>{fileName}</span>
-              <span>{source.split('\n').length} lines</span>
-              {activeSource ? <span>focused line {activeSource}</span> : <span>click a line to link</span>}
+              <span>{source.split('\n').length} 行</span>
+              {activeSource ? <span>フォーカス行 {activeSource}</span> : <span>行をクリックすると連携します</span>}
             </>
           }
         >
@@ -135,23 +135,23 @@ export function YayoiTool() {
               onChange={setSource}
               highlightLines={activeSource ? [activeSource] : []}
               onLineFocus={(line) => setActiveSource(line)}
-              ariaLabel="Original source"
+              ariaLabel="元のソース"
             />
-            <div className={`dropzone ${drop.active ? 'active' : ''}`}>Drop a source file</div>
+            <div className={`dropzone ${drop.active ? 'active' : ''}`}>ソースファイルをドロップ</div>
           </div>
         </ToolPane>
 
         <ToolPane
-          title="Pseudocode"
+          title="擬似コード"
           actions={
             <>
-              <Segmented ariaLabel="Pseudocode style" value={style} options={STYLES} onChange={setStyle} />
+              <Segmented ariaLabel="擬似コードのスタイル" value={style} options={STYLES} onChange={setStyle} />
               <Segmented
-                ariaLabel="Depth"
+                ariaLabel="詳細度"
                 value={depth}
                 options={[
-                  { value: 'detailed', label: 'Detailed' },
-                  { value: 'summary', label: 'Summary' },
+                  { value: 'detailed', label: '詳細' },
+                  { value: 'summary', label: '要約' },
                 ]}
                 onChange={setDepth}
               />
@@ -159,15 +159,15 @@ export function YayoiTool() {
           }
           foot={
             <>
-              <span>{busy ? 'Translating…' : `${elapsed} ms`}</span>
-              <span>{output ? `${output.stats.functions} units` : '—'}</span>
-              <span>{output ? `${output.stats.kept} mapped lines` : '—'}</span>
+              <span>{busy ? '変換中…' : `${elapsed} ms`}</span>
+              <span>{output ? `${output.stats.functions} ユニット` : '—'}</span>
+              <span>{output ? `${output.stats.kept} 行を対応付け` : '—'}</span>
             </>
           }
         >
           <div style={{ display: 'flex', gap: 6, padding: '8px 12px', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
-            <button type="button" className="btn btn-sm" disabled={!output} onClick={() => void copyText(output?.plain ?? '').then((ok) => showToast(ok ? 'Copied' : 'Copy failed'))}>
-              Copy
+            <button type="button" className="btn btn-sm" disabled={!output} onClick={() => void copyText(output?.plain ?? '').then((ok) => showToast(ok ? 'コピーしました' : 'コピーに失敗しました'))}>
+              コピー
             </button>
             <button type="button" className="btn btn-sm" disabled={!output} onClick={() => download('md')}>
               .md
@@ -176,11 +176,11 @@ export function YayoiTool() {
               .txt
             </button>
             <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 11.5 }}>
-              {activeSource ? `source line ${activeSource}` : 'hover a mapped line'}
+              {activeSource ? `ソース行 ${activeSource}` : '対応する行にポインタを合わせると強調します'}
             </span>
           </div>
           <div className="scroll" data-testid="yayoi-output">
-            {!output ? <EmptyHint title="Nothing to translate yet">Load a sample or paste source code.</EmptyHint> : null}
+            {!output ? <EmptyHint title="まだ変換結果がありません">サンプルを読み込むか、ソースコードを貼り付けてください。</EmptyHint> : null}
             {output?.blocks.map((block) => (
               <div key={block.function}>
                 <div className="pseudo-head">{block.function}</div>
@@ -208,9 +208,9 @@ export function YayoiTool() {
         </ToolPane>
       </div>
       <div className="statusbar">
-        <span className="dot" /> <span>Local static engine</span>
-        <span>{busy ? 'busy' : 'ready'}</span>
-        <span className="ok">no errors</span>
+        <span className="dot" /> <span>ローカル静的解析</span>
+        <span>{busy ? '処理中' : '待機中'}</span>
+        <span className="ok">エラーなし</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
     </>

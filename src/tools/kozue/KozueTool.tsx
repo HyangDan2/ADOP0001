@@ -8,6 +8,15 @@ import { loadMermaid, type MermaidTheme } from './mermaid';
 const adapter = new KozueAdapter();
 const KINDS: UmlKind[] = ['sequence', 'class', 'state', 'activity', 'component'];
 
+/** Japanese switcher labels for the diagram-kind tabs and the confidence badge. */
+const KIND_LABEL_JA: Record<UmlKind, string> = {
+  sequence: 'シーケンス',
+  class: 'クラス',
+  state: 'ステート',
+  activity: 'アクティビティ',
+  component: 'コンポーネント',
+};
+
 export function KozueTool() {
   const [source, setSource] = useState(SAMPLE_BY_EXT[0].code);
   const [fileName, setFileName] = useState(SAMPLE_BY_EXT[0].fileName);
@@ -86,7 +95,7 @@ export function KozueTool() {
       } catch (cause) {
         if (!cancelled) {
           setSvg('');
-          setRenderError(cause instanceof Error ? cause.message : 'The diagram could not be rendered.');
+          setRenderError(cause instanceof Error ? cause.message : 'ダイアグラムを描画できませんでした。');
         }
       }
     })();
@@ -128,7 +137,7 @@ export function KozueTool() {
       image.crossOrigin = 'anonymous';
       await new Promise<void>((resolve, reject) => {
         image.onload = () => resolve();
-        image.onerror = () => reject(new Error('PNG conversion failed while loading the SVG.'));
+        image.onerror = () => reject(new Error('SVG の読み込み中に PNG への変換に失敗しました。'));
         image.src = url;
       });
       const canvas = document.createElement('canvas');
@@ -136,7 +145,7 @@ export function KozueTool() {
       canvas.width = width * ratio;
       canvas.height = height * ratio;
       const context = canvas.getContext('2d');
-      if (!context) throw new Error('Canvas is unavailable in this browser.');
+      if (!context) throw new Error('このブラウザでは Canvas を利用できません。');
       context.scale(ratio, ratio);
       context.fillStyle = '#0b140f';
       context.fillRect(0, 0, width, height);
@@ -144,7 +153,7 @@ export function KozueTool() {
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
       if (blob) downloadBlob(`${fileName.replace(/\.[^.]+$/, '') || 'diagram'}-${activeKind}.png`, blob, 'image/png');
     } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : 'PNG export failed.');
+      showToast(cause instanceof Error ? cause.message : 'PNG の書き出しに失敗しました。');
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -153,18 +162,18 @@ export function KozueTool() {
   const detection = output?.detection;
   const badge = useMemo(() => {
     if (!detection) return null;
-    return `${Math.round(detection.confidence * 100)}% confidence`;
+    return `信頼度 ${Math.round(detection.confidence * 100)}%`;
   }, [detection]);
 
   return (
     <>
       <div className="panes">
         <ToolPane
-          title="Source input"
+          title="ソース入力"
           actions={
             <>
               <label className="btn btn-sm">
-                Upload
+                アップロード
                 <input
                   type="file"
                   accept=".ts,.tsx,.js,.jsx,.mjs,.cjs,.py,.java,.go,.txt"
@@ -178,11 +187,11 @@ export function KozueTool() {
                 />
               </label>
               <button type="button" className="btn btn-sm btn-ghost" onClick={() => setSource('')}>
-                Clear
+                クリア
               </button>
             </>
           }
-          foot={<><span>{fileName}</span><span>{busy ? 'analysing…' : `${elapsed} ms`}</span></>}
+          foot={<><span>{fileName}</span><span>{busy ? '解析中…' : `${elapsed} ms`}</span></>}
         >
           <div style={{ display: 'flex', gap: 6, padding: '8px 10px', flexWrap: 'wrap', borderBottom: '1px solid var(--border)' }}>
             {SAMPLE_BY_EXT.map((sample) => (
@@ -200,17 +209,17 @@ export function KozueTool() {
             ))}
           </div>
           <div style={{ position: 'relative', flex: 1, display: 'flex', minHeight: 0 }} {...drop.handlers}>
-            <LineEditor value={source} onChange={setSource} ariaLabel="Source for the diagram" />
-            <div className={`dropzone ${drop.active ? 'active' : ''}`}>Drop a source file</div>
+            <LineEditor value={source} onChange={setSource} ariaLabel="図の対象ソース" />
+            <div className={`dropzone ${drop.active ? 'active' : ''}`}>ソースファイルをドロップ</div>
           </div>
         </ToolPane>
 
         <ToolPane
-          title="Diagram"
+          title="ダイアグラム"
           actions={
             <>
               <Segmented
-                ariaLabel="Direction"
+                ariaLabel="方向"
                 value={direction}
                 options={[
                   { value: 'TD', label: 'TD' },
@@ -222,26 +231,26 @@ export function KozueTool() {
           }
           foot={
             <>
-              <span>{busy ? 'scoring…' : 'auto-detected'}</span>
-              {detection ? <span>selected: {kindLabel(detection.selected)}</span> : null}
-              <span>{svg ? 'rendered' : renderError ? 'render failed' : 'waiting'}</span>
+              <span>{busy ? '採点中…' : '自動判定'}</span>
+              {detection ? <span>選択: {KIND_LABEL_JA[detection.selected]}</span> : null}
+              <span>{svg ? '描画済み' : renderError ? '描画失敗' : '待機中'}</span>
             </>
           }
         >
           <div style={{ display: 'flex', gap: 6, padding: '8px 12px', borderBottom: '1px solid var(--border)', flexWrap: 'wrap', alignItems: 'center' }}>
             {detection ? (
               <span className={`badge ${kind === 'auto' ? 'accent' : 'soft'}`} data-testid="kozue-detection">
-                {badge} · {kindLabel(detection.selected)}
+                {badge} · {KIND_LABEL_JA[detection.selected]}
               </span>
             ) : null}
             <Segmented
-              ariaLabel="Diagram kind"
+              ariaLabel="ダイアグラムの種類"
               value={kind}
-              options={[{ value: 'auto' as const, label: 'Auto' }, ...KINDS.map((item) => ({ value: item, label: item[0].toUpperCase() + item.slice(1) }))]}
+              options={[{ value: 'auto' as const, label: '自動' }, ...KINDS.map((item) => ({ value: item, label: KIND_LABEL_JA[item] }))]}
               onChange={setKind}
             />
             <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              <button type="button" className="btn btn-sm" disabled={!mermaidCode} onClick={() => void copyText(mermaidCode).then((ok) => showToast(ok ? 'Mermaid copied' : 'Copy failed'))}>
+              <button type="button" className="btn btn-sm" disabled={!mermaidCode} onClick={() => void copyText(mermaidCode).then((ok) => showToast(ok ? 'Mermaid をコピーしました' : 'コピーに失敗しました'))}>
                 .mmd
               </button>
               <button type="button" className="btn btn-sm" disabled={!svg} onClick={exportSvg}>
@@ -285,8 +294,8 @@ export function KozueTool() {
               drag.current = null;
             }}
           >
-            {renderError ? <EmptyHint title="Diagram could not be rendered">{renderError}</EmptyHint> : null}
-            {!renderError && !svg ? <EmptyHint title={busy ? 'Rendering…' : 'No diagram yet'}>Load source code to draw the architecture.</EmptyHint> : null}
+            {renderError ? <EmptyHint title="ダイアグラムを描画できませんでした">{renderError}</EmptyHint> : null}
+            {!renderError && !svg ? <EmptyHint title={busy ? '描画中…' : 'まだダイアグラムがありません'}>ソースコードを読み込むと構成図を描画します。</EmptyHint> : null}
             <div
               className="diagram-inner"
               ref={diagramRef}
@@ -295,22 +304,22 @@ export function KozueTool() {
               dangerouslySetInnerHTML={{ __html: svg }}
             />
             <div className="diagram-tools">
-              <button type="button" className="icon-btn" aria-label="Zoom out" onClick={() => setScale((s) => Math.max(0.4, s - 0.15))}>−</button>
-              <button type="button" className="icon-btn" aria-label="Reset view" onClick={() => { setScale(1); setOffset({ x: 0, y: 0 }); }}>
+              <button type="button" className="icon-btn" aria-label="縮小" onClick={() => setScale((s) => Math.max(0.4, s - 0.15))}>−</button>
+              <button type="button" className="icon-btn" aria-label="表示をリセット" onClick={() => { setScale(1); setOffset({ x: 0, y: 0 }); }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M4 10a8 8 0 0 1 14-4.5M20 14a8 8 0 0 1-14 4.5" strokeLinecap="round" />
                   <path d="M18 4v4h-4M6 20v-4h4" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
-              <button type="button" className="icon-btn" aria-label="Zoom in" onClick={() => setScale((s) => Math.min(3, s + 0.15))}>+</button>
+              <button type="button" className="icon-btn" aria-label="拡大" onClick={() => setScale((s) => Math.min(3, s + 0.15))}>+</button>
             </div>
           </div>
         </ToolPane>
       </div>
       <div className="statusbar">
-        <span className="dot" /> <span>Mermaid renderer</span>
-        <span>{Math.round(scale * 100)}% zoom</span>
-        <span className={renderError ? 'err' : 'ok'}>{renderError ? `error: ${renderError}` : 'no errors'}</span>
+        <span className="dot" /> <span>Mermaid レンダラー</span>
+        <span>{Math.round(scale * 100)}% ズーム</span>
+        <span className={renderError ? 'err' : 'ok'}>{renderError ? `エラー: ${renderError}` : 'エラーなし'}</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
     </>

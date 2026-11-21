@@ -1,8 +1,8 @@
 {
   "name": "HD2Lab 青松館",
   "short_name": "青松館",
-  "description": "Five browser-only documentation tools: specification, pseudocode, UML, tests and style-preserving docx round trips.",
-  "lang": "en",
+  "description": "仕様書・擬似コード・UML・テスト・書式を保つ docx 往復・仕様書からのコード生成。6つの開発ツールを、すべてブラウザ内で。",
+  "lang": "ja",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -1,13 +1,13 @@
 /**
  * ADOP0001 engine ports.
  *
- * Every tool in Aosongkan runs through an `EngineAdapter`. Today all five adapters
+ * Every tool in Aomatsukan runs through an `EngineAdapter`. Today all six adapters
  * are `local-static`: they run entirely in the browser with no network calls.
  * The same port is what a future `hybrid-ai` adapter plugs into, so the UI never
  * needs to know which provider produced a result.
  */
 
-export type ToolId = 'shiori' | 'yayoi' | 'kozue' | 'haruhi' | 'kotoha';
+export type ToolId = 'shiori' | 'yayoi' | 'kozue' | 'haruhi' | 'kotoha' | 'takane';
 
 /**
  * Where the computation happens.
@@ -45,7 +45,7 @@ export interface EngineResult<TOut> {
 
 export interface EngineAdapter<TOut, TOptions = Record<string, unknown>> {
   readonly id: ToolId;
-  /** English name, e.g. "Specification Writer". */
+  /** English engine name, e.g. "Specification Writer". */
   readonly title: string;
   /** Japanese brand title, e.g. "枝織". */
   readonly japaneseTitle: string;

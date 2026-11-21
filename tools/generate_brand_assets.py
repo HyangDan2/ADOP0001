@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HD2Lab Aosongkan brand asset generator.
+HD2Lab Aomatsukan brand asset generator.
 
 Produces, in public/:
   favicon.svg, favicon.ico, icon-192.png, icon-512.png,
@@ -30,17 +30,27 @@ INK = (234, 244, 237)
 MUTED = (147, 171, 159)
 BORDER = (43, 74, 56)
 
+# Japanese-capable faces first: the OG card copy is Japanese, so a face without
+# kana/kanji coverage would render tofu boxes.
 SERIF_CANDIDATES = [
+    "/usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf",
     "/usr/share/fonts/pickle-hwp/NotoSerifCJKkr-Regular.otf",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJKjp-Regular.otf",
+    "/usr/share/fonts/truetype/noto/NotoSerifCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf",
 ]
 SANS_CANDIDATES = [
+    "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
+    "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
     "/usr/share/fonts/pickle-hwp/NotoSansCJKkr-Regular.otf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 ]
 SANS_BOLD_CANDIDATES = [
+    "/usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf",
     "/usr/share/fonts/pickle-hwp/NotoSansCJKkr-Bold.otf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Bold.otf",
     "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
 ]
@@ -126,96 +136,140 @@ def rounded_icon(size: int, pad_ratio: float = 0.0) -> Image.Image:
 
 
 TOOLS = [
-    ("枝織", "Specification Writer"),
-    ("弥生", "Pseudocode Studio"),
-    ("梢絵", "UML Auto-Architect"),
-    ("春日", "Test Case Forge"),
-    ("琴葉", "Docx ↔ MD Round-Trip"),
+    ("01", "枝織", "仕様書作成", "Spec"),
+    ("02", "弥生", "擬似コード", "Pseudo"),
+    ("03", "梢絵", "UML自動設計", "UML"),
+    ("04", "春日", "テスト生成", "Tests"),
+    ("05", "琴葉", "Docx↔MD往復", "Docx"),
+    ("06", "貴音", "仕様書→コード", "Code"),
 ]
+
+SPACE = " "
+
+
+def draw_tracked(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font, fill, tracking: float = 2.0) -> float:
+    """Draws text with extra letter spacing and returns the total width."""
+    x, y = xy
+    for char in text:
+        draw.text((x, y), char, font=font, fill=fill)
+        x += draw.textlength(char, font=font) + tracking
+    return x - xy[0]
+
+
+def tracked_width(draw: ImageDraw.ImageDraw, text: str, font, tracking: float = 2.0) -> float:
+    return sum(draw.textlength(char, font=font) for char in text) + tracking * max(0, len(text) - 1)
 
 
 def og_image() -> Image.Image:
     width, height = 1200, 630
-    image = gradient((width, height), DEEP_BG_TOP, DEEP_BG_BOTTOM).convert("RGBA")
-    glow(image, (170, 120), 420, ACCENT, 0.16)
+    image = gradient((width, height), (8, 17, 12), (12, 24, 17)).convert("RGBA")
+    glow(image, (150, 96), 430, ACCENT, 0.20)
+    glow(image, (980, 520), 380, ACCENT, 0.10)
 
     draw = ImageDraw.Draw(image)
     for x in range(0, width, 40):
-        draw.line([(x, 0), (x, height)], fill=(15, 25, 19, 60))
+        draw.line([(x, 0), (x, height)], fill=(82, 183, 136, 16))
     for y in range(0, height, 40):
-        draw.line([(0, y), (width, y)], fill=(15, 25, 19, 60))
+        draw.line([(0, y), (width, y)], fill=(82, 183, 136, 16))
 
-    # emblem badge
-    draw.rounded_rectangle([64, 56, 168, 160], radius=26, fill=PANEL, outline=BORDER, width=2)
-    emblem(draw, 116, 112, 2.3, ACCENT, (8, 16, 12))
+    serif_title = font(SERIF_CANDIDATES, 34)
+    sans_sub = font(SANS_CANDIDATES, 19)
+    eyebrow_font = font(SANS_CANDIDATES, 14)
+    headline_font = font(SANS_BOLD_CANDIDATES, 60)
+    body_font = font(SANS_CANDIDATES, 21)
+    chip_font = font(SANS_CANDIDATES, 14)
+    label_font = font(SANS_CANDIDATES, 12)
+    row_title = font(SANS_BOLD_CANDIDATES, 19)
+    row_sub = font(SANS_CANDIDATES, 12)
+    row_mark = font(SANS_BOLD_CANDIDATES, 11)
+    footer_font = font(SANS_CANDIDATES, 13)
+    url_font = font(SANS_CANDIDATES, 17)
+    url_bold = font(SANS_BOLD_CANDIDATES, 17)
 
-    serif = font(SERIF_CANDIDATES, 62)
-    sans = font(SANS_CANDIDATES, 28)
-    sans_small = font(SANS_CANDIDATES, 20)
-    sans_bold = font(SANS_BOLD_CANDIDATES, 21)
+    # ── header: emblem badge + wordmark | latin subtitle ─────────────────
+    draw.rounded_rectangle([64, 54, 112, 102], radius=13, fill=PANEL, outline=BORDER, width=1)
+    emblem(draw, 88, 78, 1.32, ACCENT, (8, 16, 12))
+    title_text = "HD2Lab 青松館"
+    draw.text((126, 58), title_text, font=serif_title, fill=INK)
+    title_w = draw.textlength(title_text, font=serif_title)
+    divider_x = int(126 + title_w + 22)
+    draw.line([(divider_x, 60), (divider_x, 96)], fill=(37, 65, 50), width=1)
+    draw.text((divider_x + 20, 68), "Aomatsukan", font=sans_sub, fill=MUTED)
 
-    draw.text((188, 74), "HD2Lab 青松館", font=serif, fill=INK)
-    draw.text((190, 148), "5-in-1 Code & Document Suite", font=sans, fill=MUTED)
-    draw.line([(64, 206), (1136, 206)], fill=(31, 53, 41), width=2)
+    # ── eyebrow ────────────────────────────────────────────────────────
+    draw.ellipse([64, 186, 72, 194], fill=ACCENT)
+    draw_tracked(draw, (86, 180), "AOMATSUKAN · 6-IN-1 SUITE", eyebrow_font, ACCENT_SOFT, 2.2)
 
-    # tool chips, wrapped by measured width
-    cursor_x, cursor_y = 64, 250
-    chip_h = 62
-    for japanese, english in TOOLS:
-        jp_font = font(SERIF_CANDIDATES, 26)
-        en_font = font(SANS_CANDIDATES, 20)
-        jp_w = draw.textlength(japanese, font=jp_font)
-        en_w = draw.textlength(english, font=en_font)
-        chip_w = int(jp_w + en_w + 58)
-        if cursor_x + chip_w > width - 64:
-            cursor_x = 64
-            cursor_y += chip_h + 16
+    # ── hero headline, two lines, second line in pine green ────────────
+    draw.text((64, 222), "仕様からコードまで、", font=headline_font, fill=INK)
+    draw.text((64, 296), "静かに紡ぐ作業台。", font=headline_font, fill=(106, 209, 160))
+
+    # ── two-line intro ─────────────────────────────────────────────────
+    draw.text((64, 400), "枝織・弥生・梢絵・春日・琴葉・貴音 —", font=body_font, fill=(156, 184, 166))
+    draw.text((64, 434), "6つの開発・文書ツールを、ブラウザひとつで。", font=body_font, fill=(156, 184, 166))
+
+    # ── two pill chips, bottom left ────────────────────────────────────
+    def pill(x: int, label: str) -> int:
+        text_w = draw.textlength(label, font=chip_font)
+        box_w = int(text_w + 34)
+        draw.rounded_rectangle([x, 548, x + box_w, 582], radius=17, fill=(14, 27, 20), outline=(37, 65, 50), width=1)
+        draw.text((x + 17, 557), label, font=chip_font, fill=(206, 224, 214))
+        return x + box_w + 12
+
+    cursor = pill(64, "6 ツール")
+    pill(cursor, "ブラウザ完結")
+
+    # ── right card: numbered tool list ─────────────────────────────────
+    card = [712, 96, 1136, 546]
+    # soft shadow
+    for step in range(10, 0, -1):
+        alpha = int(10 * (1 - step / 10) ** 1.4)
         draw.rounded_rectangle(
-            [cursor_x, cursor_y, cursor_x + chip_w, cursor_y + chip_h],
-            radius=16,
-            fill=(20, 35, 27),
-            outline=(43, 74, 56),
-            width=1,
+            [card[0] - step, card[1] - step + 14, card[2] + step, card[3] + step + 14],
+            radius=20 + step,
+            fill=(3, 8, 5, alpha),
         )
-        draw.text((cursor_x + 20, cursor_y + 9), japanese, font=jp_font, fill=ACCENT_SOFT)
-        draw.text((cursor_x + 20 + jp_w + 14, cursor_y + 18), english, font=en_font, fill=INK)
-        cursor_x += chip_w + 14
+    draw.rounded_rectangle(card, radius=20, fill=PANEL, outline=(37, 65, 50), width=1)
 
-    body_font = font(SANS_CANDIDATES, 24)
-    body = "Write the specification, sketch the architecture, forge the tests, and edit a docx without losing its template."
-    words = body.split()
-    lines: list[str] = []
-    current = ""
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if draw.textlength(candidate, font=body_font) <= width - 176:
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    for index, line in enumerate(lines[:2]):
-        draw.text((64, 406 + index * 31), line, font=body_font, fill=(186, 205, 195))
+    inner_left = card[0] + 24
+    inner_right = card[2] - 24
+    draw_tracked(draw, (inner_left, 128), "TOOLS", label_font, (124, 156, 138), 1.8)
+    suite_w = tracked_width(draw, "SUITE", label_font, 1.8)
+    draw_tracked(draw, (int(inner_right - suite_w), 128), "SUITE", label_font, (124, 156, 138), 1.8)
 
-    note_font = font(SANS_CANDIDATES, 21)
-    note = "Deep Cedar and Mist Pine themes  ·  Mermaid diagrams  ·  OOXML style bundles in IndexedDB"
-    draw.text((64, 474), note, font=note_font, fill=MUTED)
+    row_top = 152
+    row_h = 58
+    for index, (number, name, subtitle, right) in enumerate(TOOLS):
+        cy = row_top + index * row_h + row_h // 2
+        draw.ellipse([inner_left, cy - 13, inner_left + 26, cy + 13], fill=(20, 44, 31), outline=(43, 78, 58), width=1)
+        num_w = draw.textlength(number, font=row_mark)
+        draw.text((inner_left + 13 - num_w / 2, cy - 7), number, font=row_mark, fill=ACCENT_SOFT)
+        draw.text((inner_left + 42, cy - 21), name, font=row_title, fill=INK)
+        draw.text((inner_left + 42, cy + 3), subtitle, font=row_sub, fill=(140, 168, 152))
+        right_w = draw.textlength(right, font=label_font)
+        draw.text((inner_right - right_w, cy - 7), right, font=label_font, fill=(116, 198, 157))
 
-    footer_y = height - 88
-    draw.line([(64, footer_y - 24), (1136, footer_y - 24)], fill=(31, 53, 41), width=2)
-    draw.text((64, footer_y), "100% in-browser  ·  no uploads  ·  deterministic local engines", font=sans_small, fill=MUTED)
-    url = "hyangdan2.github.io/ADOP0001"
-    url_w = draw.textlength(url, font=sans_small)
-    draw.text((width - 64 - url_w, footer_y), url, font=sans_small, fill=ACCENT)
+    draw.line([(inner_left, 498), (inner_right, 498)], fill=(37, 65, 50), width=1)
+    for index, color in enumerate(((82, 183, 136), (96, 196, 150), (116, 198, 157))):
+        draw.ellipse([inner_left + index * 16, 518, inner_left + index * 16 + 10, 528], fill=color)
+    mode = "JP UI · EN CODE"
+    mode_w = tracked_width(draw, mode, label_font, 1.6)
+    draw_tracked(draw, (int(inner_right - mode_w), 514), mode, label_font, (140, 168, 152), 1.6)
 
-    # a single hairline accent under the title block
-    draw.rounded_rectangle([64, footer_y - 24, 190, footer_y - 20], radius=2, fill=ACCENT)
+    # ── bottom-right URL ───────────────────────────────────────────────
+    host = "hyangdan2.github.io/"
+    repo = "ADOP0001"
+    repo_w = draw.textlength(repo, font=url_bold)
+    host_w = draw.textlength(host, font=url_font)
+    total = host_w + repo_w
+    start_x = int(1136 - total)
+    draw.text((start_x, 560), host, font=url_font, fill=(124, 156, 138))
+    draw.text((start_x + host_w, 560), repo, font=url_bold, fill=(116, 198, 157))
 
     return image.convert("RGB")
 
 
-FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="HD2Lab Aosongkan">
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="HD2Lab Aomatsukan">
   <defs>
     <linearGradient id="cedar" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#0f1d15"/>
@@ -238,8 +292,8 @@ FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" rol
 MANIFEST = {
     "name": "HD2Lab 青松館",
     "short_name": "青松館",
-    "description": "Five browser-only documentation tools: specification, pseudocode, UML, tests and style-preserving docx round trips.",
-    "lang": "en",
+    "description": "仕様書・擬似コード・UML・テスト・書式を保つ docx 往復・仕様書からのコード生成。6つの開発ツールを、すべてブラウザ内で。",
+    "lang": "ja",
     "start_url": "./",
     "scope": "./",
     "display": "standalone",

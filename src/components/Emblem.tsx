@@ -6,7 +6,7 @@ export function Emblem({ size = 28 }: { size?: number }) {
       height={size}
       viewBox="0 0 32 32"
       role="img"
-      aria-label="HD2Lab Aosongkan emblem: a pine sprig with a knot"
+      aria-label="HD2Lab 青松館のエンブレム：結び目のある松の小枝"
     >
       <circle cx="16" cy="16" r="14.6" fill="none" stroke="currentColor" strokeWidth="1.1" opacity="0.4" />
       <path d="M16 26.5V10.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />

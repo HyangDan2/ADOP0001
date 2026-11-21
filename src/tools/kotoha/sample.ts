@@ -92,7 +92,7 @@ const SAMPLE_SECT_PR = `<w:sectPr><w:headerReference w:type="default" r:id="rId5
 
 const SAMPLE_CORE = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-<dc:title>Kotoha Round-Trip Sample</dc:title><dc:creator>HD2Lab Aosongkan</dc:creator><cp:lastModifiedBy>Kotoha</cp:lastModifiedBy>
+<dc:title>Kotoha Round-Trip Sample</dc:title><dc:creator>HD2Lab Aomatsukan</dc:creator><cp:lastModifiedBy>Kotoha</cp:lastModifiedBy>
 <dcterms:created xsi:type="dcterms:W3CDTF">2026-11-21T00:00:00Z</dcterms:created>
 <dcterms:modified xsi:type="dcterms:W3CDTF">2026-11-21T00:00:00Z</dcterms:modified>
 </cp:coreProperties>`;

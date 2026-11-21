@@ -4,12 +4,15 @@ import { YayoiAdapter } from '../tools/yayoi/adapter';
 import { KozueAdapter } from '../tools/kozue/adapter';
 import { HaruhiAdapter } from '../tools/haruhi/adapter';
 import { KotohaAdapter } from '../tools/kotoha/adapter';
+import { TakaneAdapter } from '../tools/takane/adapter';
 
 export interface ToolMeta {
   id: ToolId;
   path: string;
+  /** Japanese brand title, e.g. 枝織. */
   japanese: string;
-  english: string;
+  /** Japanese switcher label shown beside the brand title. */
+  label: string;
   tagline: string;
   longDescription: string;
   adapter: EngineAdapter<never, never>;
@@ -24,51 +27,61 @@ export const TOOLS: ToolMeta[] = [
     id: 'shiori',
     path: '#/shiori',
     japanese: '枝織',
-    english: 'Specification Writer',
-    tagline: 'Weave source code into a contract-grade specification.',
+    label: '仕様書作成',
+    tagline: 'ソースコードを契約水準の仕様書へ織り上げます。',
     longDescription:
-      'Parses TypeScript, JavaScript, Python, Java and Go to extract modules, types, signatures, guards, error paths and dependencies, then writes a contract table and behaviour rules as Markdown or standalone HTML.',
+      'TypeScript・JavaScript・Python・Java・Go を解析し、モジュール・型・シグネチャ・ガード・エラー経路・依存関係を抽出して、契約表と振る舞いルールを Markdown または単体 HTML として出力します。',
     adapter: new ShioriAdapter() as unknown as EngineAdapter<never, never>,
   },
   {
     id: 'yayoi',
     path: '#/yayoi',
     japanese: '弥生',
-    english: 'Pseudocode Studio',
-    tagline: 'Strip the syntax, keep the thinking.',
+    label: '擬似コード',
+    tagline: '文法のノイズを削り、思考だけを残します。',
     longDescription:
-      'Removes language noise and keeps control flow as readable pseudocode in three styles, with detailed or summary depth and line-level highlighting tied back to the original source.',
+      '言語固有の記法を取り除き、制御フローを読みやすい擬似コードとして3つのスタイルで出力します。詳細・要約の2段階の深さと、元ソースへの行単位の対応付けを備えています。',
     adapter: new YayoiAdapter() as unknown as EngineAdapter<never, never>,
   },
   {
     id: 'kozue',
     path: '#/kozue',
     japanese: '梢絵',
-    english: 'UML Auto-Architect',
-    tagline: 'Let the code choose its own diagram.',
+    label: 'UML自動設計',
+    tagline: 'コード自身にふさわしい図を選ばせます。',
     longDescription:
-      'Scores five UML kinds from the source structure, explains why one fits best, and renders Sequence, Class, State, Activity or Component diagrams with Mermaid — pan, zoom and SVG/PNG export included.',
+      'ソース構造から5種類の UML を採点し、最適な種類とその理由を提示したうえで、シーケンス図・クラス図・ステート図・アクティビティ図・コンポーネント図を Mermaid で描画します。パン・ズームと SVG／PNG 書き出しに対応しています。',
     adapter: new KozueAdapter() as unknown as EngineAdapter<never, never>,
   },
   {
     id: 'haruhi',
     path: '#/haruhi',
     japanese: '春日',
-    english: 'Test Case Forge',
-    tagline: 'Forge the cases the code implies.',
+    label: 'テスト生成',
+    tagline: 'コードが示すテストケースを鍛え上げます。',
     longDescription:
-      'Derives happy paths, boundary values, guard branches and error paths from the source, then emits Given/When/Then skeletons for Vitest/Jest, Pytest, JUnit 5 and Go testing with an uncovered-branch checklist.',
+      'ソースから正常系・境界値・ガード分岐・エラー経路を導き、Vitest／Jest・Pytest・JUnit 5・Go testing 向けの Given/When/Then 雛形を、未カバー分岐チェックリストとともに出力します。',
     adapter: new HaruhiAdapter() as unknown as EngineAdapter<never, never>,
   },
   {
     id: 'kotoha',
     path: '#/kotoha',
     japanese: '琴葉',
-    english: 'Docx ↔ MD Round-Trip',
-    tagline: 'Edit the words, keep the template.',
+    label: 'Docx↔MD往復',
+    tagline: '言葉を直し、テンプレートはそのまま。',
     longDescription:
-      'Decomposes a .docx into clean Markdown while preserving styles, theme, numbering, headers, footers, media and page geometry in a style bundle, then rebuilds a valid .docx that still looks like the original.',
+      '.docx を Markdown へ分解する際に、スタイル・テーマ・番号付け・ヘッダー・フッター・メディア・ページ設定をスタイルバンドルとして保持し、元の見た目を保ったまま有効な .docx へ再構築します。',
     adapter: new KotohaAdapter() as unknown as EngineAdapter<never, never>,
+  },
+  {
+    id: 'takane',
+    path: '#/takane',
+    japanese: '貴音',
+    label: '仕様書→コード',
+    tagline: '仕様書から、動くコードの骨格を。',
+    longDescription:
+      '構造化された Markdown 仕様書から、型宣言・クラス／関数シグネチャ・ガード節・エラー経路・Doc コメントを備えたスキャフォールドを、TypeScript・Python・Java・Go 向けに生成します。枝織の出力をそのまま読み込めるので、コード→仕様書→コードの往復をブラウザ内で確かめられます。',
+    adapter: new TakaneAdapter() as unknown as EngineAdapter<never, never>,
   },
 ];
 

@@ -211,7 +211,7 @@ export function buildPseudocode(fileName: string, source: string, options: Yayoi
 
   const mdLines: string[] = [];
   mdLines.push(`# Pseudocode — ${baseName(fileName)}`, '');
-  mdLines.push(`*HD2Lab Aosongkan · Yayoi (弥生) · style: ${styleLabel[options.style]} · depth: ${options.depth}*`, '');
+  mdLines.push(`*HD2Lab Aomatsukan · Yayoi (弥生) · style: ${styleLabel[options.style]} · depth: ${options.depth}*`, '');
   for (const block of blocks) {
     mdLines.push(`## ${block.function}`, '');
     mdLines.push('```text');
@@ -235,10 +235,10 @@ export class YayoiAdapter implements EngineAdapter<YayoiOutput, YayoiOptions> {
   readonly japaneseTitle = '弥生';
   readonly providerMode: ProviderMode = 'local-static';
   readonly capabilities = [
-    'Syntax noise removal with control-flow extraction',
-    'Three styles: Standard Structured, Narrative English, Compact Steps',
-    'Detailed or summary depth',
-    'Bidirectional line-level mapping to the original source',
+    '文法のノイズを取り除き、制御フローを抽出',
+    '3つのスタイル：標準構造化・英語ナラティブ・コンパクト手順',
+    '詳細または要約の2段階の深さ',
+    '元ソースへの双方向の行単位マッピング',
   ] as const;
 
   async run(request: EngineRequest<YayoiOptions>): Promise<EngineResult<YayoiOutput>> {

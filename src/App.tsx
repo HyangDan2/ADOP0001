@@ -7,6 +7,7 @@ import { YayoiTool } from './tools/yayoi/YayoiTool';
 import { KozueTool } from './tools/kozue/KozueTool';
 import { HaruhiTool } from './tools/haruhi/HaruhiTool';
 import { KotohaTool } from './tools/kotoha/KotohaTool';
+import { TakaneTool } from './tools/takane/TakaneTool';
 
 type Theme = 'dark' | 'light';
 const THEME_KEY = 'adop0001.theme';
@@ -82,6 +83,8 @@ export default function App() {
         return <HaruhiTool />;
       case 'kotoha':
         return <KotohaTool />;
+      case 'takane':
+        return <TakaneTool />;
       default:
         return <ShioriTool />;
     }
@@ -96,17 +99,17 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#/shiori" onClick={() => go('shiori')} aria-label="HD2Lab Aosongkan home">
+        <a className="brand" href="#/shiori" onClick={() => go('shiori')} aria-label="HD2Lab 青松館 ホーム">
           <span style={{ color: 'var(--accent)' }}>
             <Emblem size={28} />
           </span>
           <span className="brand-title">
             <b>HD2Lab 青松館</b>
-            <span>5-in-1 suite</span>
+            <span>6-in-1 スイート</span>
           </span>
         </a>
         <span className="brand-divider" aria-hidden="true" />
-        <nav className="tool-switcher" aria-label="Tool switcher">
+        <nav className="tool-switcher" aria-label="ツール切り替え">
           {TOOLS.map((item) => (
             <button
               key={item.id}
@@ -117,7 +120,7 @@ export default function App() {
               data-testid={`tab-${item.id}`}
             >
               <span className="jp">{item.japanese}</span>
-              <span className="en">{item.english}</span>
+              <span className="en">{item.label}</span>
             </button>
           ))}
         </nav>
@@ -125,8 +128,8 @@ export default function App() {
           <button
             type="button"
             className="icon-btn"
-            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-            title={theme === 'dark' ? 'Mist Pine (light)' : 'Deep Cedar (dark)'}
+            aria-label={theme === 'dark' ? 'ライトテーマに切り替え' : 'ダークテーマに切り替え'}
+            title={theme === 'dark' ? 'Mist Pine（ライト）' : 'Deep Cedar（ダーク）'}
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             data-testid="theme-toggle"
           >
@@ -144,8 +147,8 @@ export default function App() {
           <button
             type="button"
             className="icon-btn"
-            aria-label="Open help"
-            title="Help (?)"
+            aria-label="ヘルプを開く"
+            title="ヘルプ（?）"
             onClick={() => setHelpOpen(true)}
             data-testid="help-button"
           >
@@ -159,9 +162,9 @@ export default function App() {
             <button
               type="button"
               className="icon-btn"
-              aria-label="Open menu"
+              aria-label="メニューを開く"
               aria-expanded={menuOpen}
-              title="More"
+              title="その他"
               onClick={() => setMenuOpen((open) => !open)}
               data-testid="kebab-button"
             >
@@ -173,11 +176,11 @@ export default function App() {
             </button>
             {menuOpen ? (
               <div className="menu" role="menu" data-testid="kebab-menu">
-                <div className="menu-group">Tools</div>
+                <div className="menu-group">ツール</div>
                 {TOOLS.map((item) => (
                   <button key={item.id} type="button" role="menuitem" onClick={() => go(item.id)}>
                     <span className="menu-jp">{item.japanese}</span>
-                    <span>{item.english}</span>
+                    <span>{item.label}</span>
                   </button>
                 ))}
                 <div className="menu-sep" />
@@ -197,8 +200,8 @@ export default function App() {
                 </a>
                 <div className="menu-sep" />
                 <a href="https://github.com/HyangDan2/ADOP0001" role="menuitem" target="_blank" rel="noreferrer">
-                  <span className="menu-jp">Src</span>
-                  <span>Source on GitHub</span>
+                  <span className="menu-jp">GitHub</span>
+                  <span>GitHub リポジトリ</span>
                 </a>
               </div>
             ) : null}
@@ -211,13 +214,13 @@ export default function App() {
           <div>
             <h1>
               <span className="jp">{tool.japanese}</span>
-              <span>{tool.english}</span>
+              <span>{tool.label}</span>
             </h1>
             <p>{tool.longDescription}</p>
           </div>
           <div className="head-actions">
-            <span className="badge soft">100% in-browser</span>
-            <span className="badge">Local static engine</span>
+            <span className="badge soft">ブラウザ完結</span>
+            <span className="badge">ローカル静的解析</span>
           </div>
         </div>
         {body}

@@ -59,11 +59,11 @@ export function HaruhiTool() {
     <>
       <div className="panes">
         <ToolPane
-          title="Source input"
+          title="ソース入力"
           actions={
             <>
               <label className="btn btn-sm">
-                Upload
+                アップロード
                 <input
                   type="file"
                   accept=".ts,.tsx,.js,.jsx,.mjs,.cjs,.py,.java,.go,.txt"
@@ -77,11 +77,11 @@ export function HaruhiTool() {
                 />
               </label>
               <button type="button" className="btn btn-sm btn-ghost" onClick={() => setSource('')}>
-                Clear
+                クリア
               </button>
             </>
           }
-          foot={<><span>{fileName}</span><span>{busy ? 'forging…' : `${elapsed} ms`}</span></>}
+          foot={<><span>{fileName}</span><span>{busy ? '生成中…' : `${elapsed} ms`}</span></>}
         >
           <div style={{ display: 'flex', gap: 6, padding: '8px 10px', flexWrap: 'wrap', borderBottom: '1px solid var(--border)' }}>
             {SAMPLE_BY_EXT.map((sample) => (
@@ -99,16 +99,16 @@ export function HaruhiTool() {
             ))}
           </div>
           <div style={{ position: 'relative', flex: 1, display: 'flex', minHeight: 0 }} {...drop.handlers}>
-            <LineEditor value={source} onChange={setSource} ariaLabel="Source for tests" />
-            <div className={`dropzone ${drop.active ? 'active' : ''}`}>Drop a source file</div>
+            <LineEditor value={source} onChange={setSource} ariaLabel="テスト対象のソース" />
+            <div className={`dropzone ${drop.active ? 'active' : ''}`}>ソースファイルをドロップ</div>
           </div>
         </ToolPane>
 
         <ToolPane
-          title="Generated tests"
+          title="生成されたテスト"
           actions={
             <select
-              aria-label="Test framework"
+              aria-label="テストフレームワーク"
               value={framework}
               onChange={(event) => setFramework(event.target.value as Framework)}
               className="btn btn-sm"
@@ -124,24 +124,24 @@ export function HaruhiTool() {
           }
           foot={
             <>
-              <span>{output ? `${output.cases.length} cases` : '—'}</span>
-              <span>{output ? `${output.coverage}% branches covered` : '—'}</span>
+              <span>{output ? `${output.cases.length} ケース` : '—'}</span>
+              <span>{output ? `分岐カバレッジ ${output.coverage}%` : '—'}</span>
               <span>{output?.fileName ?? '—'}</span>
             </>
           }
         >
           <div style={{ display: 'flex', gap: 6, padding: '8px 12px', borderBottom: '1px solid var(--border)', alignItems: 'center', flexWrap: 'wrap' }}>
-            <div className="tabs" role="tablist" aria-label="Test output view">
+            <div className="tabs" role="tablist" aria-label="テスト出力の表示">
               <button type="button" role="tab" className="tab" aria-selected={tab === 'code'} onClick={() => setTab('code')}>
-                Test file
+                テストファイル
               </button>
               <button type="button" role="tab" className="tab" aria-selected={tab === 'checklist'} onClick={() => setTab('checklist')}>
-                Branch checklist
+                分岐チェックリスト
               </button>
             </div>
             <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              <button type="button" className="btn btn-sm" disabled={!output} onClick={() => void copyText(output?.code ?? '').then((ok) => showToast(ok ? 'Copied' : 'Copy failed'))}>
-                Copy
+              <button type="button" className="btn btn-sm" disabled={!output} onClick={() => void copyText(output?.code ?? '').then((ok) => showToast(ok ? 'コピーしました' : 'コピーに失敗しました'))}>
+                コピー
               </button>
               <button
                 type="button"
@@ -150,22 +150,22 @@ export function HaruhiTool() {
                 onClick={() => output && downloadBlob(output.fileName, output.code, 'text/plain;charset=utf-8')}
                 data-testid="haruhi-download"
               >
-                Download
+                ダウンロード
               </button>
             </span>
           </div>
           <div className="scroll" data-testid="haruhi-output">
-            {!output ? <EmptyHint title="No tests forged yet">Load a sample or paste source code.</EmptyHint> : null}
+            {!output ? <EmptyHint title="まだテストがありません">サンプルを読み込むか、ソースコードを貼り付けてください。</EmptyHint> : null}
             {output && tab === 'code' ? <pre className="code-view">{output.code}</pre> : null}
             {output && tab === 'checklist' ? (
               <div className="checklist">
-                {output.checklist.length === 0 ? <EmptyHint title="No branches found" /> : null}
+                {output.checklist.length === 0 ? <EmptyHint title="分岐が見つかりません" /> : null}
                 {output.checklist.map((item, index) => (
                   <div key={`${item.function}-${item.line}-${index}`} className={`check-item ${item.covered ? 'covered' : ''}`}>
                     <span className="check-mark">{item.covered ? '✓' : '·'}</span>
                     <span>
-                      <code>{item.function}</code> line {item.line} — {item.branch}
-                      {item.caseId ? <span style={{ color: 'var(--muted)' }}> · {item.caseId}</span> : <span style={{ color: 'var(--warn)' }}> · uncovered</span>}
+                      <code>{item.function}</code> {item.line} 行目 — {item.branch}
+                      {item.caseId ? <span style={{ color: 'var(--muted)' }}> · {item.caseId}</span> : <span style={{ color: 'var(--warn)' }}> · 未カバー</span>}
                     </span>
                   </div>
                 ))}
@@ -175,9 +175,9 @@ export function HaruhiTool() {
         </ToolPane>
       </div>
       <div className="statusbar">
-        <span className="dot" /> <span>Local static engine</span>
-        <span>{busy ? 'busy' : 'ready'}</span>
-        <span className="ok">no errors</span>
+        <span className="dot" /> <span>ローカル静的解析</span>
+        <span>{busy ? '処理中' : '待機中'}</span>
+        <span className="ok">エラーなし</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
     </>

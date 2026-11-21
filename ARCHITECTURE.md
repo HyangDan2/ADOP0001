@@ -1,4 +1,4 @@
-# Architecture — HD2Lab 青松館 (Aosongkan)
+# Architecture — HD2Lab 青松館 (Aomatsukan)
 
 This document describes what ships today (**Option A: pure-browser static/OOXML engines**) and the
 exact shape of the planned AI-assisted mode (**Option B: hybrid AI**), including the interfaces,
@@ -6,6 +6,20 @@ the `Server-HQ` proxy contract, privacy boundaries, merge rules and caching.
 
 The code is the source of truth for the interfaces; the excerpts below are quoted from
 `src/adapters/types.ts` and `src/adapters/registry.ts`.
+
+## 0. Language policy
+
+| Surface | Language |
+| --- | --- |
+| App UI: shell, switcher labels, badges, buttons, tabs, panel titles, status bar, toasts, Help modal, Kotoha inspector, `index.html` meta, `manifest.json`, `og-image.png` | Japanese (Japanese honorific register, developer-tool vocabulary) |
+| Repository docs (`README.md`, `ARCHITECTURE.md`) | English |
+| Code samples, source identifiers, comments, editor contents | English |
+| Tool outputs: 枝織 specification Markdown/HTML and its preview, 弥生 pseudocode and narrative/compact styles, 梢絵 Mermaid `.mmd` and detection explanations, 春日 generated test files, 琴葉 sample `.docx`, decomposed Markdown and rebuilt `.docx` | English |
+
+Proper nouns and format names (`HD2Lab`, `Aomatsukan`, `Markdown`, `HTML`, `UML`, `Mermaid`,
+`SVG`, `PNG`, `JSZip`, `OOXML`, `IndexedDB`, `Vitest`, `Jest`, `Pytest`, `JUnit 5`, `Go testing`,
+`.docx`, `.kotoha.json`, `HD2Lab Web-HQ`, `ApplicationHub`, code symbols and identifiers) are kept
+as they are in both surfaces.
 
 ---
 
@@ -25,15 +39,17 @@ flowchart TB
     S3[梢絵 Kozue adapter]
     S4[春日 Haruhi adapter]
     S5[琴葉 Kotoha adapter]
+    S6[貴音 Takane adapter]
     XML[OOXML reader<br/>src/tools/kotoha/xml.ts]
     ZIP[JSZip<br/>read/write .docx]
     IDB[(IndexedDB<br/>style bundles)]
     MER[Mermaid<br/>public/vendor/mermaid.min.js]
   end
   UI --> Registry
-  Registry --> S1 & S2 & S3 & S4 & S5
+  Registry --> S1 & S2 & S3 & S4 & S5 & S6
   S1 & S2 & S3 & S4 --> Parser
-  S1 & S2 & S3 & S4 & S5 --> Util
+  S1 & S2 & S3 & S4 & S5 & S6 --> Util
+  S1 -.specification Markdown.-> S6
   S5 --> XML --> ZIP
   S5 --> IDB
   S3 --> MER
@@ -141,8 +157,9 @@ export interface HybridOrchestrator<TOut, TOptions = Record<string, unknown>> {
 | --- | --- |
 | `id` | Unique `ToolId`; also the hash route segment and the cache-key prefix. |
 | `path` | `#/<id>` deep link. |
-| `japanese`, `english` | Brand title (Japanese allowed) and English product name used in all UI. |
-| `tagline`, `longDescription` | English copy for the tool head and Help modal. |
+| `japanese`, `label` | Japanese brand title (e.g. `枝織`) and the Japanese switcher label (e.g. `仕様書作成`) shown in the top bar, the `⋮` menu and the tool head. |
+| `tagline`, `longDescription` | Japanese copy for the tool head and the Help modal. |
+| `adapter.title` | English engine name (e.g. `Specification Writer`), kept for the adapter port; the UI shows `japanese` / `label`. |
 | `adapter` | The live `EngineAdapter`. Swapping the adapter is the only change needed to move a tool from Option A to Option B. |
 
 The UI reads `tool.adapter.capabilities` to explain a tool in Help, and calls `adapter.run()` with
@@ -184,8 +201,34 @@ AST precision, and diagnostics surface that when nothing is found.
 | 梢絵 | model → five scored candidates → Mermaid for each kind → render selected | `KozueOutput` |
 | 春日 | model → cases (happy/boundary/guard/error) → framework emitter → checklist | `HaruhiOutput` |
 | 琴葉 | `.docx` bytes → JSZip → XML reader → Markdown + bundle → rebuild `.docx` | `KotohaOutput` |
+| 貴音 | Markdown specification → headings/tables/bullets/fences → `SpecInputModel` → per-language emitter (TS/Python/Java/Go) | `TakaneOutput` |
 
-### 3.3 Kotoha OOXML engine
+### 3.3 Takane specification-to-code pipeline
+
+```mermaid
+flowchart LR
+  SPEC[Markdown specification] --> HEAD[Heading sections<br/>contracts · behaviour · errors · types]
+  SPEC --> TABLE[Contract · behaviour · error tables]
+  SPEC --> FENCE[Fenced declarations]
+  HEAD --> MODEL[SpecInputModel<br/>contracts · types · guards · error paths]
+  TABLE --> MODEL
+  FENCE --> MODEL
+  MODEL --> TS[TypeScript emitter]
+  MODEL --> PY[Python emitter]
+  MODEL --> JV[Java emitter]
+  MODEL --> GO[Go emitter]
+```
+
+The parser accepts both the Markdown that 枝織 writes (`# Specification — …`, `## 2. Contract table`,
+`### `signature``, behaviour rules, error paths, data types) and a hand-written specification made of
+headings, tables, bullet lists and fenced code. The generated scaffold carries type declarations,
+class/module signatures with parameter defaults and return types, guard clauses derived from the
+behaviour rules, error paths, and JSDoc/Javadoc/docstring/Go doc comments. Every TODO marker points
+at the contract it belongs to. 枝織 stores its latest Markdown in `localStorage`
+(`adop0001.shiori.latest`), so 貴音's **Load latest Shiori spec** button closes the
+code → specification → code loop without touching the network.
+
+### 3.4 Kotoha OOXML engine
 
 ```mermaid
 flowchart TB
@@ -399,7 +442,7 @@ hybrid pass was skipped.
   reuse), entries expire after 14 days, and the UI shows a "cached" badge with the original timestamp.
   Cache hits never cross modes.
 
-### 4.8 琴葉 in Option B
+### 4.8 琴葉 and 貴音 in Option B
 
 - **Style matching:** given preserved `styles.xml` and the edited Markdown, the model proposes a style
   per block (`Heading2`, `ListParagraph`, `Quote`) which is validated against styles that actually
@@ -419,8 +462,8 @@ hybrid pass was skipped.
 | Layer | What it proves |
 | --- | --- |
 | `tsc --noEmit` | Strict types across engine, UI and tests. |
-| Vitest (`tests/*.test.ts`) | Parser coverage for four languages; spec Markdown/HTML; pseudocode styles and line maps; all five UML kinds and manual override; four test frameworks; docx ZIP → Markdown → edit → rebuild with styles, headers, footers, media and margins intact; bundle store round trip. |
-| Playwright (`tests/e2e/*.spec.ts`) | Live site: five tools exercised for real, Mermaid actually rendered, docx round trip downloaded, theme switch, kebab menu, help modal, 390px layout with zero horizontal overflow, zero console/network errors. |
+| Vitest (`tests/*.test.ts`) | Parser coverage for four languages; spec Markdown/HTML; pseudocode styles and line maps; all five UML kinds and manual override; four test frameworks; docx ZIP → Markdown → edit → rebuild with styles, headers, footers, media and margins intact; bundle store round trip; specification parsing in all three Markdown shapes and code generation for TypeScript, Python, Java and Go, including the 枝織 → 貴音 round trip. |
+| Playwright (`tests/e2e/*.spec.ts`) | Live site: six tools exercised for real, Mermaid actually rendered, docx round trip downloaded, 貴音 sample specification generating and downloading a `.ts` file, theme switch, kebab menu, help modal, 390px layout with zero horizontal overflow, zero console/network errors. |
 
 ## 6. Deployment
 

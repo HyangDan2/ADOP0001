@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "HD2Lab Aosongkan - 5-in-1 Code & Document Suite (Shiori, Yayoi, Kozue, Haruhi, Kotoha), 100% in-browser",
+  "description": "HD2Lab Aomatsukan - 5-in-1 Code & Document Suite (Shiori, Yayoi, Kozue, Haruhi, Kotoha), 100% in-browser",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

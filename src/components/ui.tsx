@@ -58,7 +58,7 @@ export function LineEditor(props: {
         spellCheck={false}
         autoCapitalize="off"
         autoCorrect="off"
-        aria-label={props.ariaLabel ?? 'Source code'}
+        aria-label={props.ariaLabel ?? 'ソースコード'}
         placeholder={props.placeholder}
         readOnly={props.readOnly}
         onChange={(event) => props.onChange(event.target.value)}

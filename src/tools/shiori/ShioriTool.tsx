@@ -7,12 +7,12 @@ import { ALL_SECTIONS, ShioriAdapter, type ShioriOutput, type SpecSection } from
 const adapter = new ShioriAdapter();
 
 const SECTION_LABEL: Record<SpecSection, string> = {
-  overview: 'Overview',
-  contracts: 'Contracts',
-  behaviour: 'Behaviour',
-  errors: 'Errors',
-  dependencies: 'Dependencies',
-  types: 'Types',
+  overview: '概要',
+  contracts: 'コントラクト',
+  behaviour: '振る舞い',
+  errors: 'エラー',
+  dependencies: '依存関係',
+  types: '型定義',
 };
 
 type View = 'preview' | 'markdown' | 'html';
@@ -46,8 +46,16 @@ export function ShioriTool() {
       });
       setOutput(result.output);
       setElapsed(result.elapsedMs);
+      try {
+        localStorage.setItem(
+          'adop0001.shiori.latest',
+          JSON.stringify({ markdown: result.output.markdown, fileName: name, savedAt: new Date().toISOString() }),
+        );
+      } catch {
+        /* storage unavailable: 貴音 offers its own samples instead */
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The specification could not be generated.');
+      setError(cause instanceof Error ? cause.message : '仕様書を生成できませんでした。');
     } finally {
       setBusy(false);
     }
@@ -104,11 +112,11 @@ export function ShioriTool() {
     <>
       <div className="panes">
         <ToolPane
-          title="Source input"
+          title="ソース入力"
           actions={
             <>
               <label className="btn btn-sm">
-                Upload
+                アップロード
                 <input
                   type="file"
                   accept=".ts,.tsx,.js,.jsx,.mjs,.cjs,.py,.java,.go,.txt"
@@ -120,15 +128,15 @@ export function ShioriTool() {
                 />
               </label>
               <button type="button" className="btn btn-sm btn-ghost" onClick={() => setSource('')}>
-                Clear
+                クリア
               </button>
             </>
           }
           foot={
             <>
               <span>{fileName}</span>
-              <span>{source.split('\n').length} lines</span>
-              <span>{source.length.toLocaleString()} chars</span>
+              <span>{source.split('\n').length} 行</span>
+              <span>{source.length.toLocaleString()} 文字</span>
             </>
           }
         >
@@ -151,18 +159,18 @@ export function ShioriTool() {
             <LineEditor
               value={source}
               onChange={setSource}
-              placeholder="Paste code here, drop a file, or pick a sample."
-              ariaLabel="Source code"
+              placeholder="ここにコードを貼り付けるか、ファイルをドロップするか、サンプルを選択してください。"
+              ariaLabel="ソースコード"
             />
-            <div className={`dropzone ${drop.active ? 'active' : ''}`}>Drop a source file to analyse</div>
+            <div className={`dropzone ${drop.active ? 'active' : ''}`}>解析するソースファイルをドロップ</div>
           </div>
         </ToolPane>
 
         <ToolPane
-          title="Specification"
+          title="仕様書"
           actions={
             <>
-              <div className="tabs" role="tablist" aria-label="Specification view">
+              <div className="tabs" role="tablist" aria-label="仕様書の表示">
                 {(['preview', 'markdown', 'html'] as View[]).map((item) => (
                   <button
                     key={item}
@@ -173,7 +181,7 @@ export function ShioriTool() {
                     onClick={() => setView(item)}
                     data-testid={`shiori-tab-${item}`}
                   >
-                    {item === 'preview' ? 'Preview' : item === 'markdown' ? 'Markdown' : 'HTML'}
+                    {item === 'preview' ? 'プレビュー' : item === 'markdown' ? 'Markdown' : 'HTML'}
                   </button>
                 ))}
               </div>
@@ -182,7 +190,7 @@ export function ShioriTool() {
           foot={
             <>
               <span>
-                {busy ? 'Weaving…' : `Generated in ${elapsed} ms`}
+                {busy ? '生成中…' : `${elapsed} ms で生成`}
               </span>
               <span>{fileName.replace(/\.[^.]+$/, '')}.spec.md</span>
             </>
@@ -201,8 +209,8 @@ export function ShioriTool() {
               </label>
             ))}
             <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <button type="button" className="btn btn-sm" disabled={!output} onClick={() => void copyText(output?.markdown ?? '').then((ok) => showToast(ok ? 'Markdown copied' : 'Copy failed'))}>
-                Copy
+              <button type="button" className="btn btn-sm" disabled={!output} onClick={() => void copyText(output?.markdown ?? '').then((ok) => showToast(ok ? 'Markdown をコピーしました' : 'コピーに失敗しました'))}>
+                コピー
               </button>
               <button type="button" className="btn btn-sm" disabled={!output} onClick={() => download('md')}>
                 .md
@@ -214,8 +222,8 @@ export function ShioriTool() {
           </div>
 
           <div className="scroll">
-            {error ? <EmptyHint title="Generation failed">{error}</EmptyHint> : null}
-            {!error && !output ? <EmptyHint title="Nothing to weave yet">Paste or drop a source file.</EmptyHint> : null}
+            {error ? <EmptyHint title="生成に失敗しました">{error}</EmptyHint> : null}
+            {!error && !output ? <EmptyHint title="まだ仕様書がありません">ソースファイルを貼り付けるかドロップしてください。</EmptyHint> : null}
             {!error && output && view === 'markdown' ? (
               <pre className="md-view" data-testid="shiori-markdown">{output.markdown}</pre>
             ) : null}
@@ -316,9 +324,9 @@ export function ShioriTool() {
         </ToolPane>
       </div>
       <div className="statusbar">
-        <span className="dot" /> <span>Local static engine</span>
-        <span>{busy ? 'busy' : 'ready'}</span>
-        <span className={error ? 'err' : 'ok'}>{error ? `error: ${error}` : 'no errors'}</span>
+        <span className="dot" /> <span>ローカル静的解析</span>
+        <span>{busy ? '処理中' : '待機中'}</span>
+        <span className={error ? 'err' : 'ok'}>{error ? `エラー: ${error}` : 'エラーなし'}</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
     </>

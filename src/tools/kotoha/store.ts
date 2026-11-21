@@ -79,5 +79,5 @@ export async function clearBundles(): Promise<void> {
 }
 
 export function storageLabel(): string {
-  return typeof indexedDB === 'undefined' ? 'memory' : 'IndexedDB';
+  return typeof indexedDB === 'undefined' ? 'メモリ' : 'IndexedDB';
 }

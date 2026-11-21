@@ -332,10 +332,10 @@ export class KozueAdapter implements EngineAdapter<KozueOutput, KozueOptions> {
   readonly japaneseTitle = '梢絵';
   readonly providerMode: ProviderMode = 'local-static';
   readonly capabilities = [
-    'Automatic UML kind selection with reasons and confidence',
-    'Sequence, Class, State, Activity and Component diagrams',
-    'Mermaid rendering with zoom and pan',
-    'SVG and PNG export, .mmd copy, TD/LR direction',
+    'UML の種類を理由と信頼度つきで自動判定',
+    'シーケンス図・クラス図・ステート図・アクティビティ図・コンポーネント図',
+    'Mermaid による描画とズーム・パン操作',
+    'SVG／PNG 書き出し、.mmd コピー、TD/LR の方向指定',
   ] as const;
 
   async run(request: EngineRequest<KozueOptions>): Promise<EngineResult<KozueOutput>> {

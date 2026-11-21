@@ -36,11 +36,11 @@ export class KotohaAdapter implements EngineAdapter<KotohaOutput, KotohaOptions>
   readonly japaneseTitle = '琴葉';
   readonly providerMode: ProviderMode = 'local-static';
   readonly capabilities = [
-    'OOXML document.xml to Markdown with styles, lists, tables, links and media',
-    'Style bundle (.kotoha.json + IndexedDB) for styles, theme, numbering, headers, footers, margins',
-    'Style & Attribute Inspector with editable fonts, size, spacing, margins and heading colours',
-    'Markdown rebuild into a valid .docx that keeps the original look',
-    'One-click sample .docx generation',
+    'OOXML の document.xml から、スタイル・リスト・表・リンク・メディアを保って Markdown へ',
+    'スタイル・テーマ・番号付け・ヘッダー・フッター・余白を保持するスタイルバンドル（.kotoha.json + IndexedDB）',
+    'フォント・サイズ・行間・余白・見出し色を編集できるスタイル＆属性インスペクタ',
+    'Markdown から元の見た目を保った有効な .docx への再構築',
+    'ワンクリックでのサンプル .docx 生成',
   ] as const;
 
   async run(request: EngineRequest<KotohaOptions>): Promise<EngineResult<KotohaOutput>> {
