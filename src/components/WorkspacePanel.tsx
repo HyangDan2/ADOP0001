@@ -182,7 +182,8 @@ export function WorkspacePanel(props: {
           // The directory picker attribute is non-standard but supported by every major browser.
           {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
           multiple
-          style={{ display: 'none' }}
+          className="visually-hidden"
+          aria-label="フォルダを選択"
           data-testid="workspace-folder-input"
           onChange={(event) => {
             const list = event.target.files;

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { copyText } from '../lib/util';
 
 /** One downloadable (or copyable) artifact of a tool. */
@@ -25,6 +25,14 @@ export function ExportModal(props: {
 }) {
   const [base, setBase] = useState(props.defaultBase);
   const [feedback, setFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') props.onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [props]);
   const cleanBase = base.trim().replace(/[\\/:*?"<>|]+/g, '-') || props.defaultBase;
 
   const announce = (message: string) => {
