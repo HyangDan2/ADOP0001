@@ -6,13 +6,15 @@
  * rules, error paths and declared data types — and also tolerates a plain
  * Markdown specification built from headings, tables, lists and fenced code.
  *
+ * Four output targets are supported: Python, C11, C++17 and an embedded MCU
+ * flavour of C (fixed-width integers, static buffers, status codes).
  * Everything the generator writes (code, identifiers, doc comments, diagnostics)
  * is English. Only the surrounding application chrome is Japanese.
  */
 import type { EngineAdapter, EngineRequest, EngineResult, ProviderMode } from '../../adapters/types';
 import { sha256Hex } from '../../lib/util';
 
-export type TakaneLanguage = 'typescript' | 'python' | 'java' | 'go';
+export type TakaneLanguage = 'python' | 'c' | 'cpp' | 'mcu';
 
 export interface TakaneOptions {
   language?: TakaneLanguage;
@@ -91,17 +93,17 @@ export interface TakaneOutput {
 }
 
 export const LANGUAGE_LABEL: Record<TakaneLanguage, string> = {
-  typescript: 'TypeScript',
   python: 'Python',
-  java: 'Java',
-  go: 'Go',
+  c: 'C',
+  cpp: 'C++',
+  mcu: 'MCU',
 };
 
 export const LANGUAGE_EXTENSION: Record<TakaneLanguage, string> = {
-  typescript: 'ts',
   python: 'py',
-  java: 'java',
-  go: 'go',
+  c: 'c',
+  cpp: 'cpp',
+  mcu: 'c',
 };
 
 /* ------------------------------------------------------------------ */
@@ -128,11 +130,6 @@ function pascal(name: string): string {
       return word.charAt(0).toUpperCase() + word.slice(1);
     })
     .join('');
-}
-
-function camel(name: string): string {
-  const full = pascal(name);
-  return full.charAt(0).toLowerCase() + full.slice(1);
 }
 
 function snake(name: string): string {
@@ -718,26 +715,137 @@ export function parseType(text: string): TypeNode {
   return { kind: 'ref', name: pascal(value) || 'Unknown' };
 }
 
-function typeScriptType(node: TypeNode): string {
+/* ------------------------------------------------------------------ */
+/* C, C++ and MCU type mapping                                         */
+/* ------------------------------------------------------------------ */
+
+/** Base C type for a value (no pointer decoration). */
+export function cBaseType(node: TypeNode): string {
   switch (node.kind) {
     case 'string':
-      return 'string';
+      return 'char';
     case 'number':
-      return 'number';
+      return 'double';
     case 'boolean':
-      return 'boolean';
+      return 'bool';
     case 'void':
       return 'void';
     case 'date':
-      return 'Date';
+      return 'int64_t';
     case 'any':
-      return 'unknown';
+      return 'void';
     case 'ref':
       return node.name;
     case 'array':
-      return `${typeScriptType(node.inner)}[]`;
+      return cBaseType(node.inner);
     case 'map':
-      return `Record<${typeScriptType(node.key)}, ${typeScriptType(node.value)}>`;
+      return 'void';
+  }
+}
+
+function cFieldLines(name: string, node: TypeNode, enums: Set<string>): string[] {
+  switch (node.kind) {
+    case 'string':
+      return [`    const char *${name};`];
+    case 'number':
+      return [`    double ${name};`];
+    case 'boolean':
+      return [`    bool ${name};`];
+    case 'date':
+      return [`    int64_t ${name};`];
+    case 'any':
+      return [`    void *${name};`];
+    case 'ref':
+      return [enums.has(node.name) ? `    ${node.name} ${name};` : `    ${node.name} *${name};`];
+    case 'array':
+      return [`    ${cBaseType(node.inner)} *${name};`, `    size_t ${name}_count;`];
+    case 'map':
+      return [`    void *${name};`];
+    default:
+      return [];
+  }
+}
+
+/** C++17 type for a value; `optional` wraps scalars in `std::optional`. */
+export function cppType(node: TypeNode, optional = false): string {
+  const plain = ((): string => {
+    switch (node.kind) {
+      case 'string':
+        return 'std::string';
+      case 'number':
+        return 'double';
+      case 'boolean':
+        return 'bool';
+      case 'void':
+        return 'void';
+      case 'date':
+        return 'std::int64_t';
+      case 'any':
+        return 'std::any';
+      case 'ref':
+        return node.name;
+      case 'array':
+        return `std::vector<${cppType(node.inner)}>`;
+      case 'map':
+        return `std::map<${cppType(node.key)}, ${cppType(node.value)}>`;
+    }
+  })();
+  if (!optional || plain === 'void') return plain;
+  if (node.kind === 'array' || node.kind === 'map') return plain;
+  return `std::optional<${plain}>`;
+}
+
+/** Strips transport wrappers such as `Promise<T>` for C-family doc comments. */
+function unwrapReturnType(text: string): string {
+  return text.replace(/^(?:Promise|CompletableFuture|Awaitable|Optional|Future|Task)\s*<([\s\S]+)>$/i, '$1').trim();
+}
+
+/** Names of the declared `enum` types. */
+function enumTypeNames(types: SpecTypeDecl[]): Set<string> {
+  return new Set(types.filter((type) => type.kind === 'enum').map((type) => pascal(type.name)));
+}
+
+/** Referenced type names with no declaration in this specification. */
+function undeclaredRefs(context: GenerationContext): string[] {
+  const declared = new Set(context.types.map((type) => pascal(type.name)));
+  const found = new Set<string>();
+  const visit = (node: TypeNode) => {
+    if (node.kind === 'ref' && !declared.has(node.name)) found.add(node.name);
+    if (node.kind === 'array') visit(node.inner);
+    if (node.kind === 'map') {
+      visit(node.key);
+      visit(node.value);
+    }
+  };
+  for (const type of context.types) for (const field of type.fields) visit(parseType(field.type));
+  for (const contract of context.contracts) {
+    for (const param of contract.params) visit(parseType(param.type));
+    visit(parseType(contract.returns));
+  }
+  return [...found].sort();
+}
+
+/** Fixed-width scalar used on the MCU target. */
+export function mcuScalarType(node: TypeNode): string {
+  switch (node.kind) {
+    case 'string':
+      return 'char';
+    case 'number':
+      return 'int32_t';
+    case 'boolean':
+      return 'bool';
+    case 'void':
+      return 'void';
+    case 'date':
+      return 'uint32_t';
+    case 'any':
+      return 'uintptr_t';
+    case 'ref':
+      return node.name;
+    case 'array':
+      return mcuScalarType(node.inner);
+    case 'map':
+      return 'uintptr_t';
   }
 }
 
@@ -761,57 +869,6 @@ function pythonType(node: TypeNode): string {
       return `list[${pythonType(node.inner)}]`;
     case 'map':
       return `dict[${pythonType(node.key)}, ${pythonType(node.value)}]`;
-  }
-}
-
-function javaType(node: TypeNode): string {
-  switch (node.kind) {
-    case 'string':
-      return 'String';
-    case 'number':
-      return 'double';
-    case 'boolean':
-      return 'boolean';
-    case 'void':
-      return 'void';
-    case 'date':
-      return 'Instant';
-    case 'any':
-      return 'Object';
-    case 'ref':
-      return node.name;
-    case 'array':
-      return `List<${javaType(node.inner)}>`;
-    case 'map':
-      return `Map<${javaType(node.key)}, ${javaType(node.value)}>`;
-  }
-}
-
-function goType(node: TypeNode, optional = false): string {
-  if (optional && node.kind !== 'array' && node.kind !== 'map') return `*${goBaseType(node)}`;
-  return goBaseType(node);
-}
-
-function goBaseType(node: TypeNode): string {
-  switch (node.kind) {
-    case 'string':
-      return 'string';
-    case 'number':
-      return 'float64';
-    case 'boolean':
-      return 'bool';
-    case 'void':
-      return '';
-    case 'date':
-      return 'time.Time';
-    case 'any':
-      return 'any';
-    case 'ref':
-      return node.name;
-    case 'array':
-      return `[]${goBaseType(node.inner)}`;
-    case 'map':
-      return `map[${goBaseType(node.key)}]${goBaseType(node.value)}`;
   }
 }
 
@@ -839,39 +896,184 @@ function pythonCondition(condition: string): string {
     .trim();
 }
 
-function javaCondition(condition: string): { expression: string; needsBlank: boolean } {
-  let needsBlank = false;
-  const expression = condition
-    .replace(/(!)?\s*([A-Za-z_$][\w$.]*)\.includes\(([^)]*)\)/g, (_all, bang: string, list: string, argument: string) =>
-      `${bang ? '!' : ''}${list}.contains(${argument.trim()})`,
-    )
-    .replace(/===/g, '==')
-    .replace(/\bnull\b/g, 'null')
-    .replace(/!([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)(?![\w$(])/g, (_all, path: string) => {
-      needsBlank = true;
-      return `Guards.isBlank(${path})`;
-    });
-  return { expression, needsBlank };
+/* ------------------------------------------------------------------ */
+/* Guard condition translation (C, C++ and the MCU target)             */
+/* ------------------------------------------------------------------ */
+
+export interface TranslatedCondition {
+  expression?: string;
+  todo?: string;
 }
 
-function goCondition(condition: string): string {
-  const toGoPath = (path: string) =>
-    path
-      .split('.')
-      .map((part, index) => (index === 0 ? camel(part) : pascal(part)))
-      .join('.');
-  const membership = condition.match(/^(!)?\s*([A-Za-z_$][\w$.]*)\.includes\(([^)]*)\)\s*$/);
-  if (membership) {
-    const call = `slices.Contains(${toGoPath(membership[2])}, ${membership[3].trim()})`;
-    return membership[1] ? `!${call}` : call;
+type PathStyle = 'c' | 'cpp' | 'mcu';
+
+type PathResolver = (path: string) => TypeNode | null;
+
+function splitLogicalTopLevel(condition: string): { operator: '&&' | '||' | null; parts: string[] } {
+  let depth = 0;
+  let current = '';
+  const parts: string[] = [];
+  let operator: '&&' | '||' | null = null;
+  for (let index = 0; index < condition.length; index += 1) {
+    const char = condition[index];
+    if ('([{'.includes(char)) depth += 1;
+    if (')]}'.includes(char)) depth -= 1;
+    if (depth === 0 && (condition.startsWith('&&', index) || condition.startsWith('||', index))) {
+      parts.push(current);
+      operator = condition.slice(index, index + 2) as '&&' | '||';
+      current = '';
+      index += 1;
+      continue;
+    }
+    current += char;
   }
-  const negated = condition.match(/^!\s*([A-Za-z_$][\w$.]*)\s*$/);
-  if (negated) return `isZero(${toGoPath(negated[1])})`;
-  return condition
-    .replace(/([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)/g, (path) => toGoPath(path))
-    .replace(/\bundefined\b/g, 'nil')
-    .replace(/===/g, '==')
-    .replace(/!==/g, '!=');
+  parts.push(current);
+  return { operator, parts: parts.map((part) => part.trim()).filter(Boolean) };
+}
+
+function toPath(path: string, style: PathStyle): string {
+  const segments = path.split('.').filter(Boolean);
+  if (!segments.length) return path;
+  const [head, ...rest] = segments;
+  if (!rest.length) return snake(head);
+  const separator = style === 'cpp' ? '.' : '->';
+  return `${snake(head)}${separator}${rest.map((segment) => snake(segment)).join(separator)}`;
+}
+
+function needsParens(expression: string): boolean {
+  if (expression.startsWith('(')) return false;
+  return / && | \|\| /.test(expression);
+}
+
+function negatePath(path: string, style: PathStyle, resolve: PathResolver): TranslatedCondition {
+  const node = resolve(path);
+  const translated = toPath(path, style);
+  if (style === 'cpp') {
+    switch (node?.kind) {
+      case 'string':
+      case 'array':
+      case 'map':
+        return { expression: `${translated}.empty()` };
+      case 'number':
+      case 'boolean':
+      case 'date':
+        return { expression: `${translated} == 0` };
+      case 'any':
+        return { expression: `!${translated}.has_value()` };
+      default:
+        return { todo: path };
+    }
+  }
+  if (style === 'mcu') {
+    switch (node?.kind) {
+      case 'string':
+        return { expression: `${translated}[0] == '\\0'` };
+      case 'number':
+      case 'date':
+      case 'any':
+        return { expression: `${translated} == 0` };
+      case 'boolean':
+        return { expression: `!${translated}` };
+      default:
+        return { todo: path };
+    }
+  }
+  switch (node?.kind) {
+    case 'string':
+    case 'any':
+    case 'ref':
+    case 'array':
+    case 'map':
+      return { expression: `${translated} == NULL` };
+    case 'number':
+    case 'boolean':
+    case 'date':
+      return { expression: `${translated} == 0` };
+    default:
+      return { todo: path };
+  }
+}
+
+function comparePath(
+  path: string,
+  operator: string,
+  literal: string,
+  style: PathStyle,
+  resolve: PathResolver,
+): TranslatedCondition {
+  const node = resolve(path);
+  const translated = toPath(path, style);
+  const op = operator === '===' ? '==' : operator === '!==' ? '!=' : operator;
+  const text = literal.trim();
+  const quoted = /^'[^']*'$|^"[^"]*"$/.test(text);
+  if (node?.kind === 'string' && quoted) {
+    if (style === 'cpp') return { expression: `${translated} ${op} ${text}` };
+    return { expression: `strcmp(${translated}, ${text}) ${op} 0` };
+  }
+  if (node && (node.kind === 'number' || node.kind === 'date') && /^[-+]?[0-9.]+$/.test(text)) {
+    return { expression: `${translated} ${op} ${text}` };
+  }
+  if (node?.kind === 'boolean' && /^(true|false)$/.test(text)) {
+    return { expression: `${translated} ${op} ${text}` };
+  }
+  if (!node && /^[-+]?[0-9.]+$/.test(text)) return { expression: `${translated} ${op} ${text}` };
+  return { todo: `${path} ${operator} ${literal}` };
+}
+
+/**
+ * Translates a specification guard condition into a C-family expression.
+ * Anything that cannot be expressed faithfully (membership tests, comparisons
+ * against unknown paths) returns a `todo` note instead of invented code.
+ */
+export function translateCondition(condition: string, style: PathStyle, resolve: PathResolver): TranslatedCondition {
+  const trimmed = condition.trim();
+  if (!trimmed) return { todo: 'empty condition' };
+  if (/\.includes\(/.test(trimmed)) return { todo: trimmed };
+
+  const logical = splitLogicalTopLevel(trimmed);
+  if (logical.operator && logical.parts.length > 1) {
+    const translated = logical.parts.map((part) => translateCondition(part, style, resolve));
+    if (translated.some((item) => item.todo)) return { todo: trimmed };
+    return {
+      expression: translated
+        .map((item) => (needsParens(item.expression ?? '') ? `(${item.expression})` : item.expression ?? ''))
+        .join(` ${logical.operator} `),
+    };
+  }
+
+  const bare = trimmed.replace(/^\((.*)\)$/, '$1').trim();
+
+  const negated = bare.match(/^!\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$/);
+  if (negated) return negatePath(negated[1], style, resolve);
+
+  const comparison = bare.match(
+    /^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*(===|!==|==|!=|<=|>=|<|>)\s*(.+)$/,
+  );
+  if (comparison) return comparePath(comparison[1], comparison[2], comparison[3], style, resolve);
+
+  return { todo: trimmed };
+}
+
+/** Resolves `request.invoiceId` to the declared field type, when it is declared. */
+export function resolvePath(model: SpecInputModel, contract: SpecContract, path: string): TypeNode | null {
+  const segments = path.split('.').filter(Boolean);
+  if (!segments.length) return null;
+  const [head, ...rest] = segments;
+  const param = contract.params.find((item) => item.name === head);
+  if (!param) return null;
+  let node: TypeNode = parseType(param.type);
+  for (const segment of rest) {
+    if (node.kind === 'array') node = node.inner;
+    if (node.kind !== 'ref') return null;
+    const name = node.name;
+    const declaration =
+      model.types.find((type) => pascal(type.name) === name) ?? model.types.find((type) => type.name === name);
+    if (!declaration) return null;
+    const field = declaration.fields.find((item) => pascal(item.name) === pascal(segment) || item.name === segment);
+    if (!field) return null;
+    node = parseType(field.type);
+  }
+  return node;
 }
 
 /* ------------------------------------------------------------------ */
@@ -905,73 +1107,223 @@ function classGroups(contracts: SpecContract[]): { owner: string | null; members
   return [...groups.entries()].map(([owner, members]) => ({ owner: owner || null, members }));
 }
 
-function generateTypeScript(context: GenerationContext): string {
+interface CFunctionPlan {
+  name: string;
+  params: string[];
+  paramNames: string[];
+  outName?: string;
+  contract: SpecContract;
+}
+
+function cParamDecls(name: string, node: TypeNode, style: 'c' | 'mcu'): string[] {
+  const mcu = style === 'mcu';
+  switch (node.kind) {
+    case 'string':
+      return [`const char *${name}`];
+    case 'number':
+      return [mcu ? `int32_t ${name}` : `double ${name}`];
+    case 'boolean':
+      return [`bool ${name}`];
+    case 'date':
+      return [mcu ? `uint32_t ${name}` : `int64_t ${name}`];
+    case 'any':
+      return [mcu ? `uintptr_t ${name}` : `void *${name}`];
+    case 'void':
+      return [];
+    case 'ref':
+      return [`const ${node.name} *${name}`];
+    case 'array':
+      return [`const ${cBaseType(node.inner)} *${name}`, `size_t ${name}_count`];
+    case 'map':
+      return [mcu ? `uintptr_t ${name}` : `void *${name}`];
+  }
+}
+
+function cOutDecls(node: TypeNode, style: 'c' | 'mcu', name = 'out'): string[] {
+  if (style === 'mcu') {
+    if (node.kind === 'void') return [];
+    if (node.kind === 'string') return [`char *${name}`, `size_t ${name}_size`];
+    if (node.kind === 'array') {
+      return [`${mcuScalarType(node.inner)} *${name}`, `size_t ${name}_capacity`, `size_t *${name}_count`];
+    }
+    return [`${mcuScalarType(node)} *${name}`];
+  }
+  switch (node.kind) {
+    case 'void':
+      return [];
+    case 'string':
+      return [`const char **${name}`];
+    case 'number':
+      return [`double *${name}`];
+    case 'boolean':
+      return [`bool *${name}`];
+    case 'date':
+      return [`int64_t *${name}`];
+    case 'any':
+    case 'map':
+      return [`void **${name}`];
+    case 'ref':
+      return [`${node.name} *${name}`];
+    case 'array':
+      return [`${cBaseType(node.inner)} **${name}`, `size_t *${name}_count`];
+  }
+}
+
+function cFunctionPlan(contract: SpecContract, style: 'c' | 'mcu'): CFunctionPlan {
+  const params: string[] = [];
+  const paramNames: string[] = [];
+  for (const param of contract.params) {
+    const node = parseType(param.type);
+    const name = snake(param.name);
+    const decls = cParamDecls(name, node, style);
+    params.push(...decls);
+    paramNames.push(name);
+  }
+  const returnNode = parseType(contract.returns);
+  const outDecls = cOutDecls(returnNode, style);
+  params.push(...outDecls);
+  const prefix = contract.owner ? `${snake(contract.owner)}_` : '';
+  return {
+    name: `${prefix}${snake(contract.name)}`,
+    params,
+    paramNames,
+    outName: outDecls.length ? 'out' : undefined,
+    contract,
+  };
+}
+
+/**
+ * Emits a C11 header/implementation scaffold, and the same shape with
+ * fixed-width integers and static buffers for the MCU target.
+ * Contracts return a status code; the contract result travels through an
+ * out-parameter because a C function has a single return value.
+ */
+function generateC(context: GenerationContext, style: 'c' | 'mcu'): string {
+  const mcu = style === 'mcu';
+  const moduleUpper = snake(context.moduleName).toUpperCase() || 'MODULE';
+  const statusType = mcu ? 'McuStatus' : `${pascal(context.moduleName)}Status`;
+  const statusPrefix = mcu ? 'MCU' : moduleUpper;
+  const guardMacro = `${moduleUpper}_${mcu ? 'MCU_' : ''}H`;
   const out: string[] = [];
-  const note = context.model.languageHint ? ` Source language: ${context.model.languageHint}.` : '';
-  out.push('// Generated by HD2Lab Aomatsukan · Takane — deterministic scaffold.');
-  out.push(`// Specification: ${context.model.title}.${note} Replace every TODO before shipping.`, '');
+
+  out.push('/**');
+  out.push(` * ${context.model.title} - ${mcu ? 'bare-metal MCU' : 'C11'} scaffold.`);
+  out.push(' * Generated by HD2Lab Aomatsukan Takane (deterministic, in-browser).');
+  if (mcu) out.push(' * Fixed-width integers, static buffers, no dynamic allocation.');
+  out.push(` * Specification: ${context.model.title}. Replace every TODO before shipping.`);
+  out.push(' */', '');
+  out.push(`#ifndef ${guardMacro}`, `#define ${guardMacro}`, '');
+  for (const include of ['<stdbool.h>', '<stddef.h>', '<stdint.h>', '<string.h>']) out.push(`#include ${include}`);
+  out.push('', '#ifdef __cplusplus', 'extern "C" {', '#endif', '');
+
+  out.push('/** Status codes shared by every contract in this module. */');
+  out.push('typedef enum {');
+  out.push(`    ${statusPrefix}_OK = 0,`);
+  out.push(`    ${statusPrefix}_ERR_INVALID_ARG = -1,`);
+  out.push(`    ${statusPrefix}_ERR_UNIMPLEMENTED = -2`);
+  out.push(`} ${statusType};`, '');
+
+  if (mcu) {
+    out.push('/* Fixed-width aliases and build-time width checks for the target. */');
+    out.push('typedef uint8_t McuStatusByte;');
+    out.push(`typedef char ${snake(context.moduleName) || 'module'}_width_check[(sizeof(uint16_t) == 2U && sizeof(uint32_t) == 4U) ? 1 : -1];`);
+    out.push('');
+    const defines = new Set<string>();
+    for (const type of context.types) {
+      const upper = snake(type.name).toUpperCase();
+      if (type.fields.some((field) => parseType(field.type).kind === 'string')) defines.add(`#define ${upper}_TEXT_MAX 64U`);
+      if (type.fields.some((field) => parseType(field.type).kind === 'array')) defines.add(`#define ${upper}_ITEMS_MAX 8U`);
+    }
+    if (defines.size) out.push(...[...defines], '');
+  }
+
+  const enums = enumTypeNames(context.types);
+  const unknown = undeclaredRefs(context);
+  if (unknown.length) {
+    out.push('/* Types owned by another module; link the matching header. */');
+    for (const name of unknown) out.push(`typedef struct ${name} ${name};`);
+    out.push('');
+  }
 
   for (const type of context.types) {
-    if (type.doc) out.push(`/** ${type.doc} */`);
-    if (type.kind === 'enum') {
-      out.push(`export enum ${pascal(type.name)} {`);
-      for (const field of type.fields) out.push(`  ${pascal(field.name)} = '${snake(field.name)}',`);
-      out.push('}', '');
-      continue;
-    }
-    out.push(`export interface ${pascal(type.name)} {`);
+    if (type.kind !== 'enum') continue;
+    const name = pascal(type.name);
+    out.push(`/** ${type.name} - enumerated values declared in the specification. */`);
+    out.push('typedef enum {');
+    type.fields.forEach((field, index) => {
+      out.push(`    ${snake(field.name).toUpperCase()} = ${index},`);
+    });
+    out.push(`} ${name};`, '');
+  }
+
+  for (const type of context.types) {
+    const name = pascal(type.name);
+    if (type.kind === 'enum') continue;
+    out.push(`/** ${type.name} - data type declared in the specification. */`);
+    out.push(`typedef struct ${name} {`);
+    const upper = snake(type.name).toUpperCase();
     for (const field of type.fields) {
-      out.push(`  ${field.name}${field.optional ? '?' : ''}: ${typeScriptType(parseType(field.type))};`);
+      const node = parseType(field.type);
+      const fieldName = snake(field.name);
+      if (!mcu) {
+        for (const line of cFieldLines(fieldName, node, enums)) out.push(line);
+        continue;
+      }
+      if (node.kind === 'string') {
+        out.push(`    char ${fieldName}[${upper}_TEXT_MAX];`);
+      } else if (node.kind === 'array') {
+        out.push(`    ${mcuScalarType(node.inner)} ${fieldName}[${upper}_ITEMS_MAX];`, `    size_t ${fieldName}_count;`);
+      } else if (node.kind === 'map') {
+        out.push(`    /* ${fieldName}: associative containers are not supported on the MCU target. */`);
+      } else {
+        out.push(`    ${mcuScalarType(node)} ${fieldName};`);
+      }
     }
+    out.push(`} ${name};`, '');
+  }
+
+  const plans = context.contracts.map((contract) => cFunctionPlan(contract, style));
+
+  out.push('/* Prototypes */');
+  for (const plan of plans) out.push(`${statusType} ${plan.name}(${plan.params.join(', ')});`);
+  out.push('');
+
+  for (const plan of plans) {
+    const contract = plan.contract;
+    out.push('/**');
+    out.push(` * ${contract.name}${contract.owner ? ` (${contract.owner})` : ''}`);
+    out.push(' *');
+    for (const param of contract.params) out.push(` * @param ${snake(param.name)} ${param.type}.`);
+    if (plan.outName) out.push(` * @param[out] ${plan.outName} Receives the ${unwrapReturnType(contract.returns)} result.`);
+    out.push(` * @return ${statusPrefix}_OK on success, a negative status code on failure.`);
+    if (contract.async) out.push(' * @note Declared asynchronous in the specification; the scaffold is synchronous.');
+    out.push(' */');
+    out.push(`${statusType} ${plan.name}(${plan.params.join(', ')}) {`);
+    for (const guard of context.guardsFor(contract)) {
+      const translated = translateCondition(guard.condition, mcu ? 'mcu' : 'c', (path) =>
+        resolvePath(context.model, contract, path),
+      );
+      const message = errorMessageFor(context, guard, contract, mcu ? 'mcu' : 'c');
+      if (translated.expression) {
+        out.push(`    if (${translated.expression}) {`);
+        out.push(`        return ${statusPrefix}_ERR_INVALID_ARG; /* ${message} */`);
+        out.push('    }');
+      } else {
+        out.push(`    /* TODO: guard "${guard.condition}" could not be translated to ${mcu ? 'MCU C' : 'C'}. */`);
+      }
+    }
+    for (const errorPath of context.model.errorPaths.filter(
+      (item) => item.target.split('.').pop() === contract.name,
+    )) {
+      out.push(`    /* Error path: ${errorPath.error}${errorPath.message ? ` - ${errorPath.message}` : ''}. */`);
+    }
+    for (const paramName of plan.paramNames) out.push(`    (void)${paramName};`);
+    out.push(`    /* TODO: implement ${contract.owner ? `${contract.owner}.` : ''}${contract.name}. */`);
+    out.push(`    return ${statusPrefix}_ERR_UNIMPLEMENTED;`);
     out.push('}', '');
   }
 
-  for (const group of classGroups(context.contracts)) {
-    const doc = `Contracts from the specification: ${group.members.map((item) => item.name).join(', ')}.`;
-    if (group.owner) {
-      out.push(`/** ${doc} */`, `export class ${group.owner} {`);
-      for (const contract of group.members) {
-        const params = contract.params
-          .map((param) => `${param.name}${param.optional ? '?' : ''}: ${typeScriptType(parseType(param.type))}`)
-          .join(', ');
-        const plain = typeScriptType(parseType(contract.returns));
-        const returns = contract.async && plain !== 'void' && !/^Promise</.test(plain) ? `Promise<${plain}>` : plain;
-        out.push(`  /**`, `   * ${contract.name}`, `   * @returns ${returns}`, `   */`);
-        out.push(`  ${contract.visibility === 'internal' ? 'private ' : ''}${contract.async ? 'async ' : ''}${contract.name}(${params}): ${returns === 'void' ? 'void' : returns} {`);
-        for (const guard of context.guardsFor(contract)) {
-          out.push(`    if (${guard.condition}) {`);
-          out.push(`      throw new Error('${errorMessageFor(context, guard, contract, 'typescript')}');`);
-          out.push('    }');
-        }
-        for (const path of context.model.errorPaths.filter((item) => item.target && item.target.split('.').pop() === contract.name && !context.guardsFor(contract).some((guard) => guard.message === item.message))) {
-          out.push(`    // Error path in the specification: ${path.error}${path.message ? ` — ${path.message}` : ''}`);
-        }
-        out.push(`    // TODO: implement ${contract.name}.`);
-        out.push(returns === 'void' ? '    return;' : `    throw new Error('Not implemented: ${group.owner ? `${group.owner}.` : ''}${contract.name}');`);
-        out.push('  }', '');
-      }
-      if (out[out.length - 1] === '') out.pop();
-      out.push('}', '');
-      continue;
-    }
-    for (const contract of group.members) {
-      const params = contract.params
-        .map((param) => `${param.name}${param.optional ? '?' : ''}: ${typeScriptType(parseType(param.type))}`)
-        .join(', ');
-      const plain = typeScriptType(parseType(contract.returns));
-      const returns = contract.async && plain !== 'void' && !/^Promise</.test(plain) ? `Promise<${plain}>` : plain;
-      out.push(`/**`, ` * ${contract.name}`, ` * @returns ${returns}`, ` */`);
-      out.push(`export ${contract.async ? 'async ' : ''}function ${contract.name}(${params}): ${returns === 'void' ? 'void' : returns} {`);
-      for (const guard of context.guardsFor(contract)) {
-        out.push(`  if (${guard.condition}) {`);
-        out.push(`    throw new Error('${errorMessageFor(context, guard, contract, 'typescript')}');`);
-        out.push('  }');
-      }
-      out.push(`  // TODO: implement ${contract.name}.`);
-      out.push(returns === 'void' ? '  return;' : `  throw new Error('Not implemented: ${contract.name}');`);
-      out.push('}', '');
-    }
-  }
+  out.push('#ifdef __cplusplus', '}', '#endif', '', `#endif /* ${guardMacro} */`);
 
   return `${out.join('\n').trimEnd()}\n`;
 }
@@ -1062,168 +1414,134 @@ function generatePython(context: GenerationContext): string {
   return `${out.join('\n').trimEnd()}\n`;
 }
 
-function generateJava(context: GenerationContext): string {
-  const out: string[] = [];
-  out.push('// Generated by HD2Lab Aomatsukan · Takane — deterministic scaffold.');
-  out.push(`// Specification: ${context.model.title}. Replace every TODO before shipping.`);
-  out.push('package com.hd2lab.aomatsukan;', '');
-  const needsInstant = context.types.some((type) => type.fields.some((field) => parseType(field.type).kind === 'date'));
-  const needsList = JSON.stringify(context.types).includes('[]') || context.types.some((type) => type.fields.some((field) => parseType(field.type).kind === 'array'));
-  const needsMap = context.types.some((type) => type.fields.some((field) => parseType(field.type).kind === 'map'));
-  if (needsInstant) out.push('import java.time.Instant;');
-  if (needsList) out.push('import java.util.List;');
-  if (needsMap) out.push('import java.util.Map;');
-  if (needsInstant || needsList || needsMap) out.push('');
-
-  const blankNeeded = context.model.guards.some((guard) => guard.condition.includes('!') && /\.[A-Za-z_$]/.test(guard.condition));
-
-  for (const type of context.types) {
-    const name = pascal(type.name);
-    if (type.kind === 'enum') {
-      out.push(`/** Enumerated values declared in the specification. */`);
-      out.push(`public enum ${name} {`);
-      out.push(`    ${type.fields.map((field) => snake(field.name).toUpperCase()).join(', ')}`);
-      out.push('}', '');
-      continue;
-    }
-    out.push(`/** ${type.name} — data type declared in the specification. */`);
-    out.push(`public final class ${name} {`);
-    for (const field of type.fields) {
-      out.push(`    public final ${javaType(parseType(field.type))} ${field.name};`);
-    }
-    out.push('');
-    const args = type.fields.map((field) => `${javaType(parseType(field.type))} ${field.name}`).join(', ');
-    out.push(`    public ${name}(${args}) {`);
-    for (const field of type.fields) out.push(`        this.${field.name} = ${field.name};`);
-    out.push('    }');
-    out.push('}', '');
+function cppParamDecl(name: string, node: TypeNode, optional: boolean): string {
+  if (optional) {
+    const type = cppType(node, true);
+    if (node.kind === 'array' || node.kind === 'map') return `${type} ${name} = {}`;
+    return `${type} ${name} = std::nullopt`;
   }
-
-  const emitMethod = (contract: SpecContract, owner: string | null) => {
-    const params = contract.params.map((param) => `${javaType(parseType(param.type))} ${param.name}`).join(', ');
-    const returned = javaType(parseType(contract.returns));
-    const asyncPrefix = contract.async && returned !== 'void' ? `CompletableFuture<${returned}>` : returned;
-    out.push(`    /**`, `     * ${contract.name}`, `     * @return ${returned}`, `     */`);
-    out.push(`    public ${contract.visibility === 'internal' ? 'private ' : ''}${asyncPrefix} ${contract.name}(${params}) {`);
-    for (const guard of context.guardsFor(contract)) {
-      const converted = javaCondition(guard.condition);
-      out.push(`        if (${converted.expression}) {`);
-      out.push(`            throw new IllegalArgumentException("${errorMessageFor(context, guard, contract, 'java')}");`);
-      out.push('        }');
-    }
-    out.push(`        // TODO: implement ${owner ? `${owner}.` : ''}${contract.name}.`);
-    out.push(`        throw new UnsupportedOperationException("Not implemented: ${owner ? `${owner}.` : ''}${contract.name}");`);
-    out.push('    }', '');
-  };
-
-  for (const group of classGroups(context.contracts)) {
-    if (group.owner) {
-      out.push(`/** Contracts: ${group.members.map((item) => item.name).join(', ')}. */`);
-      out.push(`public class ${group.owner} {`);
-      for (const contract of group.members) emitMethod(contract, group.owner);
-      out.push('}', '');
-      continue;
-    }
-    for (const contract of group.members) {
-      out.push(`/** Module-level contract ${contract.name}. */`);
-      out.push(`public class ${pascal(contract.name)}Contract {`);
-      const params = contract.params.map((param) => `${javaType(parseType(param.type))} ${param.name}`).join(', ');
-      const returned = javaType(parseType(contract.returns));
-      out.push(`    public static ${returned} ${contract.name}(${params}) {`);
-      for (const guard of context.guardsFor(contract)) {
-        const converted = javaCondition(guard.condition);
-        out.push(`        if (${converted.expression}) {`);
-        out.push(`            throw new IllegalArgumentException("${errorMessageFor(context, guard, contract, 'java')}");`);
-        out.push('        }');
-      }
-      out.push(`        // TODO: implement ${contract.name}.`);
-      out.push(`        throw new UnsupportedOperationException("Not implemented: ${contract.name}");`);
-      out.push('    }');
-      out.push('}', '');
-    }
+  switch (node.kind) {
+    case 'string':
+      return `const std::string &${name}`;
+    case 'array':
+    case 'map':
+      return `const ${cppType(node)} &${name}`;
+    case 'ref':
+      return `const ${node.name} &${name}`;
+    case 'any':
+      return `const std::any &${name}`;
+    case 'void':
+      return '';
+    default:
+      return `${cppType(node)} ${name}`;
   }
-
-  if (blankNeeded) {
-    out.push('// Guard helper generated for falsy field checks in the specification.');
-    out.push('final class Guards {');
-    out.push('    static boolean isBlank(Object value) {');
-    out.push('        return value == null || (value instanceof String text && text.isBlank());');
-    out.push('    }');
-    out.push('}', '');
-  }
-
-  return `${out.join('\n').trimEnd()}\n`;
 }
 
-function generateGo(context: GenerationContext): string {
-  const out: string[] = [];
-  out.push('// Code generated by HD2Lab Aomatsukan · Takane. DO NOT EDIT by hand.');
-  out.push(`// Specification: ${context.model.title}. Replace every TODO before shipping.`);
-  out.push(`package ${snake(context.model.title.replace(/\.md$/i, '')) || 'module'}`, '');
-  const needsTime = context.types.some((type) => type.fields.some((field) => parseType(field.type).kind === 'date'));
-  const outImports: string[] = ['"context"', '"fmt"'];
-  if (context.model.guards.some((guard) => /\.includes\(/.test(guard.condition))) outImports.push('"slices"');
-  if (needsTime) outImports.push('"time"');
-  const imports = [...new Set(outImports)].sort();
-  out.push('import (');
-  for (const item of imports) out.push(`\t${item}`);
-  out.push(')', '');
+function cppNeeds(node: TypeNode, kind: TypeNode['kind'], seen = new Set<string>()): boolean {
+  if (node.kind === kind) return true;
+  if (node.kind === 'array') return cppNeeds(node.inner, kind, seen);
+  if (node.kind === 'map') return cppNeeds(node.key, kind, seen) || cppNeeds(node.value, kind, seen);
+  return false;
+}
 
-  for (const type of context.types) {
-    out.push(`// ${type.name} — data type declared in the specification.`);
-    out.push(`type ${pascal(type.name)} struct {`);
-    const width = Math.max(0, ...type.fields.map((field) => pascal(field.name).length));
-    for (const field of type.fields) {
-      const name = pascal(field.name).padEnd(width, ' ');
-      out.push(`\t${name} ${goType(parseType(field.type), field.optional)}`);
-    }
-    out.push('}', '');
+/** Emits a C++17 header-only scaffold with structs, `enum class` and guarded methods. */
+function generateCpp(context: GenerationContext): string {
+  const out: string[] = [];
+  const namespaceName = snake(context.moduleName) || 'module';
+  out.push(`// ${context.model.title} - C++17 scaffold.`);
+  out.push('// Generated by HD2Lab Aomatsukan Takane (deterministic, in-browser).');
+  out.push(`// Specification: ${context.model.title}. Replace every TODO before shipping.`);
+  out.push('', '#pragma once', '');
+  out.push('#include <cstdint>');
+  out.push('#include <optional>');
+  out.push('#include <stdexcept>');
+  out.push('#include <string>');
+  out.push('#include <vector>');
+  const allNodes: TypeNode[] = [];
+  for (const type of context.types) for (const field of type.fields) allNodes.push(parseType(field.type));
+  for (const contract of context.contracts) {
+    for (const param of contract.params) allNodes.push(parseType(param.type));
+    allNodes.push(parseType(contract.returns));
+  }
+  if (allNodes.some((node) => cppNeeds(node, 'map'))) out.push('#include <map>');
+  if (allNodes.some((node) => cppNeeds(node, 'any'))) out.push('#include <any>');
+  out.push('', `namespace ${namespaceName} {`, '');
+
+  const unknown = undeclaredRefs(context);
+  if (unknown.length) {
+    out.push('// Types owned by another translation unit.');
+    for (const name of unknown) out.push(`struct ${name};`);
+    out.push('');
   }
 
-  const usesContext = context.contracts.some((contract) => contract.owner);
-  const emitFunc = (contract: SpecContract, owner: string | null) => {
-    const receiver = owner ? `(service *${owner}) ` : '';
-    const exported = owner ? pascal(contract.name) : pascal(contract.name);
-    const params: string[] = [];
-    if (owner && usesContext) params.push('ctx context.Context');
-    for (const param of contract.params) {
-      params.push(`${snake(param.name)} ${goType(parseType(param.type), param.optional)}`);
+  for (const type of context.types) {
+    if (type.kind !== 'enum') continue;
+    const name = pascal(type.name);
+    out.push(`/** ${type.name} - enumerated values declared in the specification. */`);
+    out.push(`enum class ${name} {`);
+    for (const field of type.fields) out.push(`    ${snake(field.name)},`);
+    out.push('};', '');
+  }
+
+  for (const type of context.types) {
+    if (type.kind === 'enum') continue;
+    const name = pascal(type.name);
+    out.push(`/** ${type.name} - data type declared in the specification. */`);
+    out.push(`struct ${name} {`);
+    for (const field of type.fields) {
+      out.push(`    ${cppType(parseType(field.type), field.optional)} ${snake(field.name)}{};`);
     }
-    const returned = goType(parseType(contract.returns));
-    const returnSignature = returned ? `(${returned}, error)` : 'error';
-    out.push(`// ${exported} implements the specification contract ${owner ? `${owner}.` : ''}${contract.name}.`);
-    out.push(`func ${receiver}${exported}(${params.join(', ')}) ${returnSignature} {`);
+    if (!type.fields.length) out.push('    // No fields are declared in the specification.');
+    out.push('};', '');
+  }
+
+  const emitMethod = (contract: SpecContract, owner: string | null, indent: string) => {
+    const returnType = cppType(parseType(contract.returns));
+    const params = contract.params
+      .map((param) => cppParamDecl(snake(param.name), parseType(param.type), param.optional))
+      .filter(Boolean)
+      .join(', ');
+    const modifier = owner ? (contract.visibility === 'internal' ? 'private:' : 'public:') : '';
+    if (modifier) out.push(`${indent}${modifier}`);
+    out.push(`${indent}/**`);
+    out.push(`${indent} * ${contract.name}`);
+    if (contract.doc) out.push(`${indent} * ${contract.doc}`);
+    for (const param of contract.params) out.push(`${indent} * @param ${snake(param.name)} ${param.type}.`);
+    if (returnType !== 'void') out.push(`${indent} * @return ${unwrapReturnType(contract.returns)}.`);
+    out.push(`${indent} * @throws std::invalid_argument when a guard condition is violated.`);
+    if (contract.async) out.push(`${indent} * @note Declared asynchronous in the specification; run it on a worker.`);
+    out.push(`${indent} */`);
+    out.push(`${indent}${returnType === 'void' ? 'void' : returnType} ${snake(contract.name)}(${params}) {`);
+    const inner = `${indent}    `;
     for (const guard of context.guardsFor(contract)) {
-      out.push(`\tif ${goCondition(guard.condition)} {`);
-      const zero = returned ? `${returned}{}, ` : '';
-      out.push(`\t\treturn ${zero}fmt.Errorf("${errorMessageFor(context, guard, contract, 'go')}")`);
-      out.push('\t}');
+      const translated = translateCondition(guard.condition, 'cpp', (path) => resolvePath(context.model, contract, path));
+      const message = errorMessageFor(context, guard, contract, 'cpp');
+      if (translated.expression) {
+        out.push(`${inner}if (${translated.expression}) {`);
+        out.push(`${inner}    throw std::invalid_argument("${message}");`);
+        out.push(`${inner}}`);
+      } else {
+        out.push(`${inner}// TODO: guard "${guard.condition}" could not be translated to C++.`);
+      }
     }
-    out.push(`\t// TODO: implement ${exported}.`);
-    const zero = returned ? `${returned}{}, ` : '';
-    out.push(`\treturn ${zero}fmt.Errorf("not implemented: ${owner ? `${owner}.` : ''}${contract.name}")`);
-    out.push('}', '');
+    out.push(`${inner}// TODO: implement ${owner ? `${owner}.` : ''}${contract.name}.`);
+    out.push(`${inner}throw std::runtime_error("not implemented: ${owner ? `${owner}.` : ''}${contract.name}");`);
+    out.push(`${indent}}`, '');
   };
 
   for (const group of classGroups(context.contracts)) {
     if (group.owner) {
-      out.push(`// ${group.owner} groups the contracts declared in the specification.`);
-      out.push(`type ${group.owner} struct{}`, '');
-      for (const contract of group.members) emitFunc(contract, group.owner);
+      out.push(`/** ${group.owner} - contracts declared in the specification. */`);
+      out.push(`class ${group.owner} {`);
+      for (const contract of group.members) emitMethod(contract, group.owner, '    ');
+      if (out[out.length - 1] === '') out.pop();
+      out.push('};', '');
       continue;
     }
-    for (const contract of group.members) emitFunc(contract, null);
+    for (const contract of group.members) emitMethod(contract, null, '');
   }
 
-  const usesIsZero = context.model.guards.some((guard) => /^!\s*[A-Za-z_$][\w$.]*\s*$/.test(guard.condition));
-  if (usesIsZero) {
-    out.push('// isZero reports whether a value is the zero value of its type.');
-    out.push('func isZero[T comparable](value T) bool {');
-    out.push('\tvar zero T');
-    out.push('\treturn value == zero');
-    out.push('}', '');
-  }
-
+  out.push(`}  // namespace ${namespaceName}`);
   return `${out.join('\n').trimEnd()}\n`;
 }
 
@@ -1240,15 +1558,15 @@ export function generateCode(model: SpecInputModel, language: TakaneLanguage): {
 
   const baseName = snake(model.title.replace(/\.md$/i, '').replace(/^specification[-\s]*/i, '')) || 'module';
   switch (language) {
+    case 'c':
+      return { code: generateC(context, 'c'), fileName: `${baseName || 'module'}.c` };
+    case 'cpp':
+      return { code: generateCpp(context), fileName: `${baseName || 'module'}.cpp` };
+    case 'mcu':
+      return { code: generateC(context, 'mcu'), fileName: `${baseName || 'module'}_mcu.c` };
     case 'python':
-      return { code: generatePython(context), fileName: `${baseName || 'module'}.py` };
-    case 'java':
-      return { code: generateJava(context), fileName: `${pascal(model.title.replace(/\.md$/i, '')) || 'Module'}.java` };
-    case 'go':
-      return { code: generateGo(context), fileName: `${baseName || 'module'}.go` };
-    case 'typescript':
     default:
-      return { code: generateTypeScript(context), fileName: `${baseName || 'module'}.ts` };
+      return { code: generatePython(context), fileName: `${baseName || 'module'}.py` };
   }
 }
 
@@ -1277,14 +1595,15 @@ export class TakaneAdapter implements EngineAdapter<TakaneOutput, TakaneOptions>
   readonly providerMode: ProviderMode = 'local-static';
   readonly capabilities = [
     '枝織形式の仕様書（契約表・振る舞い・エラー経路・型定義）と、一般的な Markdown 仕様書の読み取り',
-    'TypeScript・Python・Java・Go の4言語へのコード生成',
+    'Python・C・C++・MCU の4言語へのコード生成',
     '型宣言・メソッド／関数シグネチャ・ガード節・エラー経路・Doc コメントの生成',
     '枝織の出力を読み込み、コード→仕様書→コードの往復をブラウザ内で試せる',
+    'Few-shot 例（Python・C・C++・MCU）をローカルに蓄え、オプションBのプロンプトへ差し込む準備ができる',
   ] as const;
 
   async run(request: EngineRequest<TakaneOptions>): Promise<EngineResult<TakaneOutput>> {
     const started = performance.now();
-    const language: TakaneLanguage = request.options?.language ?? 'typescript';
+    const language: TakaneLanguage = request.options?.language ?? 'python';
     const output = buildTakane(request.sourceName, request.source, language);
     const cacheKey = await sha256Hex(`${this.id}|${request.mode}|${request.source}|${language}`);
     const diagnostics = output.model.notes.map((note) => ({ severity: 'info' as const, message: note }));

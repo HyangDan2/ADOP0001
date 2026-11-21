@@ -80,7 +80,7 @@ export const TOOLS: ToolMeta[] = [
     label: '仕様書→コード',
     tagline: '仕様書から、動くコードの骨格を。',
     longDescription:
-      '構造化された Markdown 仕様書から、型宣言・クラス／関数シグネチャ・ガード節・エラー経路・Doc コメントを備えたスキャフォールドを、TypeScript・Python・Java・Go 向けに生成します。枝織の出力をそのまま読み込めるので、コード→仕様書→コードの往復をブラウザ内で確かめられます。',
+      '構造化された Markdown 仕様書から、型宣言・関数シグネチャ・ガード節・エラー経路・Doc コメントを備えたスキャフォールドを、Python・C・C++・MCU 向けに生成します。MCU は固定幅整数と静的バッファ、状態コードだけを使う組み込み向けの C です。枝織の出力をそのまま読み込めるので、コード→仕様書→コードの往復をブラウザ内で確かめられます。',
     adapter: new TakaneAdapter() as unknown as EngineAdapter<never, never>,
   },
 ];

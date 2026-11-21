@@ -55,11 +55,40 @@ export interface EngineAdapter<TOut, TOptions = Record<string, unknown>> {
   run(request: EngineRequest<TOptions>): Promise<EngineResult<TOut>>;
 }
 
+/**
+ * One locally stored reference example for few-shot prompting (Option B).
+ *
+ * Examples never leave the browser in Option A. When the hybrid pass is enabled
+ * they are redacted, token-budgeted and injected into the prompt exactly as the
+ * prompt preview shows them.
+ */
+export interface FewShotExample {
+  id: string;
+  toolId: ToolId;
+  title: string;
+  /** `pair` carries an input and an output; `output` is a reference artifact only. */
+  role: 'pair' | 'input' | 'output';
+  inputFileName?: string;
+  inputText?: string;
+  outputFileName?: string;
+  outputText: string;
+  /** Target output language or framework tag (Takane: python | c | cpp | mcu). */
+  targetLanguage?: string;
+  enabled: boolean;
+  estimatedTokens: number;
+  updatedAt: string;
+}
+
+/** How reference material is presented to the model in Option B. */
+export type PromptStrategy = 'zero-shot' | 'few-shot';
+
 /** Token/context budget for the planned AI pass (Option B). */
 export interface ContextBudget {
   maxInputTokens: number;
   maxOutputTokens: number;
   chunkOverlapTokens: number;
+  /** Cap for the few-shot block; source chunks get `maxInputTokens - maxFewShotTokens`. */
+  maxFewShotTokens: number;
 }
 
 export interface PreflightReport {
@@ -68,6 +97,10 @@ export interface PreflightReport {
   estimatedInputTokens: number;
   estimatedCostUsd?: number;
   redactions: number;
+  /** Number of enabled few-shot examples that would be transmitted. */
+  fewShotExampleCount: number;
+  /** Token cost of the enabled few-shot examples after redaction and truncation. */
+  fewShotTokens: number;
 }
 
 export interface HybridRequest<TOut, TOptions = Record<string, unknown>>
@@ -77,6 +110,9 @@ export interface HybridRequest<TOut, TOptions = Record<string, unknown>>
   budget?: ContextBudget;
   signal?: AbortSignal;
   _out?: TOut;
+  /** `few-shot` injects the enabled examples below ahead of the target source. */
+  promptStrategy?: PromptStrategy;
+  fewShotExamples?: FewShotExample[];
 }
 
 /**

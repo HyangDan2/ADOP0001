@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { EmptyHint, LineEditor, ToolPane, useDropFile } from '../../components/ui';
-import { copyText, downloadBlob } from '../../lib/util';
+import { ExportModal } from '../../components/ExportModal';
+import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
+import { useOpenedFile } from '../../lib/fileBus';
+import { downloadBlob } from '../../lib/util';
 import { SAMPLE_BY_EXT } from '../samples';
 import { ALL_SECTIONS, ShioriAdapter, type ShioriOutput, type SpecSection } from './adapter';
 
@@ -27,6 +30,7 @@ export function ShioriTool() {
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
 
   const run = async (text: string, name: string, activeSections: SpecSection[]) => {
@@ -83,9 +87,16 @@ export function ShioriTool() {
 
   const drop = useDropFile((file) => void loadFile(file));
 
-  const download = (kind: 'md' | 'html') => {
+  useOpenedFile('shiori', (opened) => {
+    setSource(opened.text);
+    setFileName(opened.name);
+    showToast(`${opened.path} を開きました`);
+  });
+
+  const baseName = fileName.replace(/\.[^.]+$/, '') || 'specification';
+
+  const download = (kind: 'md' | 'html', base: string) => {
     if (!output) return;
-    const base = fileName.replace(/\.[^.]+$/, '') || 'specification';
     if (kind === 'md') downloadBlob(`${base}.spec.md`, output.markdown, 'text/markdown;charset=utf-8');
     else downloadBlob(`${base}.spec.html`, output.html, 'text/html;charset=utf-8');
   };
@@ -115,11 +126,11 @@ export function ShioriTool() {
           title="ソース入力"
           actions={
             <>
-              <label className="btn btn-sm">
-                アップロード
+              <label className="btn btn-sm" data-testid="shiori-open">
+                ファイルを開く
                 <input
                   type="file"
-                  accept=".ts,.tsx,.js,.jsx,.mjs,.cjs,.py,.java,.go,.txt"
+                  accept={CODE_FILE_ACCEPT}
                   style={{ display: 'none' }}
                   onChange={(event) => {
                     const file = event.target.files?.[0];
@@ -209,14 +220,8 @@ export function ShioriTool() {
               </label>
             ))}
             <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <button type="button" className="btn btn-sm" disabled={!output} onClick={() => void copyText(output?.markdown ?? '').then((ok) => showToast(ok ? 'Markdown をコピーしました' : 'コピーに失敗しました'))}>
-                コピー
-              </button>
-              <button type="button" className="btn btn-sm" disabled={!output} onClick={() => download('md')}>
-                .md
-              </button>
-              <button type="button" className="btn btn-sm" disabled={!output} onClick={() => download('html')}>
-                .html
+              <button type="button" className="btn btn-sm btn-primary" disabled={!output} onClick={() => setExportOpen(true)} data-testid="shiori-export">
+                エクスポート
               </button>
             </span>
           </div>
@@ -329,6 +334,31 @@ export function ShioriTool() {
         <span className={error ? 'err' : 'ok'}>{error ? `エラー: ${error}` : 'エラーなし'}</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
+      {exportOpen && output ? (
+        <ExportModal
+          toolLabel="仕様書作成（枝織）"
+          defaultBase={baseName}
+          onClose={() => setExportOpen(false)}
+          formats={[
+            {
+              id: 'markdown',
+              label: '.spec.md',
+              description: '契約表・振る舞い・エラー経路を含む Markdown 仕様書',
+              fileName: (base) => `${base}.spec.md`,
+              run: (base) => download('md', base),
+              copy: () => output.markdown,
+            },
+            {
+              id: 'html',
+              label: '.spec.html',
+              description: 'そのまま配布できるスタンドアロン HTML 仕様書',
+              fileName: (base) => `${base}.spec.html`,
+              run: (base) => download('html', base),
+              copy: () => output.html,
+            },
+          ]}
+        />
+      ) : null}
     </>
   );
 }

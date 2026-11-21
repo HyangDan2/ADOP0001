@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { EmptyHint, LineEditor, ToolPane, useDropFile } from '../../components/ui';
-import { copyText, downloadBlob } from '../../lib/util';
+import { ExportModal } from '../../components/ExportModal';
+import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
+import { useOpenedFile } from '../../lib/fileBus';
+import { downloadBlob } from '../../lib/util';
 import { SAMPLE_BY_EXT } from '../samples';
-import { FRAMEWORK_LABEL, HaruhiAdapter, type Framework, type HaruhiOutput } from './adapter';
+import { FRAMEWORK_LABEL, HaruhiAdapter, outputFileName, type Framework, type HaruhiOutput } from './adapter';
 
 const adapter = new HaruhiAdapter();
 const FRAMEWORKS: Framework[] = ['vitest', 'jest', 'pytest', 'junit5', 'go'];
@@ -15,6 +18,7 @@ export function HaruhiTool() {
   const [tab, setTab] = useState<'code' | 'checklist'>('code');
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const timer = useRef<number | null>(null);
 
@@ -50,6 +54,12 @@ export function HaruhiTool() {
     setFileName(file.name);
   });
 
+  useOpenedFile('haruhi', (opened) => {
+    setSource(opened.text);
+    setFileName(opened.name);
+    showToast(`${opened.path} を開きました`);
+  });
+
   const showToast = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 1800);
@@ -62,11 +72,11 @@ export function HaruhiTool() {
           title="ソース入力"
           actions={
             <>
-              <label className="btn btn-sm">
-                アップロード
+              <label className="btn btn-sm" data-testid="haruhi-open">
+                ファイルを開く
                 <input
                   type="file"
-                  accept=".ts,.tsx,.js,.jsx,.mjs,.cjs,.py,.java,.go,.txt"
+                  accept={CODE_FILE_ACCEPT}
                   style={{ display: 'none' }}
                   onChange={async (event) => {
                     const file = event.target.files?.[0];
@@ -140,17 +150,8 @@ export function HaruhiTool() {
               </button>
             </div>
             <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              <button type="button" className="btn btn-sm" disabled={!output} onClick={() => void copyText(output?.code ?? '').then((ok) => showToast(ok ? 'コピーしました' : 'コピーに失敗しました'))}>
-                コピー
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm"
-                disabled={!output}
-                onClick={() => output && downloadBlob(output.fileName, output.code, 'text/plain;charset=utf-8')}
-                data-testid="haruhi-download"
-              >
-                ダウンロード
+              <button type="button" className="btn btn-sm btn-primary" disabled={!output} onClick={() => setExportOpen(true)} data-testid="haruhi-export">
+                エクスポート
               </button>
             </span>
           </div>
@@ -180,6 +181,23 @@ export function HaruhiTool() {
         <span className="ok">エラーなし</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
+      {exportOpen && output ? (
+        <ExportModal
+          toolLabel={`テスト生成（春日）· ${FRAMEWORK_LABEL[framework]}`}
+          defaultBase={fileName.replace(/\.[^.]+$/, '') || 'source'}
+          onClose={() => setExportOpen(false)}
+          formats={[
+            {
+              id: 'test',
+              label: `.${output.fileName.split('.').slice(1).join('.')}`,
+              description: `${FRAMEWORK_LABEL[framework]} 向けのテストファイル`,
+              fileName: (base) => outputFileName(framework, base),
+              run: (base) => downloadBlob(outputFileName(framework, base), output.code, 'text/plain;charset=utf-8'),
+              copy: () => output.code,
+            },
+          ]}
+        />
+      ) : null}
     </>
   );
 }

@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { EmptyHint, LineEditor, Segmented, ToolPane, useDropFile } from '../../components/ui';
-import { copyText, downloadBlob } from '../../lib/util';
+import { ExportModal } from '../../components/ExportModal';
+import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
+import { useOpenedFile } from '../../lib/fileBus';
+import { downloadBlob } from '../../lib/util';
 import { SAMPLE_BY_EXT } from '../samples';
 import { KozueAdapter, kindLabel, type Direction, type KozueOutput, type UmlKind } from './adapter';
 import { loadMermaid, type MermaidTheme } from './mermaid';
@@ -28,6 +31,7 @@ export function KozueTool() {
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [busy, setBusy] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [theme, setTheme] = useState<MermaidTheme>(() =>
@@ -109,17 +113,23 @@ export function KozueTool() {
     setFileName(file.name);
   });
 
+  useOpenedFile('kozue', (opened) => {
+    setSource(opened.text);
+    setFileName(opened.name);
+    showToast(`${opened.path} を開きました`);
+  });
+
   const showToast = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 1800);
   };
 
-  const exportSvg = () => {
+  const exportSvg = (base: string) => {
     if (!svg) return;
-    downloadBlob(`${fileName.replace(/\.[^.]+$/, '') || 'diagram'}-${activeKind}.svg`, svg, 'image/svg+xml;charset=utf-8');
+    downloadBlob(`${base}-${activeKind}.svg`, svg, 'image/svg+xml;charset=utf-8');
   };
 
-  const exportPng = async () => {
+  const exportPng = async (base: string) => {
     const element = diagramRef.current?.querySelector('svg');
     if (!element) return;
     const clone = element.cloneNode(true) as SVGSVGElement;
@@ -151,7 +161,7 @@ export function KozueTool() {
       context.fillRect(0, 0, width, height);
       context.drawImage(image, 0, 0, width, height);
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
-      if (blob) downloadBlob(`${fileName.replace(/\.[^.]+$/, '') || 'diagram'}-${activeKind}.png`, blob, 'image/png');
+      if (blob) downloadBlob(`${base}-${activeKind}.png`, blob, 'image/png');
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : 'PNG の書き出しに失敗しました。');
     } finally {
@@ -172,11 +182,11 @@ export function KozueTool() {
           title="ソース入力"
           actions={
             <>
-              <label className="btn btn-sm">
-                アップロード
+              <label className="btn btn-sm" data-testid="kozue-open">
+                ファイルを開く
                 <input
                   type="file"
-                  accept=".ts,.tsx,.js,.jsx,.mjs,.cjs,.py,.java,.go,.txt"
+                  accept={CODE_FILE_ACCEPT}
                   style={{ display: 'none' }}
                   onChange={async (event) => {
                     const file = event.target.files?.[0];
@@ -250,14 +260,8 @@ export function KozueTool() {
               onChange={setKind}
             />
             <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              <button type="button" className="btn btn-sm" disabled={!mermaidCode} onClick={() => void copyText(mermaidCode).then((ok) => showToast(ok ? 'Mermaid をコピーしました' : 'コピーに失敗しました'))}>
-                .mmd
-              </button>
-              <button type="button" className="btn btn-sm" disabled={!svg} onClick={exportSvg}>
-                SVG
-              </button>
-              <button type="button" className="btn btn-sm" disabled={!svg} onClick={() => void exportPng()}>
-                PNG
+              <button type="button" className="btn btn-sm btn-primary" disabled={!svg} onClick={() => setExportOpen(true)} data-testid="kozue-export">
+                エクスポート
               </button>
             </span>
           </div>
@@ -322,6 +326,37 @@ export function KozueTool() {
         <span className={renderError ? 'err' : 'ok'}>{renderError ? `エラー: ${renderError}` : 'エラーなし'}</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
+      {exportOpen && svg ? (
+        <ExportModal
+          toolLabel="UML自動設計（梢絵）"
+          defaultBase={fileName.replace(/\.[^.]+$/, '') || 'diagram'}
+          onClose={() => setExportOpen(false)}
+          formats={[
+            {
+              id: 'svg',
+              label: '.svg',
+              description: 'ベクター画像として保存できる UML 図',
+              fileName: (base) => `${base}-${activeKind}.svg`,
+              run: (base) => exportSvg(base),
+            },
+            {
+              id: 'png',
+              label: '.png',
+              description: 'スライドに貼れる 2 倍解像度の画像',
+              fileName: (base) => `${base}-${activeKind}.png`,
+              run: (base) => void exportPng(base),
+            },
+            {
+              id: 'mmd',
+              label: '.mmd',
+              description: 'Mermaid ソース（テキスト）',
+              fileName: (base) => `${base}-${activeKind}.mmd`,
+              run: (base) => downloadBlob(`${base}-${activeKind}.mmd`, mermaidCode, 'text/plain;charset=utf-8'),
+              copy: () => mermaidCode,
+            },
+          ]}
+        />
+      ) : null}
     </>
   );
 }

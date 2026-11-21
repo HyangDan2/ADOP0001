@@ -87,26 +87,10 @@ describe('Takane specification parser', () => {
 });
 
 describe('Takane code generation', () => {
-  it('generates TypeScript types, class methods, guards and JSDoc', () => {
-    const output = generate('typescript');
-    expect(output.fileName).toBe('payment_service.ts');
-    expect(output.stats).toMatchObject({ types: 3, methods: 3, guards: 4, errors: 2 });
-    expect(output.code).toContain('export interface PaymentRequest {');
-    expect(output.code).toContain('  currency?: string;');
-    expect(output.code).toContain('export enum PaymentStatus {');
-    expect(output.code).toContain('export class PaymentService {');
-    expect(output.code).toContain('async charge(request: PaymentRequest): Promise<PaymentResult> {');
-    expect(output.code).toContain('export async function refund(invoiceId: string, amount: number): Promise<RefundResult> {');
-    expect(output.code).toContain('export function quote(amount: number, currency?: string): Quote {');
-    expect(output.code).toContain('if (!request.invoiceId) {');
-    expect(output.code).toContain("throw new Error('invoiceId is required');");
-    expect(output.code).toContain('// TODO: implement charge.');
-    expect(output.code).toContain('@returns Promise<PaymentResult>');
-  });
-
-  it('generates Python dataclasses, snake_case members and typed methods', () => {
+  it('keeps Python dataclasses, snake_case members and typed methods', () => {
     const output = generate('python');
     expect(output.fileName).toBe('payment_service.py');
+    expect(output.stats).toMatchObject({ types: 3, methods: 3, guards: 4, errors: 2 });
     expect(output.code).toContain('@dataclass');
     expect(output.code).toContain('class PaymentRequest:');
     expect(output.code).toContain('    invoice_id: str');
@@ -118,41 +102,98 @@ describe('Takane code generation', () => {
     expect(output.code).toContain('from __future__ import annotations');
   });
 
-  it('generates Java classes, records of fields and blank-guards', () => {
-    const output = generate('java');
-    expect(output.fileName).toBe('PaymentService.java');
-    expect(output.code).toContain('public final class PaymentRequest {');
-    expect(output.code).toContain('    public final String invoiceId;');
-    expect(output.code).toContain('public CompletableFuture<PaymentResult> charge(PaymentRequest request) {');
-    expect(output.code).toContain('if (Guards.isBlank(request.invoiceId)) {');
-    expect(output.code).toContain('throw new IllegalArgumentException("invoiceId is required");');
-    expect(output.code).toContain('static boolean isBlank(Object value)');
+  it('emits a C11 header with structs, enums, prototypes and negative status codes', () => {
+    const output = generate('c');
+    expect(output.fileName).toBe('payment_service.c');
+    expect(output.code).toContain('#ifndef PAYMENT_SERVICE_H');
+    expect(output.code).toContain('#include <stdint.h>');
+    expect(output.code).toContain('PAYMENT_SERVICE_OK = 0,');
+    expect(output.code).toContain('PAYMENT_SERVICE_ERR_INVALID_ARG = -1,');
+    expect(output.code).toContain('typedef struct PaymentRequest {');
+    expect(output.code).toContain('    const char *invoice_id;');
+    expect(output.code).toContain('    double amount;');
+    expect(output.code).toContain('    PaymentStatus status;');
+    expect(output.code).toContain('PaymentServiceStatus payment_service_charge(const PaymentRequest *request, PaymentResult *out);');
+    expect(output.code).toContain('if (request->invoice_id == NULL) {');
+    expect(output.code).toContain('return PAYMENT_SERVICE_ERR_INVALID_ARG; /* invoiceId is required */');
+    expect(output.code).toContain('/* TODO: implement PaymentService.charge. */');
+    expect(output.code).toContain('return PAYMENT_SERVICE_ERR_UNIMPLEMENTED;');
+    expect(output.code).toContain('@param[out] out Receives the PaymentResult result.');
+    // Generated C never allocates and never declares a class.
+    expect(output.code).not.toContain('malloc(');
+    expect(output.code).not.toContain('class ');
   });
 
-  it('generates Go structs, exported methods and error returns', () => {
-    const output = generate('go');
-    expect(output.fileName).toBe('payment_service.go');
-    expect(output.code).toContain('package payment_service');
-    expect(output.code).toContain('type PaymentRequest struct {');
-    expect(output.code).toContain('\tInvoiceID string');
-    expect(output.code).toContain('\tCurrency  *string');
-    expect(output.code).toContain('func (service *PaymentService) Charge(ctx context.Context, request PaymentRequest) (PaymentResult, error) {');
-    expect(output.code).toContain('if isZero(request.InvoiceID) {');
-    expect(output.code).toContain('fmt.Errorf("invoiceId is required")');
-    expect(output.code).toContain('func isZero[T comparable](value T) bool {');
-    expect(output.code).toContain('return PaymentResult{}, fmt.Errorf("not implemented: PaymentService.charge")');
+  it('emits a C++17 header with enum class, std::optional and stdexcept guards', () => {
+    const output = generate('cpp');
+    expect(output.fileName).toBe('payment_service.cpp');
+    expect(output.code).toContain('#pragma once');
+    expect(output.code).toContain('namespace payment_service {');
+    expect(output.code).toContain('enum class PaymentStatus {');
+    expect(output.code).toContain('    std::optional<std::string> currency{};');
+    expect(output.code).toContain('struct PaymentRequest {');
+    expect(output.code).toContain('class PaymentService {');
+    expect(output.code).toContain('PaymentResult charge(const PaymentRequest &request) {');
+    expect(output.code).toContain('if (request.invoice_id.empty()) {');
+    expect(output.code).toContain('throw std::invalid_argument("invoiceId is required");');
+    expect(output.code).toContain('throw std::runtime_error("not implemented: PaymentService.charge");');
+    expect(output.code).toContain('#include <stdexcept>');
+  });
+
+  it('emits MCU C with fixed-width integers, static buffers and MCU status codes', () => {
+    const output = generate('mcu');
+    expect(output.fileName).toBe('payment_service_mcu.c');
+    expect(output.code).toContain('#ifndef PAYMENT_SERVICE_MCU_H');
+    expect(output.code).toContain('MCU_OK = 0,');
+    expect(output.code).toContain('MCU_ERR_INVALID_ARG = -1,');
+    expect(output.code).toContain('MCU_ERR_UNIMPLEMENTED = -2');
+    expect(output.code).toContain('typedef uint8_t McuStatusByte;');
+    expect(output.code).toContain('sizeof(uint16_t) == 2U');
+    expect(output.code).toContain('    char invoice_id[PAYMENT_REQUEST_TEXT_MAX];');
+    expect(output.code).toContain('    int32_t amount;');
+    expect(output.code).toContain("if (request->invoice_id[0] == '\\0') {");
+    expect(output.code).toContain('return MCU_ERR_INVALID_ARG;');
+    expect(output.code).toContain('return MCU_ERR_UNIMPLEMENTED;');
+    expect(output.code).not.toContain('malloc(');
+    expect(output.code).not.toContain('#include <stdlib.h>');
+  });
+
+  it('maps array fields to fixed buffers with a count on the MCU target', () => {
+    const output = buildTakane('order-workflow.spec.md', ORDER_SPEC, 'mcu');
+    expect(output.code).toContain('    OrderLine lines[ORDER_STATE_ITEMS_MAX];');
+    expect(output.code).toContain('    size_t lines_count;');
+    expect(output.code).toContain('McuStatus cancel(const char *order_id, const char *reason, OrderState *out);');
+    expect(output.code).toContain("if (order_id[0] == '\\0') {");
   });
 
   it('keeps every generated artifact in English', () => {
-    for (const language of ['typescript', 'python', 'java', 'go'] as TakaneLanguage[]) {
+    for (const language of ['python', 'c', 'cpp', 'mcu'] as TakaneLanguage[]) {
       const { code } = generateCode(parseSpecMarkdown(PAYMENT_SPEC, 'payment-service.spec.md'), language);
       expect(code).not.toMatch(/[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/);
     }
   });
+
+  it('reports an untouched guard as a TODO instead of inventing C code', () => {
+    const output = generate('c');
+    expect(output.code).toContain('/* TODO: guard "!SUPPORTED_CURRENCIES.includes(currency)" could not be translated to C. */');
+  });
+});
+
+describe('Takane language surface', () => {
+  it('offers exactly Python, C, C++ and MCU', () => {
+    for (const language of ['python', 'c', 'cpp', 'mcu'] as TakaneLanguage[]) {
+      const { fileName } = generateCode(parseSpecMarkdown(PAYMENT_SPEC, 'payment-service.spec.md'), language);
+      expect(fileName).toMatch(/\.(py|c|cpp)$/);
+    }
+    const extensions = (['python', 'c', 'cpp', 'mcu'] as TakaneLanguage[]).map(
+      (language) => generate(language).fileName,
+    );
+    expect(extensions).toEqual(['payment_service.py', 'payment_service.c', 'payment_service.cpp', 'payment_service_mcu.c']);
+  });
 });
 
 describe('Shiori to Takane round trip', () => {
-  it('turns a Shiori specification back into a code scaffold', async () => {
+  it('turns a Shiori specification back into Python and C scaffolds', async () => {
     const shiori = new ShioriAdapter();
     const result = await shiori.run({
       toolId: 'shiori',
@@ -167,13 +208,17 @@ describe('Shiori to Takane round trip', () => {
     const model = parseSpecMarkdown(spec, 'payment-service.spec.md');
     expect(model.contracts.some((contract) => contract.name === 'charge')).toBe(true);
 
-    const typescript = buildTakane('payment-service.spec.md', spec, 'typescript');
-    expect(typescript.code).toContain('export class PaymentService {');
-    expect(typescript.code).toContain('async charge(request: PaymentRequest): Promise<PaymentResult> {');
-    expect(typescript.code).toContain('export interface PaymentRequest {');
-    expect(typescript.stats.methods).toBeGreaterThan(0);
-
     const python = buildTakane('payment-service.spec.md', spec, 'python');
     expect(python.code).toContain('def charge(self, request: PaymentRequest)');
+    expect(python.stats.methods).toBeGreaterThan(0);
+
+    const c = buildTakane('payment-service.spec.md', spec, 'c');
+    expect(c.code).toContain('typedef struct PaymentRequest {');
+
+    const cpp = buildTakane('payment-service.spec.md', spec, 'cpp');
+    expect(cpp.code).toContain('PaymentResult charge(const PaymentRequest &request)');
+
+    const mcu = buildTakane('payment-service.spec.md', spec, 'mcu');
+    expect(mcu.code).toContain('MCU_ERR_UNIMPLEMENTED');
   });
 });

@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { EmptyHint, LineEditor, Segmented, ToolPane, useDropFile } from '../../components/ui';
-import { copyText, downloadBlob } from '../../lib/util';
+import { ExportModal } from '../../components/ExportModal';
+import { SPEC_FILE_ACCEPT } from '../../lib/fileKinds';
+import { useOpenedFile } from '../../lib/fileBus';
+import { downloadBlob } from '../../lib/util';
 import {
   LANGUAGE_EXTENSION,
   LANGUAGE_LABEL,
   TakaneAdapter,
+  buildTakane,
   type TakaneLanguage,
   type TakaneOutput,
 } from './adapter';
@@ -14,11 +18,17 @@ const adapter = new TakaneAdapter();
 const SHIORI_KEY = 'adop0001.shiori.latest';
 
 const LANGUAGES: { value: TakaneLanguage; label: string }[] = [
-  { value: 'typescript', label: 'TypeScript' },
   { value: 'python', label: 'Python' },
-  { value: 'java', label: 'Java' },
-  { value: 'go', label: 'Go' },
+  { value: 'c', label: 'C' },
+  { value: 'cpp', label: 'C++' },
+  { value: 'mcu', label: 'MCU' },
 ];
+
+/** File name for a language, honouring the edited base name. */
+function takaneFileName(language: TakaneLanguage, base: string): string {
+  if (language === 'mcu') return `${base}_mcu.c`;
+  return `${base}.${LANGUAGE_EXTENSION[language]}`;
+}
 
 interface ShioriRecord {
   markdown: string;
@@ -40,7 +50,7 @@ function readShioriRecord(): ShioriRecord | null {
 export function TakaneTool() {
   const [source, setSource] = useState(TAKANE_SAMPLES[0].markdown);
   const [fileName, setFileName] = useState(TAKANE_SAMPLES[0].fileName);
-  const [language, setLanguage] = useState<TakaneLanguage>('typescript');
+  const [language, setLanguage] = useState<TakaneLanguage>('python');
   const [view, setView] = useState<'preview' | 'code'>('preview');
   const [output, setOutput] = useState<TakaneOutput | null>(null);
   const [busy, setBusy] = useState(false);
@@ -48,6 +58,7 @@ export function TakaneTool() {
   const [toast, setToast] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [hasShiori, setHasShiori] = useState(() => Boolean(readShioriRecord()));
+  const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -87,6 +98,12 @@ export function TakaneTool() {
     setFileName(file.name);
   });
 
+  useOpenedFile('takane', (opened) => {
+    setSource(opened.text);
+    setFileName(opened.name);
+    showToast(`${opened.path} を開きました`);
+  });
+
   const showToast = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 1900);
@@ -105,10 +122,11 @@ export function TakaneTool() {
     showToast('枝織の最新仕様書を読み込みました');
   };
 
-  const download = () => {
-    if (!output) return;
-    downloadBlob(output.fileName, output.code, 'text/plain;charset=utf-8');
-    showToast(`${output.fileName} をダウンロードしました`);
+  const baseName = fileName.replace(/\.[^.]+$/, '') || 'module';
+
+  const download = (target: TakaneLanguage, base: string) => {
+    const built = buildTakane(fileName, source, target);
+    downloadBlob(takaneFileName(target, base), built.code, 'text/plain;charset=utf-8');
   };
 
   const stats = useMemo(
@@ -141,11 +159,11 @@ export function TakaneTool() {
           title="仕様書"
           actions={
             <>
-              <label className="btn btn-sm">
-                .md を開く
+              <label className="btn btn-sm" data-testid="takane-open">
+                ファイルを開く
                 <input
                   type="file"
-                  accept=".md,.markdown,.txt"
+                  accept={SPEC_FILE_ACCEPT}
                   style={{ display: 'none' }}
                   onChange={async (event) => {
                     const file = event.target.files?.[0];
@@ -243,16 +261,8 @@ export function TakaneTool() {
               </button>
             </div>
             <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-              <button
-                type="button"
-                className="btn btn-sm"
-                disabled={!output}
-                onClick={() => void copyText(output?.code ?? '').then((ok) => showToast(ok ? 'コードをコピーしました' : 'コピーに失敗しました'))}
-              >
-                コピー
-              </button>
-              <button type="button" className="btn btn-sm" disabled={!output} onClick={download} data-testid="takane-download">
-                .{LANGUAGE_EXTENSION[language]}
+              <button type="button" className="btn btn-sm btn-primary" disabled={!output} onClick={() => setExportOpen(true)} data-testid="takane-export">
+                エクスポート
               </button>
             </span>
           </div>
@@ -326,6 +336,45 @@ export function TakaneTool() {
         <span className={error ? 'err' : 'ok'}>{error ? `エラー: ${error}` : 'エラーなし'}</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
+      {exportOpen && output ? (
+        <ExportModal
+          toolLabel="仕様書→コード（貴音）"
+          defaultBase={baseName}
+          onClose={() => setExportOpen(false)}
+          note="選んだ言語で、いまの仕様書からその場で生成して書き出します。生成コードは英語のままです。"
+          formats={[
+            {
+              id: 'python',
+              label: '.py',
+              description: 'Python スキャフォールド（dataclass・型ヒント・docstring）',
+              fileName: (base) => takaneFileName('python', base),
+              run: (base) => download('python', base),
+              copy: () => output.code,
+            },
+            {
+              id: 'c',
+              label: '.c',
+              description: 'C11 スキャフォールド（struct・enum・プロトタイプ・状態コード）',
+              fileName: (base) => takaneFileName('c', base),
+              run: (base) => download('c', base),
+            },
+            {
+              id: 'cpp',
+              label: '.cpp',
+              description: 'C++17 スキャフォールド（struct・enum class・std::optional）',
+              fileName: (base) => takaneFileName('cpp', base),
+              run: (base) => download('cpp', base),
+            },
+            {
+              id: 'mcu',
+              label: '.c（MCU）',
+              description: 'MCU 向け C（uint8_t/uint32_t・静的バッファ・MCU_ERR 状態コード）',
+              fileName: (base) => takaneFileName('mcu', base),
+              run: (base) => download('mcu', base),
+            },
+          ]}
+        />
+      ) : null}
     </>
   );
 }

@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Emblem } from './components/Emblem';
 import { HelpModal } from './components/HelpModal';
+import { FewShotModal } from './components/FewShotModal';
+import { PromptPane } from './components/PromptPane';
+import { WorkspacePanel } from './components/WorkspacePanel';
 import { TOOLS, toolFromHash, type ToolMeta } from './adapters/registry';
+import type { ToolId } from './adapters/types';
+import { publishOpenedFile, type OpenedFile } from './lib/fileBus';
+import { activeExampleCounts } from './lib/fewShotStore';
 import { ShioriTool } from './tools/shiori/ShioriTool';
 import { YayoiTool } from './tools/yayoi/YayoiTool';
 import { KozueTool } from './tools/kozue/KozueTool';
@@ -11,6 +17,9 @@ import { TakaneTool } from './tools/takane/TakaneTool';
 
 type Theme = 'dark' | 'light';
 const THEME_KEY = 'adop0001.theme';
+const RAIL_KEY = 'adop0001.workspace.open';
+
+const ZERO_COUNTS: Record<ToolId, number> = { shiori: 0, yayoi: 0, kozue: 0, haruhi: 0, kotoha: 0, takane: 0 };
 
 function initialTheme(): Theme {
   try {
@@ -22,12 +31,35 @@ function initialTheme(): Theme {
   return 'dark';
 }
 
+function initialRail(): boolean {
+  try {
+    const saved = localStorage.getItem(RAIL_KEY);
+    if (saved === 'closed') return false;
+  } catch {
+    /* storage unavailable */
+  }
+  return true;
+}
+
 export default function App() {
   const [tool, setTool] = useState<ToolMeta>(() => toolFromHash(window.location.hash));
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [fewShotOpen, setFewShotOpen] = useState(false);
+  const [railOpen, setRailOpen] = useState(initialRail);
+  const [counts, setCounts] = useState<Record<ToolId, number>>(ZERO_COUNTS);
+  const [fewShotVersion, setFewShotVersion] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const refreshCounts = useCallback(() => {
+    setFewShotVersion((value) => value + 1);
+    void activeExampleCounts().then((next) => setCounts(next));
+  }, []);
+
+  useEffect(() => {
+    refreshCounts();
+  }, [refreshCounts]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -37,6 +69,14 @@ export default function App() {
       /* storage unavailable */
     }
   }, [theme]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(RAIL_KEY, railOpen ? 'open' : 'closed');
+    } catch {
+      /* storage unavailable */
+    }
+  }, [railOpen]);
 
   useEffect(() => {
     const onHash = () => setTool(toolFromHash(window.location.hash));
@@ -50,6 +90,7 @@ export default function App() {
       if (event.key === 'Escape') {
         setMenuOpen(false);
         setHelpOpen(false);
+        setFewShotOpen(false);
       }
       if (event.key === '?' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement)) {
         setHelpOpen((open) => !open);
@@ -96,8 +137,13 @@ export default function App() {
     setMenuOpen(false);
   };
 
+  const openFromWorkspace = (targetTool: ToolId, payload: OpenedFile) => {
+    if (targetTool !== tool.id) go(targetTool);
+    publishOpenedFile(targetTool, payload);
+  };
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${railOpen ? 'rail-open' : 'rail-closed'}`}>
       <header className="topbar">
         <a className="brand" href="#/shiori" onClick={() => go('shiori')} aria-label="HD2Lab 青松館 ホーム">
           <span style={{ color: 'var(--accent)' }}>
@@ -125,6 +171,33 @@ export default function App() {
           ))}
         </nav>
         <div className="topbar-actions">
+          <button
+            type="button"
+            className="chip-btn ws-toggle"
+            aria-pressed={railOpen}
+            aria-label={railOpen ? 'ワークスペースをたたむ' : 'ワークスペースを開く'}
+            title={railOpen ? 'ワークスペースをたたむ' : 'ワークスペースを開く'}
+            onClick={() => setRailOpen((open) => !open)}
+            data-testid="workspace-toggle"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
+              <rect x="3" y="5" width="18" height="14" rx="2" />
+              <path d="M9 5v14" />
+            </svg>
+            <span className="chip-label">ワークスペース</span>
+          </button>
+          <button
+            type="button"
+            className="chip-btn fs-open"
+            aria-label="Few-shot 例とプロンプトを開く"
+            title="Few-shot 例とプロンプト"
+            onClick={() => setFewShotOpen(true)}
+            data-testid="fewshot-button"
+          >
+            <span className="chip-label">Few-shot例</span>
+            <span className="chip-short">例</span>
+            <span className="chip-count" data-testid="fewshot-count">({counts[tool.id] ?? 0})</span>
+          </button>
           <button
             type="button"
             className="icon-btn"
@@ -209,24 +282,44 @@ export default function App() {
         </div>
       </header>
 
-      <main className="workspace" key={tool.id}>
-        <div className="tool-head">
-          <div>
-            <h1>
-              <span className="jp">{tool.japanese}</span>
-              <span>{tool.label}</span>
-            </h1>
-            <p>{tool.longDescription}</p>
+      <div className="app-body">
+        {railOpen ? (
+          <WorkspacePanel
+            activeToolId={tool.id}
+            onOpenFile={openFromWorkspace}
+            onFewShotAdded={refreshCounts}
+            onCollapse={() => setRailOpen(false)}
+          />
+        ) : null}
+
+        <main className="workspace" key={tool.id}>
+          <div className="tool-head">
+            <div>
+              <h1>
+                <span className="jp">{tool.japanese}</span>
+                <span>{tool.label}</span>
+              </h1>
+              <p>{tool.longDescription}</p>
+            </div>
+            <div className="head-actions">
+              <span className="badge soft">ブラウザ完結</span>
+              <span className="badge">ローカル静的解析</span>
+            </div>
           </div>
-          <div className="head-actions">
-            <span className="badge soft">ブラウザ完結</span>
-            <span className="badge">ローカル静的解析</span>
-          </div>
-        </div>
-        {body}
-      </main>
+          <PromptPane
+            tool={tool}
+            version={fewShotVersion}
+            onOpenManager={() => setFewShotOpen(true)}
+            onChanged={refreshCounts}
+          />
+          {body}
+        </main>
+      </div>
 
       {helpOpen ? <HelpModal tool={tool} onClose={() => setHelpOpen(false)} /> : null}
+      {fewShotOpen ? (
+        <FewShotModal tool={tool} onClose={() => setFewShotOpen(false)} onChanged={refreshCounts} />
+      ) : null}
     </div>
   );
 }

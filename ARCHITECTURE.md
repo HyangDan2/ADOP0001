@@ -14,7 +14,8 @@ The code is the source of truth for the interfaces; the excerpts below are quote
 | App UI: shell, switcher labels, badges, buttons, tabs, panel titles, status bar, toasts, Help modal, Kotoha inspector, `index.html` meta, `manifest.json`, `og-image.png` | Japanese (Japanese honorific register, developer-tool vocabulary) |
 | Repository docs (`README.md`, `ARCHITECTURE.md`) | English |
 | Code samples, source identifiers, comments, editor contents | English |
-| Tool outputs: 枝織 specification Markdown/HTML and its preview, 弥生 pseudocode and narrative/compact styles, 梢絵 Mermaid `.mmd` and detection explanations, 春日 generated test files, 琴葉 sample `.docx`, decomposed Markdown and rebuilt `.docx` | English |
+| Tool outputs: 枝織 specification Markdown/HTML and its preview, 弥生 pseudocode and narrative/compact styles, 梢絵 Mermaid `.mmd` and detection explanations, 春日 generated test files, 琴葉 sample `.docx`, decomposed Markdown and rebuilt `.docx`, 貴音 Python/C/C++/MCU scaffolds, the Option B prompt assembly preview | English |
+| Workspace rail, prompt/few-shot pane, export modal, few-shot modal | Japanese chrome, English file paths and code |
 
 Proper nouns and format names (`HD2Lab`, `Aomatsukan`, `Markdown`, `HTML`, `UML`, `Mermaid`,
 `SVG`, `PNG`, `JSZip`, `OOXML`, `IndexedDB`, `Vitest`, `Jest`, `Pytest`, `JUnit 5`, `Go testing`,
@@ -29,6 +30,10 @@ as they are in both surfaces.
 flowchart TB
   subgraph Browser["Browser tab (no network)"]
     UI[React shell<br/>top bar · tool switcher · help · kebab]
+    WS[Workspace rail (PC, 1024px+)<br/>folder tree · filter · attach]
+    PROMPT[Prompt · Few-shot pane<br/>instruction · example pills]
+    EXPORT[Export modal<br/>per-tool formats · copy]
+    FSS[(IndexedDB adop0001_fewshot_v1<br/>few-shot examples + bundle)]
     Registry[Engine registry<br/>src/adapters/registry.ts]
     subgraph Core["Shared analysis core"]
       Parser[src/lib/source.ts<br/>language-neutral model]
@@ -46,6 +51,10 @@ flowchart TB
     MER[Mermaid<br/>public/vendor/mermaid.min.js]
   end
   UI --> Registry
+  UI --> WS --> PROMPT
+  PROMPT --> FSS
+  WS --> FSS
+  UI --> EXPORT
   Registry --> S1 & S2 & S3 & S4 & S5 & S6
   S1 & S2 & S3 & S4 --> Parser
   S1 & S2 & S3 & S4 & S5 & S6 --> Util
@@ -81,8 +90,24 @@ sequenceDiagram
 Quoted from `src/adapters/types.ts`:
 
 ```ts
-export type ToolId = 'shiori' | 'yayoi' | 'kozue' | 'haruhi' | 'kotoha';
+export type ToolId = 'shiori' | 'yayoi' | 'kozue' | 'haruhi' | 'kotoha' | 'takane';
 export type ProviderMode = 'local-static' | 'hybrid-ai';
+export type PromptStrategy = 'zero-shot' | 'few-shot';
+
+export interface FewShotExample {
+  id: string;
+  toolId: ToolId;
+  title: string;
+  role: 'pair' | 'input' | 'output';
+  inputFileName?: string;
+  inputText?: string;
+  outputFileName?: string;
+  outputText: string;
+  targetLanguage?: string;   // takane: python | c | cpp | mcu
+  enabled: boolean;
+  estimatedTokens: number;
+  updatedAt: string;
+}
 
 export interface EngineRequest<TOptions = Record<string, unknown>> {
   toolId: ToolId;
@@ -119,6 +144,7 @@ export interface ContextBudget {
   maxInputTokens: number;
   maxOutputTokens: number;
   chunkOverlapTokens: number;
+  maxFewShotTokens: number;  // cap for the example block
 }
 
 export interface PreflightReport {
@@ -127,14 +153,18 @@ export interface PreflightReport {
   estimatedInputTokens: number;
   estimatedCostUsd?: number;
   redactions: number;
+  fewShotExampleCount: number;
+  fewShotTokens: number;
 }
 
 export interface HybridRequest<TOut, TOptions = Record<string, unknown>>
   extends EngineRequest<TOptions> {
-  consent: boolean;          // explicit opt-in gate, never implied
+  consent: boolean;              // explicit opt-in gate, never implied
   budget?: ContextBudget;
   signal?: AbortSignal;
   _out?: TOut;
+  promptStrategy?: PromptStrategy;
+  fewShotExamples?: FewShotExample[];
 }
 
 export interface HybridOrchestrator<TOut, TOptions = Record<string, unknown>> {
@@ -201,7 +231,7 @@ AST precision, and diagnostics surface that when nothing is found.
 | 梢絵 | model → five scored candidates → Mermaid for each kind → render selected | `KozueOutput` |
 | 春日 | model → cases (happy/boundary/guard/error) → framework emitter → checklist | `HaruhiOutput` |
 | 琴葉 | `.docx` bytes → JSZip → XML reader → Markdown + bundle → rebuild `.docx` | `KotohaOutput` |
-| 貴音 | Markdown specification → headings/tables/bullets/fences → `SpecInputModel` → per-language emitter (TS/Python/Java/Go) | `TakaneOutput` |
+| 貴音 | Markdown specification → headings/tables/bullets/fences → `SpecInputModel` → per-language emitter (Python/C/C++/MCU) | `TakaneOutput` |
 
 ### 3.3 Takane specification-to-code pipeline
 
@@ -213,22 +243,115 @@ flowchart LR
   HEAD --> MODEL[SpecInputModel<br/>contracts · types · guards · error paths]
   TABLE --> MODEL
   FENCE --> MODEL
-  MODEL --> TS[TypeScript emitter]
-  MODEL --> PY[Python emitter]
-  MODEL --> JV[Java emitter]
-  MODEL --> GO[Go emitter]
+  MODEL --> PY[Python emitter<br/>dataclass · typing · docstring]
+  MODEL --> C[C11 emitter<br/>typedef struct/enum · prototypes · status codes]
+  MODEL --> CPP[C++17 emitter<br/>struct · enum class · std::optional]
+  MODEL --> MCU[MCU C emitter<br/>fixed-width ints · static buffers · MCU_ERR_*]
 ```
 
 The parser accepts both the Markdown that 枝織 writes (`# Specification — …`, `## 2. Contract table`,
 `### `signature``, behaviour rules, error paths, data types) and a hand-written specification made of
 headings, tables, bullet lists and fenced code. The generated scaffold carries type declarations,
 class/module signatures with parameter defaults and return types, guard clauses derived from the
-behaviour rules, error paths, and JSDoc/Javadoc/docstring/Go doc comments. Every TODO marker points
-at the contract it belongs to. 枝織 stores its latest Markdown in `localStorage`
+behaviour rules, error paths, and language-native doc comments. Every TODO marker points
+at the contract it belongs to.
+
+Four output targets ship today, and 貴音 defaults to `python`:
+
+| Target | Shape | Notes |
+| --- | --- | --- |
+| `python` | `@dataclass`, `str, Enum`, typed methods, docstrings | `raise ValueError` on guards, `NotImplementedError` placeholder |
+| `c` | C11 header: `typedef enum` status codes, `typedef struct`, prototypes, definitions | contracts return `int32_t`-style status; the result travels through an out-parameter |
+| `cpp` | C++17 header: `namespace`, `struct`, `enum class`, `class`, `std::optional`, `std::vector` | `std::invalid_argument` on guards, `std::runtime_error` placeholder |
+| `mcu` | the C emitter in embedded mode | `<stdint.h>` fixed-width integers (`uint8_t`, `uint16_t`, `uint32_t`, `int32_t`), `char` buffers with `_TEXT_MAX`, fixed arrays with `_ITEMS_MAX`, `MCU_OK = 0` / `MCU_ERR_INVALID_ARG` / `MCU_ERR_UNIMPLEMENTED`, no `malloc` |
+
+Guard conditions are translated structurally rather than textually substituted: `!request.invoiceId`
+becomes `request->invoice_id == NULL` in C, `request.invoice_id.empty()` in C++, and
+`request->invoice_id[0] == '\0'` on the MCU target. A condition the translator cannot express
+faithfully (for example `SUPPORTED_CURRENCIES.includes(currency)`) is emitted as a `TODO` comment
+instead of invented code. 枝織 stores its latest Markdown in `localStorage`
 (`adop0001.shiori.latest`), so 貴音's **Load latest Shiori spec** button closes the
 code → specification → code loop without touching the network.
 
-### 3.4 Kotoha OOXML engine
+### 3.4 PC studio layout: workspace rail + centre stack + output
+
+At `min-width: 1024px` the app is a three-column studio; below that the same components stack and
+the rail and centre-top pane disappear.
+
+```mermaid
+flowchart LR
+  subgraph Studio["PC (>= 1024px)"]
+    direction LR
+    W["Workspace<br/>フォルダを開く · tree · filter<br/>open file · attach to few-shot"]
+    subgraph Centre["Centre column"]
+      direction TB
+      P["Prompt · Few-shot<br/>instruction box + attach icon<br/>example pills · tokens"]
+      I["Active target<br/>source · spec · docx"]
+    end
+    O["Output<br/>spec · pseudocode · UML · tests · code<br/>エクスポート"]
+  end
+  W --> I
+  P --> I
+  I --> O
+```
+
+| Column | Component | Behaviour |
+| --- | --- | --- |
+| Left (>= 1024px) | `src/components/WorkspacePanel.tsx` | `フォルダを開く` uses `window.showDirectoryPicker()` when available and falls back to a hidden `<input type="file" webkitdirectory multiple>`; the tree is built by `src/lib/workspace.ts` (`node_modules`, `.git`, `dist`, `build`, `.next` pruned), filtered by file name, and every file has an open action plus an attach-to-few-shot action. Collapsing is remembered in `localStorage` (`adop0001.workspace.open`). |
+| Centre top (>= 1024px) | `src/components/PromptPane.tsx` | Per-tool custom instruction (localStorage `adop0001.prompt.<toolId>`), Input/Output `ファイルを開く` pair, enabled example pills with token estimates, and the paperclip icon at the bottom-right of the instruction box (`aria-label` `Few-shot例示ファイルを追加`, numeric badge = active examples) that opens the manager. |
+| Centre bottom | the tool's first pane | The active input: code for 枝織/弥生/梢絵/春日, specification Markdown for 貴音, `.docx` or bundle for 琴葉. |
+| Right | the tool's second pane | The tool output, with a single `エクスポート` button. |
+
+Layout mechanics: `main.workspace` becomes the CSS grid
+`"head head" / "prompt output" / "input output" / "status status"`, and `.panes { display: contents }`
+promotes each tool's two `section.pane` elements into grid items, so a tool keeps its own markup while
+the shell owns placement. Below 1024px the grid collapses to the previous single-column flow.
+
+Files opened from the rail reach a tool through `src/lib/fileBus.ts`: the rail publishes
+`OpenedFile { path, name, text, file }` for the routed tool (`src/lib/fileKinds.ts`
+`targetToolForFile`), and a publish made before that tool mounts is queued and delivered on subscribe.
+
+### 3.5 Few-shot example store (Option A half of Option B)
+
+`src/lib/fewShotStore.ts` owns every example locally:
+
+```mermaid
+flowchart LR
+  UI[Few-shot modal / prompt pane] --> STORE[fewShotStore.ts]
+  STORE --> IDB[(IndexedDB<br/>adop0001_fewshot_v1)]
+  STORE -.fallback.-> LS[localStorage<br/>adop0001.fewshot.v1]
+  STORE -.fallback.-> MEM[in-memory map]
+  STORE --> BUNDLE[.fewshot.json<br/>kind adop0001.fewshot · v1]
+```
+
+* Entries are normalised on save: role derived from the presence of input text, token estimate
+  recomputed (`estimateTokens`: 4 ASCII characters ≈ 1 token, 1 CJK character ≈ 0.625 tokens),
+  `updatedAt` stamped.
+* `budgetExamples()` truncates deterministically: enabled examples in most-recent order, each one
+  either fits whole or is skipped so a single huge file cannot crowd out the rest.
+* `assemblePromptPreview()` and `renderPromptText()` build the exact text the Option B request would
+  carry (system → operator instructions → examples → target), which is what the `プロンプト合成プレビュー`
+  tab shows. Nothing is sent.
+* Bundle export/import validates `kind`, `version <= 1`, and per-example output text; imports merge by
+  id.
+
+### 3.6 Unified export
+
+One `src/components/ExportModal.tsx` serves all six tools. Each tool passes its formattable artifacts
+as `ExportFormat { label, description, fileName(base), run(base), copy? }`; the modal edits the base
+file name, previews every final name, downloads with one click and reports copy feedback. The output
+pane keeps only the `エクスポート` button, so the action bar stays quiet.
+
+| Tool | Formats |
+| --- | --- |
+| 枝織 | `.spec.md`, `.spec.html` (+ Markdown copy) |
+| 弥生 | `.pseudo.md`, `.pseudo.txt` (+ plain copy) |
+| 梢絵 | `.svg`, `.png`, `.mmd` (+ Mermaid copy) |
+| 春日 | the active framework's test file (+ copy) |
+| 琴葉 | rebuilt `.docx`, `.kotoha.json`, edited `.md` (+ Markdown copy) |
+| 貴音 | `.py`, `.c`, `.cpp`, `.c` (MCU) generated on demand (+ code copy) |
+
+### 3.7 Kotoha OOXML engine
 
 ```mermaid
 flowchart TB
@@ -442,7 +565,75 @@ hybrid pass was skipped.
   reuse), entries expire after 14 days, and the UI shows a "cached" badge with the original timestamp.
   Cache hits never cross modes.
 
-### 4.8 琴葉 and 貴音 in Option B
+### 4.8 Few-shot prompting pipeline
+
+The prompt pane and the few-shot store are the client half of this pipeline; Option A never executes
+it, but every input it needs is already collected and visible.
+
+```mermaid
+flowchart LR
+  EX[Enabled examples] --> RED[Redactor<br/>per example]
+  RED --> BUDGET[Token budget<br/>maxFewShotTokens]
+  BUDGET --> PROMPT[Prompt assembly<br/>system · instructions · examples · target]
+  SRC[Source chunks] --> RED2[Redactor]
+  RED2 --> BUDGET2[Chunk budget<br/>maxInputTokens - maxFewShotTokens]
+  PROMPT --> GATE{Consent gate}
+  BUDGET2 --> GATE
+  GATE -->|yes| API[Server-HQ / BYOK]
+  GATE -->|no| LOCAL[Option A result only]
+```
+
+**Request payload extension.** `HybridRequest` carries `promptStrategy: 'few-shot'` and
+`fewShotExamples: FewShotExample[]` beside the existing chunk list. The proxy accepts the examples as
+a sibling array:
+
+```json
+{
+  "tool": "takane",
+  "mode": "hybrid-ai",
+  "promptStrategy": "few-shot",
+  "language": "mcu",
+  "chunks": [{ "id": "c1", "kind": "types+signatures", "text": "…" }],
+  "examples": [
+    { "id": "ex1", "title": "gpio emitter", "role": "pair", "targetLanguage": "mcu",
+      "input": "…spec…", "output": "…MCU C…", "inputTokens": 210, "outputTokens": 480 }
+  ]
+}
+```
+
+**Redaction before counting.** `Redactor` runs on every example (and on every chunk) before token
+budgeting; `PreflightReport.redactions` includes example redactions, and a payload that still matches a
+secret pattern blocks `preflight()` — unredacted secrets never travel just because they sat in a
+reference file.
+
+**Budget partitioning.** `maxFewShotTokens` (default 2000) caps the example block; source chunks get
+`maxInputTokens - fewShotTokens`. Examples are offered in most-recent order and either fit whole or are
+skipped (`budgetExamples()`), which is deterministic and identical to the preview. The consent gate
+shows both numbers: `利用する例 N 件（約 X トークン）` and `ソース 約 Y トークン`.
+
+**Consent gate.** `runHybrid()` refuses without `consent === true`, and the gate lists the exact
+examples (title, language, tokens) that would be transmitted. Toggling an example off in the pane is
+enough to keep it out of the request.
+
+**Semantic cache key.** The cache key becomes
+`sha256(source + tool + mode + options + schemaVersion + normalizedFewShotHash)`, where
+`normalizedFewShotHash` is `sha256` of the enabled examples' `id`, `updatedAt` and redacted text in
+order. An edited example therefore misses the cache instead of reusing a stale completion, and cache
+hits still never cross modes.
+
+**貴音 Option B guidance.** For the four targets the reference examples steer:
+
+| Target | What the examples must show |
+| --- | --- |
+| `python` | dataclass naming, `str, Enum`, docstring layout, `raise ValueError` guards |
+| `c` | `typedef enum` status codes, out-parameter style, prototype-first ordering |
+| `cpp` | `enum class`, `std::optional` for optional fields, `std::invalid_argument` guards |
+| `mcu` | fixed-width `uint8_t`/`uint16_t`/`uint32_t`/`int32_t`, `char` buffers with `_TEXT_MAX`, static arrays with `_ITEMS_MAX`, `MCU_ERR_*` returns, no heap allocation |
+
+The merge rules of §4.6 still apply: the local deterministic scaffold wins on structure, and the model
+may only fill holes an example can justify.
+
+### 4.9 琴葉 and 貴音 in Option B
 
 - **Style matching:** given preserved `styles.xml` and the edited Markdown, the model proposes a style
   per block (`Heading2`, `ListParagraph`, `Quote`) which is validated against styles that actually
@@ -462,8 +653,8 @@ hybrid pass was skipped.
 | Layer | What it proves |
 | --- | --- |
 | `tsc --noEmit` | Strict types across engine, UI and tests. |
-| Vitest (`tests/*.test.ts`) | Parser coverage for four languages; spec Markdown/HTML; pseudocode styles and line maps; all five UML kinds and manual override; four test frameworks; docx ZIP → Markdown → edit → rebuild with styles, headers, footers, media and margins intact; bundle store round trip; specification parsing in all three Markdown shapes and code generation for TypeScript, Python, Java and Go, including the 枝織 → 貴音 round trip. |
-| Playwright (`tests/e2e/*.spec.ts`) | Live site: six tools exercised for real, Mermaid actually rendered, docx round trip downloaded, 貴音 sample specification generating and downloading a `.ts` file, theme switch, kebab menu, help modal, 390px layout with zero horizontal overflow, zero console/network errors. |
+| Vitest (`tests/*.test.ts`) | Parser coverage for four languages; spec Markdown/HTML; pseudocode styles and line maps; all five UML kinds and manual override; four test frameworks; docx ZIP → Markdown → edit → rebuild with styles, headers, footers, media and margins intact; bundle store round trip; specification parsing in all three Markdown shapes and code generation for Python, C, C++ and MCU (fixed-width MCU types, static buffers, status codes, untranslated guards reported as TODO), including the 枝織 → 貴音 round trip; few-shot store CRUD, token estimation, budget truncation, `.fewshot.json` round trip and prompt preview; workspace tree building, noisy-directory pruning, filtering and file routing. |
+| Playwright (`tests/e2e/*.spec.ts`) | Live site: six tools exercised for real, Mermaid actually rendered, docx round trip downloaded, 貴音 generating Python/C/C++/MCU and exporting each through the export modal, few-shot upload → token count → prompt preview → reload persistence, workspace folder tree (PC) opening a file into the centre pane and attaching a few-shot example, 3-column layout at 1440x900, and a 390x844 pass with the rail hidden, zero horizontal overflow and zero console/network errors. |
 
 ## 6. Deployment
 

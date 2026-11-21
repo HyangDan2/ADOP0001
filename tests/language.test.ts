@@ -60,7 +60,7 @@ describe('tool outputs stay English', () => {
 
   it('貴音 writes English scaffolds for all four languages', async () => {
     const adapter = new TakaneAdapter();
-    for (const language of ['typescript', 'python', 'java', 'go'] as const) {
+    for (const language of ['python', 'c', 'cpp', 'mcu'] as const) {
       const result = await adapter.run({ ...request('takane'), options: { language } } as never);
       expect((result.output as { code: string }).code).not.toMatch(CJK);
     }

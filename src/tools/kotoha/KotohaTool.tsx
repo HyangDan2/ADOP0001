@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { EmptyHint, LineEditor, ToolPane } from '../../components/ui';
+import { ExportModal } from '../../components/ExportModal';
+import { DOCX_FILE_ACCEPT } from '../../lib/fileKinds';
+import { useOpenedFile } from '../../lib/fileBus';
 import { copyText, downloadBlob } from '../../lib/util';
 import { KotohaAdapter, type KotohaOutput } from './adapter';
 import type { BundleAttributes, KotohaBundle } from './bundle';
@@ -40,6 +43,7 @@ export function KotohaTool() {
   const [presets, setPresets] = useState<Preset[]>(readPresets);
   const [presetName, setPresetName] = useState('');
   const [elapsed, setElapsed] = useState(0);
+  const [exportOpen, setExportOpen] = useState(false);
 
   useEffect(() => {
     void loadLatestBundle().then((record) => {
@@ -156,7 +160,12 @@ export function KotohaTool() {
     }
   };
 
-  const exportBundle = () => {
+  useOpenedFile('kotoha', (opened) => {
+    if (/\.docx$/i.test(opened.name)) void loadDocx(opened.file);
+    else void loadBundleFile(opened.file);
+  });
+
+  const exportBundle = (base?: string) => {
     if (!document) return;
     const payload = {
       version: 1,
@@ -166,7 +175,7 @@ export function KotohaTool() {
       bundle: document.bundle,
     };
     downloadBlob(
-      `${document.bundle.fileName.replace(/\.docx$/i, '')}.kotoha.json`,
+      `${base ?? document.bundle.fileName.replace(/\.docx$/i, '')}.kotoha.json`,
       JSON.stringify(payload, null, 2),
       'application/json;charset=utf-8',
     );
@@ -207,10 +216,10 @@ export function KotohaTool() {
           actions={
             <>
               <label className="btn btn-sm">
-                .docx を開く
+                ファイルを開く
                 <input
                   type="file"
-                  accept=".docx"
+                  accept={DOCX_FILE_ACCEPT}
                   style={{ display: 'none' }}
                   data-testid="kotoha-file"
                   onChange={(event) => {
@@ -251,10 +260,10 @@ export function KotohaTool() {
                   {busy ? <span className="spinner" /> : null} サンプル .docx を生成
                 </button>
                 <label className="btn">
-                  .docx を開く
+                  ファイルを開く
                   <input
                     type="file"
-                    accept=".docx"
+                    accept={DOCX_FILE_ACCEPT}
                     style={{ display: 'none' }}
                     onChange={(event) => {
                       const file = event.target.files?.[0];
@@ -271,7 +280,7 @@ export function KotohaTool() {
                 <button type="button" className="btn btn-sm btn-primary" onClick={() => void rebuild(true)} disabled={busy || !attributesReady} data-testid="kotoha-rebuild">
                   {busy ? <span className="spinner" /> : null} .docx を再構築
                 </button>
-                <button type="button" className="btn btn-sm" onClick={exportBundle} data-testid="kotoha-export-bundle">
+                <button type="button" className="btn btn-sm" onClick={() => exportBundle()} data-testid="kotoha-export-bundle">
                   .kotoha.json を出力
                 </button>
                 <button type="button" className="btn btn-sm" onClick={() => void copyText(markdown).then((ok) => showToast(ok ? 'Markdown をコピーしました' : 'コピーに失敗しました'))}>
@@ -286,17 +295,22 @@ export function KotohaTool() {
         <ToolPane
           title="テンプレートと往復"
           actions={
-            <div className="tabs" role="tablist" aria-label="テンプレートの表示">
-              <button type="button" role="tab" className="tab" aria-selected={tab === 'inspector'} onClick={() => setTab('inspector')}>
-                インスペクタ
+            <>
+              <div className="tabs" role="tablist" aria-label="テンプレートの表示">
+                <button type="button" role="tab" className="tab" aria-selected={tab === 'inspector'} onClick={() => setTab('inspector')}>
+                  インスペクタ
+                </button>
+                <button type="button" role="tab" className="tab" aria-selected={tab === 'bundle'} onClick={() => setTab('bundle')}>
+                  バンドル
+                </button>
+                <button type="button" role="tab" className="tab" aria-selected={tab === 'markdown-source'} onClick={() => setTab('markdown-source')}>
+                  MD プレビュー
+                </button>
+              </div>
+              <button type="button" className="btn btn-sm btn-primary" disabled={!document} onClick={() => setExportOpen(true)} data-testid="kotoha-export">
+                エクスポート
               </button>
-              <button type="button" role="tab" className="tab" aria-selected={tab === 'bundle'} onClick={() => setTab('bundle')}>
-                バンドル
-              </button>
-              <button type="button" role="tab" className="tab" aria-selected={tab === 'markdown-source'} onClick={() => setTab('markdown-source')}>
-                MD プレビュー
-              </button>
-            </div>
+            </>
           }
           foot={
             <>
@@ -499,7 +513,7 @@ export function KotohaTool() {
                   </table>
                 </div>
                 <div>
-                  <button type="button" className="btn btn-sm" onClick={exportBundle}>
+                  <button type="button" className="btn btn-sm" onClick={() => exportBundle()}>
                     .kotoha.json をダウンロード
                   </button>
                 </div>
@@ -518,6 +532,41 @@ export function KotohaTool() {
         <span className={error ? 'err' : 'ok'}>{error ? `エラー: ${error}` : 'エラーなし'}</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
+      {exportOpen && document ? (
+        <ExportModal
+          toolLabel="Docx↔MD往復（琴葉）"
+          defaultBase={document.bundle.fileName.replace(/\.docx$/i, '') || 'document'}
+          onClose={() => setExportOpen(false)}
+          note=".docx は「.docx を再構築」を実行したあとの最新結果を書き出します。"
+          formats={[
+            {
+              id: 'docx',
+              label: '.docx',
+              description: 'スタイル・ヘッダー・フッターを保った再構築済み文書',
+              fileName: (base) => `${base}.docx`,
+              run: (base) => {
+                if (!output?.docx) return;
+                downloadBlob(`${base}.docx`, output.docx, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+              },
+            },
+            {
+              id: 'bundle',
+              label: '.kotoha.json',
+              description: 'スタイルバンドルと編集済み Markdown',
+              fileName: (base) => `${base}.kotoha.json`,
+              run: (base) => exportBundle(base),
+            },
+            {
+              id: 'markdown',
+              label: '.md',
+              description: '編集した Markdown 文書',
+              fileName: (base) => `${base}.md`,
+              run: (base) => downloadBlob(`${base}.md`, markdown, 'text/markdown;charset=utf-8'),
+              copy: () => markdown,
+            },
+          ]}
+        />
+      ) : null}
     </>
   );
 }

@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { EmptyHint, LineEditor, Segmented, ToolPane, useDropFile } from '../../components/ui';
-import { copyText, downloadBlob } from '../../lib/util';
+import { ExportModal } from '../../components/ExportModal';
+import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
+import { useOpenedFile } from '../../lib/fileBus';
+import { downloadBlob } from '../../lib/util';
 import { SAMPLE_BY_EXT } from '../samples';
 import { YayoiAdapter, type PseudoDepth, type PseudoLine, type PseudoStyle, type YayoiOutput } from './adapter';
 
@@ -18,6 +21,7 @@ export function YayoiTool() {
   const [style, setStyle] = useState<PseudoStyle>('standard');
   const [depth, setDepth] = useState<PseudoDepth>('detailed');
   const [output, setOutput] = useState<YayoiOutput | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
   const [activeSource, setActiveSource] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -73,9 +77,16 @@ export function YayoiTool() {
     window.setTimeout(() => setToast(null), 1800);
   };
 
-  const download = (kind: 'md' | 'txt') => {
+  useOpenedFile('yayoi', (opened) => {
+    setSource(opened.text);
+    setFileName(opened.name);
+    showToast(`${opened.path} を開きました`);
+  });
+
+  const baseName = fileName.replace(/\.[^.]+$/, '') || 'pseudocode';
+
+  const download = (kind: 'md' | 'txt', base: string) => {
     if (!output) return;
-    const base = fileName.replace(/\.[^.]+$/, '') || 'pseudocode';
     if (kind === 'md') downloadBlob(`${base}.pseudo.md`, output.markdown, 'text/markdown;charset=utf-8');
     else downloadBlob(`${base}.pseudo.txt`, output.plain, 'text/plain;charset=utf-8');
   };
@@ -87,11 +98,11 @@ export function YayoiTool() {
           title="元のソース"
           actions={
             <>
-              <label className="btn btn-sm">
-                アップロード
+              <label className="btn btn-sm" data-testid="yayoi-open">
+                ファイルを開く
                 <input
                   type="file"
-                  accept=".ts,.tsx,.js,.jsx,.mjs,.cjs,.py,.java,.go,.txt"
+                  accept={CODE_FILE_ACCEPT}
                   style={{ display: 'none' }}
                   onChange={async (event) => {
                     const file = event.target.files?.[0];
@@ -166,14 +177,8 @@ export function YayoiTool() {
           }
         >
           <div style={{ display: 'flex', gap: 6, padding: '8px 12px', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
-            <button type="button" className="btn btn-sm" disabled={!output} onClick={() => void copyText(output?.plain ?? '').then((ok) => showToast(ok ? 'コピーしました' : 'コピーに失敗しました'))}>
-              コピー
-            </button>
-            <button type="button" className="btn btn-sm" disabled={!output} onClick={() => download('md')}>
-              .md
-            </button>
-            <button type="button" className="btn btn-sm" disabled={!output} onClick={() => download('txt')}>
-              .txt
+            <button type="button" className="btn btn-sm btn-primary" disabled={!output} onClick={() => setExportOpen(true)} data-testid="yayoi-export">
+              エクスポート
             </button>
             <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 11.5 }}>
               {activeSource ? `ソース行 ${activeSource}` : '対応する行にカーソルを合わせると強調されます'}
@@ -213,6 +218,31 @@ export function YayoiTool() {
         <span className="ok">エラーなし</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
+      {exportOpen && output ? (
+        <ExportModal
+          toolLabel="擬似コード（弥生）"
+          defaultBase={baseName}
+          onClose={() => setExportOpen(false)}
+          formats={[
+            {
+              id: 'markdown',
+              label: '.pseudo.md',
+              description: '擬似コードと対応付けの Markdown',
+              fileName: (base) => `${base}.pseudo.md`,
+              run: (base) => download('md', base),
+              copy: () => output.markdown,
+            },
+            {
+              id: 'text',
+              label: '.pseudo.txt',
+              description: '擬似コードだけのプレーンテキスト',
+              fileName: (base) => `${base}.pseudo.txt`,
+              run: (base) => download('txt', base),
+              copy: () => output.plain,
+            },
+          ]}
+        />
+      ) : null}
     </>
   );
 }
