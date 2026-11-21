@@ -370,12 +370,10 @@ test.describe('HD2Lab Aomatsukan live application', () => {
     const rail = page.getByTestId('workspace-rail');
     await expect(rail).toBeVisible();
 
-    const [chooser] = await Promise.all([
-      page.waitForEvent('filechooser'),
-      rail.getByTestId('workspace-open').click(),
-    ]);
-    await chooser.setFiles([MCU_FILE, SPEC_FILE]);
+    await expect(rail.getByTestId('workspace-open')).toBeVisible();
+    await page.getByTestId('workspace-open-files').setInputFiles([MCU_FILE, SPEC_FILE]);
     await expect(rail.getByTestId('workspace-tree')).toContainText('gpio_emitter_mcu.c');
+    await expect(rail.getByTestId('workspace-tree')).toContainText('payment-service.spec.md');
 
     await page.getByTestId('workspace-filter').fill('gpio');
     await expect(rail.getByTestId('workspace-file')).toHaveCount(1);

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { ToolId } from '../adapters/types';
-import { isBinaryFile, languageTagFor, targetToolForFile } from '../lib/fileKinds';
+import { CODE_FILE_ACCEPT, DOCX_FILE_ACCEPT, FEW_SHOT_FILE_ACCEPT, isBinaryFile, languageTagFor, targetToolForFile } from '../lib/fileKinds';
 import { openedFileFrom, type OpenedFile } from '../lib/fileBus';
 import { saveExample } from '../lib/fewShotStore';
 import {
@@ -190,9 +190,26 @@ export function WorkspacePanel(props: {
             event.target.value = '';
             if (!list || !list.length) return;
             const { root, files: entries } = filesFromInput(list);
-            adopt(root || entries[0]?.path.split('/')[0] || 'フォルダ', entries);
+            adopt(root || 'フォルダ', entries);
           }}
         />
+        <label className="btn btn-sm ws-file-open" data-testid="workspace-open-files">
+          ファイルを開く
+          <input
+            type="file"
+            multiple
+            accept={[CODE_FILE_ACCEPT, DOCX_FILE_ACCEPT, FEW_SHOT_FILE_ACCEPT].join(',')}
+            style={{ display: 'none' }}
+            onChange={(event) => {
+              const list = event.target.files;
+              const chosen = [...(list ?? [])];
+              event.target.value = '';
+              if (!chosen.length) return;
+              const { root, files: entries } = filesFromInput(chosen);
+              adopt(root || 'ファイル', entries);
+            }}
+          />
+        </label>
       </div>
 
       <label className="ws-filter">

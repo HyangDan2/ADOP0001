@@ -122,7 +122,7 @@ export function TakaneTool() {
     showToast('枝織の最新仕様書を読み込みました');
   };
 
-  const baseName = fileName.replace(/\.[^.]+$/, '') || 'module';
+  const baseName = fileName.replace(/(\.spec)?\.md$/i, '').replace(/\.[^.]+$/, '') || 'module';
 
   const download = (target: TakaneLanguage, base: string) => {
     const built = buildTakane(fileName, source, target);
