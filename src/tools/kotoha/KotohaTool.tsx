@@ -43,7 +43,7 @@ export function KotohaTool() {
 
   useEffect(() => {
     void loadLatestBundle().then((record) => {
-      if (record) setStorage(`${new Date(record.savedAt).toLocaleString()} に保存したバンドル · ${storageLabel()}`);
+      if (record) setStorage(`${new Date(record.savedAt).toLocaleString('ja-JP')} に保存したバンドル · ${storageLabel()}`);
     });
   }, []);
 
@@ -59,7 +59,7 @@ export function KotohaTool() {
     setOutput(outputValue);
     setElapsed(0);
     const saved = await saveBundle(outputValue.bundle);
-    setStorage(`スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString()}`);
+    setStorage(`スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString('ja-JP')}`);
   };
 
   const runSample = async () => {

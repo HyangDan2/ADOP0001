@@ -197,7 +197,11 @@ function tableXml(rows: string[][], ctx: BlockContext): string {
       return `<w:tr>${cellsXml}</w:tr>`;
     })
     .join('');
-  return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>${border}</w:tblBorders><w:tblLook w:val="04A0"/></w:tblPr>${body}</w:tbl>`;
+  // OOXML requires a tblGrid with one gridCol per column; without it strict readers
+  // (python-docx, some Word versions) reject the table.
+  const columns = Math.max(1, ...rows.map((cells) => cells.length));
+  const grid = `<w:tblGrid>${Array.from({ length: columns }, () => '<w:gridCol w:w="2400"/>').join('')}</w:tblGrid>`;
+  return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>${border}</w:tblBorders><w:tblLook w:val="04A0"/></w:tblPr>${grid}${body}</w:tbl>`;
 }
 
 function markdownToBody(markdown: string, ctx: BlockContext): { body: string; paragraphs: number; tables: number } {

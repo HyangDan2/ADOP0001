@@ -82,6 +82,8 @@ describe('Kotoha docx round trip', () => {
     expect(out['word/document.xml']).toContain('w:pStyle w:val="Heading2"');
     expect(out['word/document.xml']).toContain('<w:numPr>');
     expect(out['word/document.xml']).toContain('<w:tbl>');
+    // A tblGrid with one gridCol per column keeps strict readers (python-docx, Word) happy.
+    expect(out['word/document.xml']).toMatch(/<w:tblGrid><w:gridCol w:w="2400"\/><w:gridCol w:w="2400"\/><w:gridCol w:w="2400"\/><\/w:tblGrid>/);
     expect(out['word/document.xml']).toMatch(/r:embed="rId\d+"/);
     expect(out['word/document.xml']).toContain('w:headerReference');
     expect(out['word/document.xml']).toContain('w:footerReference');

@@ -136,7 +136,7 @@ export function ShioriTool() {
             <>
               <span>{fileName}</span>
               <span>{source.split('\n').length} 行</span>
-              <span>{source.length.toLocaleString()} 文字</span>
+              <span>{source.length.toLocaleString('ja-JP')} 文字</span>
             </>
           }
         >
