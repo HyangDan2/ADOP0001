@@ -1276,10 +1276,10 @@ export class TakaneAdapter implements EngineAdapter<TakaneOutput, TakaneOptions>
   readonly japaneseTitle = '貴音';
   readonly providerMode: ProviderMode = 'local-static';
   readonly capabilities = [
-    '枝織形式の明細書（契約表・振る舞い・エラー経路・型定義）と一般的な Markdown 明細書の読み取り',
+    '枝織形式の仕様書（契約表・振る舞い・エラー経路・型定義）と、一般的な Markdown 仕様書の読み取り',
     'TypeScript・Python・Java・Go の4言語へのコード生成',
     '型宣言・メソッド／関数シグネチャ・ガード節・エラー経路・Doc コメントの生成',
-    '枝織の出力を読み込み、コード→明細書→コードの往復をブラウザ内で確認',
+    '枝織の出力を読み込み、コード→仕様書→コードの往復をブラウザ内で試せる',
   ] as const;
 
   async run(request: EngineRequest<TakaneOptions>): Promise<EngineResult<TakaneOutput>> {

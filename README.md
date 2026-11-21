@@ -39,7 +39,7 @@ between **Deep Cedar** (dark, default) and **Mist Pine** (light) and remembers t
 npm install
 npm run dev        # http://localhost:5173/ADOP0001/
 npm run build      # tsc --noEmit && vite build
-npm test           # 53 Vitest unit/integration tests
+npm test           # 58 Vitest unit/integration tests
 npm run test:e2e   # Playwright against a preview server
 npm run brand      # regenerate favicon/OG assets into public/
 ```
@@ -74,10 +74,11 @@ the contracts a server-backed hybrid engine must satisfy.
 ## Testing
 
 - `tsc --noEmit` — clean.
-- 53 Vitest tests: parser coverage for four languages, specification output, pseudocode mapping,
+- 58 Vitest tests: parser coverage for four languages, specification output, pseudocode mapping,
   UML auto-detection of all five kinds, four test frameworks, a real `.docx` ZIP → Markdown →
   edit → `.docx` rebuild with style/header/footer/media preservation, and specification parsing
-  plus code generation in four languages (including the 枝織 → 貴音 round trip).
+  plus code generation in four languages (including the 枝織 → 貴音 round trip) and a check that
+  every generated artifact stays English while the UI stays Japanese.
 - 8 Playwright end-to-end tests against the deployed site: all six tools, 貴音 generating and
   downloading a `.ts` file, theme switch, kebab menu, help modal, 390px mobile layout, and a live
   docx round-trip download.

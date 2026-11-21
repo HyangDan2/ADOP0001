@@ -159,7 +159,7 @@ export function ShioriTool() {
             <LineEditor
               value={source}
               onChange={setSource}
-              placeholder="ここにコードを貼り付けるか、ファイルをドロップするか、サンプルを選択してください。"
+              placeholder="ここにコードを貼り付けるか、ファイルをドロップするか、サンプルを選んでください。"
               ariaLabel="ソースコード"
             />
             <div className={`dropzone ${drop.active ? 'active' : ''}`}>解析するソースファイルをドロップ</div>

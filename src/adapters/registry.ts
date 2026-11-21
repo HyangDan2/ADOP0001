@@ -30,7 +30,7 @@ export const TOOLS: ToolMeta[] = [
     label: '仕様書作成',
     tagline: 'ソースコードを契約水準の仕様書へ織り上げます。',
     longDescription:
-      'TypeScript・JavaScript・Python・Java・Go を解析し、モジュール・型・シグネチャ・ガード・エラー経路・依存関係を抽出して、契約表と振る舞いルールを Markdown または単体 HTML として出力します。',
+      'TypeScript・JavaScript・Python・Java・Go を解析し、モジュール・型・シグネチャ・ガード・エラー経路・依存関係を抽出して、契約表と振る舞いルールを Markdown またはスタンドアロンの HTML として出力します。',
     adapter: new ShioriAdapter() as unknown as EngineAdapter<never, never>,
   },
   {
@@ -48,7 +48,7 @@ export const TOOLS: ToolMeta[] = [
     path: '#/kozue',
     japanese: '梢絵',
     label: 'UML自動設計',
-    tagline: 'コード自身にふさわしい図を選ばせます。',
+    tagline: 'コードの形に合う図を、自動で選びます。',
     longDescription:
       'ソース構造から5種類の UML を採点し、最適な種類とその理由を提示したうえで、シーケンス図・クラス図・ステート図・アクティビティ図・コンポーネント図を Mermaid で描画します。パン・ズームと SVG／PNG 書き出しに対応しています。',
     adapter: new KozueAdapter() as unknown as EngineAdapter<never, never>,
@@ -58,7 +58,7 @@ export const TOOLS: ToolMeta[] = [
     path: '#/haruhi',
     japanese: '春日',
     label: 'テスト生成',
-    tagline: 'コードが示すテストケースを鍛え上げます。',
+    tagline: 'コードから、必要なテストケースを鍛え上げます。',
     longDescription:
       'ソースから正常系・境界値・ガード分岐・エラー経路を導き、Vitest／Jest・Pytest・JUnit 5・Go testing 向けの Given/When/Then 雛形を、未カバー分岐チェックリストとともに出力します。',
     adapter: new HaruhiAdapter() as unknown as EngineAdapter<never, never>,

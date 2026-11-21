@@ -211,7 +211,7 @@ export function buildPseudocode(fileName: string, source: string, options: Yayoi
 
   const mdLines: string[] = [];
   mdLines.push(`# Pseudocode — ${baseName(fileName)}`, '');
-  mdLines.push(`*HD2Lab Aomatsukan · Yayoi (弥生) · style: ${styleLabel[options.style]} · depth: ${options.depth}*`, '');
+  mdLines.push(`*HD2Lab Aomatsukan · Yayoi — style: ${styleLabel[options.style]} · depth: ${options.depth}*`, '');
   for (const block of blocks) {
     mdLines.push(`## ${block.function}`, '');
     mdLines.push('```text');
@@ -238,7 +238,7 @@ export class YayoiAdapter implements EngineAdapter<YayoiOutput, YayoiOptions> {
     '文法のノイズを取り除き、制御フローを抽出',
     '3つのスタイル：標準構造化・英語ナラティブ・コンパクト手順',
     '詳細または要約の2段階の深さ',
-    '元ソースへの双方向の行単位マッピング',
+    '元ソースへの行単位の双方向対応付け',
   ] as const;
 
   async run(request: EngineRequest<YayoiOptions>): Promise<EngineResult<YayoiOutput>> {

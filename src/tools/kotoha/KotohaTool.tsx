@@ -8,6 +8,11 @@ import { inchToTwips, loadLatestBundle, saveBundle, storageLabel, twipsToInch } 
 const adapter = new KotohaAdapter();
 const PRESET_KEY = 'adop0001.kotoha.presets';
 
+/** The store reports `indexeddb` / `memory`; the UI shows a Japanese label. */
+function storageName(storage: 'indexeddb' | 'memory'): string {
+  return storage === 'indexeddb' ? 'IndexedDB' : 'メモリ';
+}
+
 interface Preset {
   name: string;
   attributes: BundleAttributes;
@@ -54,7 +59,7 @@ export function KotohaTool() {
     setOutput(outputValue);
     setElapsed(0);
     const saved = await saveBundle(outputValue.bundle);
-    setStorage(`スタイルバンドルを ${saved.storage} に保存 · ${new Date(saved.savedAt).toLocaleTimeString()}`);
+    setStorage(`スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString()}`);
   };
 
   const runSample = async () => {
@@ -110,7 +115,7 @@ export function KotohaTool() {
       setAttributes(parsed.bundle.attributes);
       setOutput(null);
       const saved = await saveBundle(parsed.bundle);
-      setStorage(`スタイルバンドルを読み込み、${saved.storage} に保存しました`);
+      setStorage(`スタイルバンドルを読み込み、${storageName(saved.storage)} に保存しました`);
       showToast('スタイルバンドルを読み込みました');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'このファイルは琴葉のバンドルではありません。');
@@ -238,7 +243,7 @@ export function KotohaTool() {
         >
           {!document ? (
             <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <EmptyHint title="サンプルか、お手元の .docx から始めます">
+              <EmptyHint title="サンプルか、お手元の .docx から始めましょう">
                 琴葉は文書を Markdown に分解しながら、テンプレートをスタイルバンドルとして保持します。
               </EmptyHint>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
@@ -295,7 +300,7 @@ export function KotohaTool() {
           }
           foot={
             <>
-              <span>{busy ? '処理中…' : output ? `${elapsed} ms で再構築` : '未再構築'}</span>
+              <span>{busy ? '処理中…' : output ? `${elapsed} ms で再構築` : 'まだ再構築していません'}</span>
               {output?.docx ? <span>{Math.round(output.docx.length / 1024)} KB .docx</span> : null}
               {stats ? <span>{stats.paragraphs} 段落 · {stats.tables} 表</span> : null}
             </>
@@ -352,7 +357,7 @@ export function KotohaTool() {
                 <div className="inspector-grid">
                   {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
                     <label className="field" key={side}>
-                      {({ top: '上', bottom: '下', left: '左', right: '右' } as const)[side]}余白 (in)
+                      余白（{({ top: '上', bottom: '下', left: '左', right: '右' } as const)[side]}） (in)
                       <input
                         type="number"
                         step="0.05"

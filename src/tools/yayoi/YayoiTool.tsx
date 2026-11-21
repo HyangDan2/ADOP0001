@@ -110,7 +110,7 @@ export function YayoiTool() {
             <>
               <span>{fileName}</span>
               <span>{source.split('\n').length} 行</span>
-              {activeSource ? <span>フォーカス行 {activeSource}</span> : <span>行をクリックすると連携します</span>}
+              {activeSource ? <span>フォーカス行 {activeSource}</span> : <span>行をクリックすると対応付けます</span>}
             </>
           }
         >
@@ -161,7 +161,7 @@ export function YayoiTool() {
             <>
               <span>{busy ? '変換中…' : `${elapsed} ms`}</span>
               <span>{output ? `${output.stats.functions} ユニット` : '—'}</span>
-              <span>{output ? `${output.stats.kept} 行を対応付け` : '—'}</span>
+              <span>{output ? `${output.stats.kept} 行を対応付け済み` : '—'}</span>
             </>
           }
         >
@@ -176,7 +176,7 @@ export function YayoiTool() {
               .txt
             </button>
             <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 11.5 }}>
-              {activeSource ? `ソース行 ${activeSource}` : '対応する行にポインタを合わせると強調します'}
+              {activeSource ? `ソース行 ${activeSource}` : '対応する行にカーソルを合わせると強調されます'}
             </span>
           </div>
           <div className="scroll" data-testid="yayoi-output">

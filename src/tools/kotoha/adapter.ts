@@ -40,7 +40,7 @@ export class KotohaAdapter implements EngineAdapter<KotohaOutput, KotohaOptions>
     'スタイル・テーマ・番号付け・ヘッダー・フッター・余白を保持するスタイルバンドル（.kotoha.json + IndexedDB）',
     'フォント・サイズ・行間・余白・見出し色を編集できるスタイル＆属性インスペクタ',
     'Markdown から元の見た目を保った有効な .docx への再構築',
-    'ワンクリックでのサンプル .docx 生成',
+    'ワンクリックでサンプル .docx を生成',
   ] as const;
 
   async run(request: EngineRequest<KotohaOptions>): Promise<EngineResult<KotohaOutput>> {

@@ -125,7 +125,7 @@ export function TakaneTool() {
   const declarations = useMemo(() => {
     if (!output) return [];
     return [
-      ...output.model.types.map((type) => ({ kind: 'type' as const, name: `${type.kind} ${type.name}`, detail: `${type.fields.length} fields` })),
+      ...output.model.types.map((type) => ({ kind: 'type' as const, name: `${type.kind} ${type.name}`, detail: `フィールド ${type.fields.length} 件` })),
       ...output.model.contracts.map((contract) => ({
         kind: 'contract' as const,
         name: `${contract.owner ? `${contract.owner}.` : ''}${contract.name}(${contract.params.map((param) => `${param.name}: ${param.type}`).join(', ')})`,
@@ -160,7 +160,7 @@ export function TakaneTool() {
                 className="btn btn-sm"
                 onClick={loadShiori}
                 data-testid="takane-load-shiori"
-                title="枝織が最後に生成した仕様書をこの欄へ読み込みます"
+                title="枝織が最後に生成した仕様書をこの欄に読み込みます"
               >
                 枝織の出力を読み込む
               </button>
@@ -265,7 +265,7 @@ export function TakaneTool() {
             {!error && output && view === 'code' ? <pre className="code-view">{output.code}</pre> : null}
             {!error && output && view === 'preview' ? (
               <div className="spec-preview" data-testid="takane-preview">
-                <h2 className="spec-title">Scaffold — {output.model.title}</h2>
+                <h2 className="spec-title">スキャフォールド — {output.model.title}</h2>
                 <div className="spec-cards">
                   {stats.map((stat) => (
                     <div className="stat" key={stat.label}>
