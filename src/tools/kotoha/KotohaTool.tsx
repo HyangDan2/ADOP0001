@@ -357,7 +357,7 @@ export function KotohaTool() {
                 <div className="inspector-grid">
                   {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
                     <label className="field" key={side}>
-                      余白（{({ top: '上', bottom: '下', left: '左', right: '右' } as const)[side]}） (in)
+                      {({ top: '上', bottom: '下', left: '左', right: '右' } as const)[side]}余白 (in)
                       <input
                         type="number"
                         step="0.05"
