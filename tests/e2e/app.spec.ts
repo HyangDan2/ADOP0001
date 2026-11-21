@@ -57,7 +57,7 @@ test.describe('HD2Lab Aosongkan live application', () => {
 
   test('Shiori weaves a specification and exports Markdown', async ({ page }) => {
     watch(page);
-    await page.goto('/#/shiori');
+    await page.goto('./#/shiori');
     const preview = page.getByTestId('shiori-preview');
     await expect(preview).toBeVisible();
     await expect(preview).toContainText('Contract table');
@@ -196,7 +196,7 @@ test.describe('HD2Lab Aosongkan live application', () => {
   test('holds the 390px mobile layout without horizontal overflow', async ({ page }) => {
     watch(page);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto('/#/shiori');
+    await page.goto('./#/shiori');
     await page.waitForTimeout(900);
     const metrics = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
@@ -207,7 +207,7 @@ test.describe('HD2Lab Aosongkan live application', () => {
     await page.screenshot({ path: path.join(DOWNLOADS, 'adop0001_mobile.png'), fullPage: false });
 
     for (const tool of ['yayoi', 'kozue', 'haruhi', 'kotoha']) {
-      await page.goto(`/#/${tool}`);
+      await page.goto(`./#/${tool}`);
       await page.waitForTimeout(600);
       const width = await page.evaluate(() => document.documentElement.scrollWidth);
       expect(width).toBeLessThanOrEqual(391);
