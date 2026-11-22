@@ -21,6 +21,16 @@ const ROOT = process.cwd();
 const OUT = path.join(ROOT, '.qa-out');
 const results = [];
 
+/** Last meaningful lines of a command's output, without npm's version notice. */
+function tailOf(text, lines = 4) {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('npm notice'))
+    .slice(-lines)
+    .join(' | ');
+}
+
 function record(check, target, status, detail) {
   results.push({ check, target, status, detail });
 }
@@ -59,8 +69,8 @@ function walk(dir, filter) {
 /* --------------------------------------------------------------- */
 /* 1. Regenerate                                                     */
 /* --------------------------------------------------------------- */
-const generator = run('npx', ['vitest', 'run', 'tests/qa/artifacts.test.ts', '--maxWorkers=1'], { timeout: 240_000 });
-record('generate', 'tests/qa/artifacts.test.ts', generator.ok ? 'PASS' : 'FAIL', generator.ok ? '' : generator.stderr.slice(-400));
+const generator = run('npx', ['vitest', 'run', 'tests/qa/artifacts.test.ts', '--pool=threads', '--maxWorkers=1'], { timeout: 240_000 });
+record('generate', 'tests/qa/artifacts.test.ts', generator.ok ? 'PASS' : 'FAIL', generator.ok ? '' : tailOf(`${generator.stdout}\n${generator.stderr}`, 6));
 if (!generator.ok) {
   summarize();
   process.exit(1);
@@ -100,8 +110,7 @@ if (!existsSync(pytestDir)) {
     record('pytest', 'test_reliability_account.py', 'SKIP', 'pytest is not installed');
   } else {
     const pytestRun = run('python3', ['-m', 'pytest', '-q'], { cwd: pytestDir, timeout: 120_000 });
-    const tail = (pytestRun.stdout + pytestRun.stderr).trim().split('\n').slice(-2).join(' | ');
-    record('pytest', 'test_reliability_account.py', pytestRun.ok ? 'PASS' : 'FAIL', tail);
+    record('pytest', 'test_reliability_account.py', pytestRun.ok ? 'PASS' : 'FAIL', tailOf(pytestRun.stdout + pytestRun.stderr, 2));
   }
 }
 
@@ -136,7 +145,7 @@ function checkTranslations(dirName, language, extension, standard) {
     const out = path.join(path.dirname(file), `.qa-${path.basename(file)}.o`);
     const args = [...(compiler.extra ?? []), `-std=${standard}`, '-c', file, '-o', out, '-I', path.dirname(file)];
     const result = run(compiler.base, args, { timeout: 120_000 });
-    record(`${label} compile (${compiler.label})`, relative, result.ok ? 'PASS' : 'FAIL', result.ok ? '' : result.stderr.trim().split('\n').slice(0, 4).join(' | '));
+    record(`${label} compile (${compiler.label})`, relative, result.ok ? 'PASS' : 'FAIL', result.ok ? '' : tailOf(result.stderr, 4));
   }
 }
 
@@ -168,10 +177,9 @@ for (const project of ['ts-reliability', 'ts-payment']) {
     ],
     { timeout: 120_000 },
   );
-  record('TypeScript parse', `haruhi/${project}`, typecheck.ok ? 'PASS' : 'FAIL', typecheck.ok ? '' : typecheck.stderr.trim().split('\n').slice(0, 4).join(' | '));
-  const vitest = run('npx', ['vitest', 'run', '--root', dir, '--reporter', 'basic', '--maxWorkers=1'], { timeout: 240_000 });
-  const tail = (vitest.stdout + vitest.stderr).trim().split('\n').slice(-4).join(' | ');
-  record('Vitest run', `haruhi/${project}`, vitest.ok ? 'PASS' : 'FAIL', tail);
+  record('TypeScript parse', `haruhi/${project}`, typecheck.ok ? 'PASS' : 'FAIL', typecheck.ok ? '' : tailOf(typecheck.stderr, 4));
+  const vitest = run('npx', ['vitest', 'run', '--root', dir, '--reporter', 'basic', '--pool=threads', '--maxWorkers=1'], { timeout: 240_000 });
+  record('Vitest run', `haruhi/${project}`, vitest.ok ? 'PASS' : 'FAIL', vitest.ok ? tailOf(vitest.stdout, 2) : tailOf(vitest.stdout + vitest.stderr, 6));
 }
 
 /* --------------------------------------------------------------- */
@@ -185,8 +193,7 @@ if (!existsSync(goDir)) {
 } else {
   if (!existsSync(path.join(goDir, 'go.mod'))) run('go', ['mod', 'init', 'example.com/qa'], { cwd: goDir });
   const goTest = run('go', ['test', './...'], { cwd: goDir, timeout: 180_000 });
-  const tail = (goTest.stdout + goTest.stderr).trim().split('\n').slice(-4).join(' | ');
-  record('Go test', 'haruhi/go', goTest.ok ? 'PASS' : 'FAIL', tail);
+  record('Go test', 'haruhi/go', goTest.ok ? 'PASS' : 'FAIL', tailOf(goTest.stdout + goTest.stderr, 3));
 }
 
 const javaDir = path.join(OUT, 'haruhi', 'java');
@@ -199,11 +206,10 @@ if (!existsSync(javaDir)) {
   record('javac', 'haruhi/java', 'SKIP', 'JUnit 5 is not on the classpath (set QA_JUNIT_JAR to a junit-platform-console-standalone jar)');
 } else {
   const javac = run('javac', ['-d', path.join(javaDir, 'classes'), '-cp', junitJar, ...readdirSync(javaDir).filter((name) => name.endsWith('.java')).map((name) => path.join(javaDir, name))], { timeout: 120_000 });
-  record('javac', 'haruhi/java', javac.ok ? 'PASS' : 'FAIL', javac.ok ? '' : javac.stderr.trim().split('\n').slice(0, 4).join(' | '));
+  record('javac', 'haruhi/java', javac.ok ? 'PASS' : 'FAIL', javac.ok ? '' : tailOf(javac.stderr, 4));
   if (javac.ok) {
     const junitRun = run('java', ['-jar', junitJar, '-cp', path.join(javaDir, 'classes'), '--scan-classpath', path.join(javaDir, 'classes'), '--details=summary'], { timeout: 120_000 });
-    const tail = (junitRun.stdout + junitRun.stderr).trim().split('\n').slice(-3).join(' | ');
-    record('JUnit run', 'haruhi/java', junitRun.ok ? 'PASS' : 'FAIL', tail);
+    record('JUnit run', 'haruhi/java', junitRun.ok ? 'PASS' : 'FAIL', tailOf(junitRun.stdout + junitRun.stderr, 3));
   }
 }
 
