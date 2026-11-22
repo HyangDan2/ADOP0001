@@ -5,11 +5,22 @@
  * so heading styles, theme fonts, numbering, headers/footers, page geometry and media
  * survive the round trip. Attribute edits made in the Style & Attribute Inspector are
  * applied to `styles.xml` and `sectPr` at this point.
+ *
+ * Phase 2 (KOT-001/002):
+ * - preserved blocks (`<!-- kotoha:preserved id=… -->`) are written back byte-for-byte,
+ *   in the position the marker has in the Markdown;
+ * - list markers (`<!-- kotoha:list numId=… -->`) select the real numbering definition,
+ *   so multi-list documents keep their numbering;
+ * - tables honour `w:tblHeader` (`w:tblHeader` is re-emitted) and pictures keep the
+ *   original extent/aspect ratio instead of a fixed 480×320 box;
+ * - every package entry kept in `ooxml.extraParts` is written back unchanged.
  */
 
 import JSZip from 'jszip';
 import { escapeXml } from './xml';
+import { emuForImage, imageSizeFromBase64 } from './image';
 import type { BundleAttributes, KotohaBundle } from './bundle';
+import { LIST_MARKER, PRESERVED_MARKER } from './read';
 
 interface InlineSegment {
   text: string;
@@ -26,17 +37,7 @@ interface BlockContext {
   attributes: BundleAttributes;
   rels: RelBuilder;
   imageCounter: { next: number };
-}
-
-function pngSize(base64: string): { w: number; h: number } {
-  try {
-    const binary = atob(base64.slice(0, 64));
-    if (binary.slice(1, 4) !== 'PNG') return { w: 480, h: 320 };
-    const view = new DataView(new Uint8Array([...binary].map((c) => c.charCodeAt(0))).buffer);
-    return { w: view.getUint32(16), h: view.getUint32(20) };
-  } catch {
-    return { w: 480, h: 320 };
-  }
+  restored: { blocks: number; unknownMarkers: string[] };
 }
 
 class RelBuilder {
@@ -167,34 +168,39 @@ function inlineToXml(text: string, ctx: BlockContext): string {
     .join('');
 }
 
+function mediaPathFor(path: string): string {
+  const clean = path.replace(/^\.?\//, '');
+  return clean.startsWith('word/') ? clean : `word/${clean}`;
+}
+
 function imageParagraph(path: string, alt: string, ctx: BlockContext): string {
-  const mediaPath = path.replace(/^\.?\//, '').startsWith('media/') ? `word/${path.replace(/^\.?\//, '')}` : `word/${path.replace(/^\.?\//, '')}`;
+  const mediaPath = mediaPathFor(path);
   const base64 = ctx.bundle.ooxml.media[mediaPath] ?? ctx.bundle.ooxml.media[path];
   if (!base64) return paragraphXml(inlineToXml(`[Image reference: ${alt || path}]`, ctx));
   const suffix = mediaPath.split('/').pop() ?? mediaPath;
   let rid = ctx.rels.findIdByTargetSuffix(suffix);
   if (!rid) rid = ctx.rels.ensure('image', mediaPath.replace(/^word\//, ''));
-  const size = pngSize(base64);
-  const cx = size.w * 9525;
-  const cy = size.h * 9525;
+  const meta = ctx.bundle.images?.[mediaPath] ?? ctx.bundle.images?.[path];
+  const { cx, cy } = emuForImage(base64, meta);
   const index = (ctx.imageCounter.next += 1);
   return `<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="${index}" name="Picture ${index}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="${index}" name="Picture ${index}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
 }
 
-function tableXml(rows: string[][], ctx: BlockContext): string {
+function tableXml(rows: string[][], ctx: BlockContext, header: boolean): string {
   const border = '<w:top w:val="single" w:sz="4" w:color="9CB8A8"/><w:left w:val="single" w:sz="4" w:color="9CB8A8"/><w:bottom w:val="single" w:sz="4" w:color="9CB8A8"/><w:right w:val="single" w:sz="4" w:color="9CB8A8"/><w:insideH w:val="single" w:sz="4" w:color="9CB8A8"/><w:insideV w:val="single" w:sz="4" w:color="9CB8A8"/>';
   const body = rows
     .map((cells, rowIndex) => {
+      const isHeader = header && rowIndex === 0;
       const cellsXml = cells
         .map((cell) => {
           const runs = inlineToXml(cell, ctx);
-          const shaded = rowIndex === 0
-            ? '<w:shd w:val="clear" w:color="auto" w:fill="EAF4ED"/>'
-            : '';
+          const shaded = isHeader ? '<w:shd w:val="clear" w:color="auto" w:fill="EAF4ED"/>' : '';
           return `<w:tc><w:tcPr>${shaded}<w:tcW w:w="0" w:type="auto"/></w:tcPr>${paragraphXml(runs)}</w:tc>`;
         })
         .join('');
-      return `<w:tr>${cellsXml}</w:tr>`;
+      // `w:tblHeader` is what makes the first row repeat and stay a header on read-back.
+      const trPr = isHeader ? '<w:trPr><w:tblHeader/></w:trPr>' : '';
+      return `<w:tr>${trPr}${cellsXml}</w:tr>`;
     })
     .join('');
   // OOXML requires a tblGrid with one gridCol per column; without it strict readers
@@ -204,18 +210,53 @@ function tableXml(rows: string[][], ctx: BlockContext): string {
   return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>${border}</w:tblBorders><w:tblLook w:val="04A0"/></w:tblPr>${grid}${body}</w:tbl>`;
 }
 
+function splitRow(line: string): string[] {
+  return line
+    .trim()
+    .slice(1, -1)
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.trim().replace(/\\\|/g, '|'));
+}
+
+function defaultNumId(bundle: KotohaBundle): string {
+  return bundle.numbers[0]?.numId ?? '1';
+}
+
 function markdownToBody(markdown: string, ctx: BlockContext): { body: string; paragraphs: number; tables: number } {
   const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
   const out: string[] = [];
   let paragraphs = 0;
   let tables = 0;
+  let currentNumId: string | null = null;
   const styleId = (name: string): string | undefined =>
     ctx.bundle.styles.find((s) => s.id === name || s.name === name)?.id;
-  const numId = ctx.bundle.numbers[0]?.numId ?? '1';
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
-    if (!line.trim()) continue;
+    if (!line.trim()) {
+      // A blank line ends a Markdown block, so a later list starts from the default
+      // numbering definition unless it carries its own marker.
+      currentNumId = null;
+      continue;
+    }
+
+    const preserved = line.trim().match(PRESERVED_MARKER);
+    if (preserved) {
+      const block = ctx.bundle.preservedBlocks?.[preserved[1]];
+      if (block) {
+        out.push(block.xml);
+        ctx.restored.blocks += 1;
+      } else {
+        ctx.restored.unknownMarkers.push(preserved[1]);
+      }
+      continue;
+    }
+
+    const listMarker = line.trim().match(LIST_MARKER);
+    if (listMarker) {
+      currentNumId = listMarker[1];
+      continue;
+    }
 
     if (/^```/.test(line)) {
       i += 1;
@@ -228,22 +269,27 @@ function markdownToBody(markdown: string, ctx: BlockContext): { body: string; pa
         paragraphs += 1;
         out.push(paragraphXml(runXml({ text: codeLine || ' ', code: true }), { styleId: styleId('Code') }));
       }
+      currentNumId = null;
       continue;
     }
 
     if (/^\|.*\|$/.test(line.trim()) && /^\|[\s:|-]+\|$/.test((lines[i + 1] ?? '').trim())) {
+      const head = splitRow(line);
       const rows: string[][] = [];
-      const headerCells = line.trim().slice(1, -1).split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
-      rows.push(headerCells);
+      const header = head.some((cell) => cell.length > 0) || !head.length
+        ? head
+        : [];
       i += 2;
       while (i < lines.length && /^\|.*\|$/.test(lines[i].trim())) {
-        rows.push(lines[i].trim().slice(1, -1).split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|')));
+        rows.push(splitRow(lines[i]));
         i += 1;
       }
       i -= 1;
       tables += 1;
-      out.push(tableXml(rows, ctx));
+      if (header.length) out.push(tableXml([header, ...rows], ctx, true));
+      else out.push(tableXml(rows, ctx, false));
       out.push(paragraphXml(''));
+      currentNumId = null;
       continue;
     }
 
@@ -251,6 +297,7 @@ function markdownToBody(markdown: string, ctx: BlockContext): { body: string; pa
     if (imageOnly) {
       out.push(imageParagraph(imageOnly[2], imageOnly[1], ctx));
       paragraphs += 1;
+      currentNumId = null;
       continue;
     }
 
@@ -264,12 +311,14 @@ function markdownToBody(markdown: string, ctx: BlockContext): { body: string; pa
           keepNext: true,
         }),
       );
+      currentNumId = null;
       continue;
     }
 
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
       out.push(paragraphXml('<w:r><w:rPr><w:color w:val="9CB8A8"/></w:rPr><w:t xml:space="preserve">──────────────────────────</w:t></w:r>'));
       paragraphs += 1;
+      currentNumId = null;
       continue;
     }
 
@@ -277,6 +326,7 @@ function markdownToBody(markdown: string, ctx: BlockContext): { body: string; pa
     if (quote) {
       paragraphs += 1;
       out.push(paragraphXml(inlineToXml(quote[1], ctx), { styleId: styleId('Quote') ?? styleId('IntenseQuote') }));
+      currentNumId = null;
       continue;
     }
 
@@ -284,12 +334,19 @@ function markdownToBody(markdown: string, ctx: BlockContext): { body: string; pa
     if (list) {
       const ilvl = Math.min(4, Math.floor(list[1].replace(/\t/g, '  ').length / 2));
       paragraphs += 1;
-      out.push(paragraphXml(inlineToXml(list[3], ctx), { styleId: styleId('ListParagraph'), numId, ilvl }));
+      out.push(
+        paragraphXml(inlineToXml(list[3], ctx), {
+          styleId: styleId('ListParagraph'),
+          numId: currentNumId ?? defaultNumId(ctx.bundle),
+          ilvl,
+        }),
+      );
       continue;
     }
 
     paragraphs += 1;
     out.push(paragraphXml(inlineToXml(line, ctx), { styleId: styleId('Normal') }));
+    currentNumId = null;
   }
 
   return { body: out.join(''), paragraphs, tables };
@@ -415,7 +472,7 @@ function ensureContentTypes(xml: string, parts: { hasNumbering: boolean; hasSett
   ];
   for (const [ext, type] of defaults) {
     if (!new RegExp(`Extension="${ext}"`, 'i').test(out)) {
-      out = out.replace('<Types ', `<Types `).replace(/(<Types[^>]*>)/, `$1<Default Extension="${ext}" ContentType="${type}"/>`);
+      out = out.replace(/(<Types[^>]*>)/, `$1<Default Extension="${ext}" ContentType="${type}"/>`);
     }
   }
   if (parts.hasNumbering && !out.includes('/word/numbering.xml')) {
@@ -436,29 +493,77 @@ function packageRels(): string {
 </Relationships>`;
 }
 
-const DOCUMENT_OPEN = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable=""><w:body>`;
+/** Fallback namespace set, used only when a bundle carries no original declarations. */
+const DEFAULT_NAMESPACES =
+  'xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" ' +
+  'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" ' +
+  'xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+  'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
+  'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" ' +
+  'xmlns:v="urn:schemas-microsoft-com:vml" ' +
+  'xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" ' +
+  'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" ' +
+  'xmlns:w10="urn:schemas-microsoft-com:office:word" ' +
+  'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+  'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" ' +
+  'xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml" ' +
+  'xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" ' +
+  'xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk" ' +
+  'xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml" ' +
+  'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" ' +
+  'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+  'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" ' +
+  'mc:Ignorable="w14 w15 wp14"';
+
+function documentOpen(bundle: KotohaBundle): string {
+  const declared = bundle.ooxml.documentNamespaces?.trim();
+  const namespaces = declared && declared.includes('xmlns:w=') ? declared : DEFAULT_NAMESPACES;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document ${namespaces}><w:body>`;
+}
 
 export interface RebuildResult {
   bytes: Uint8Array;
   paragraphs: number;
   tables: number;
   relationships: number;
+  /** Blocks written back verbatim from `bundle.preservedBlocks`. */
+  restoredBlocks: number;
+  /** Markers whose block id was not found in the bundle. */
+  unknownMarkers: string[];
+  /** Package entries that were written back from the original container. */
+  restoredParts: string[];
 }
 
 export async function rebuildDocx(markdown: string, bundle: KotohaBundle): Promise<RebuildResult> {
   const attributes = bundle.attributes;
   const rels = new RelBuilder(bundle.ooxml.documentRelsXml);
-  const ctx: BlockContext = { bundle, attributes, rels, imageCounter: { next: 0 } };
+  const ctx: BlockContext = {
+    bundle,
+    attributes,
+    rels,
+    imageCounter: { next: 0 },
+    restored: { blocks: 0, unknownMarkers: [] },
+  };
 
   const { body, paragraphs, tables } = markdownToBody(markdown, ctx);
   const sectPr = patchSectPr(bundle.ooxml.sectPrXml, attributes);
-  const documentXml = `${DOCUMENT_OPEN}${body}${sectPr}</w:body></w:document>`;
+  const documentXml = `${documentOpen(bundle)}${body}${sectPr}</w:body></w:document>`;
   const stylesXml = applyAttributeEdits(bundle.ooxml.stylesXml, attributes);
   const relsXml = rels.serialise();
 
   const zip = new JSZip();
   const mediaPaths = Object.keys(bundle.ooxml.media);
+
+  // 1. Every preserved package entry first, so nothing the original container carried
+  //    (footnotes, comments, customXml, part rels, embedded objects) is lost.
+  const restoredParts: string[] = [];
+  for (const [path, part] of Object.entries(bundle.ooxml.extraParts ?? {})) {
+    if (part.encoding === 'base64') zip.file(path, part.data, { base64: true });
+    else zip.file(path, part.data);
+    restoredParts.push(path);
+  }
+
+  // 2. The parts Kotoha rebuilds or patches.
   zip.file('word/document.xml', documentXml);
   zip.file('word/styles.xml', stylesXml);
   zip.file('word/_rels/document.xml.rels', relsXml);
@@ -478,5 +583,16 @@ export async function rebuildDocx(markdown: string, bundle: KotohaBundle): Promi
   for (const [path, xml] of Object.entries(bundle.ooxml.docProps)) zip.file(path, xml);
 
   const bytes = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-  return { bytes, paragraphs, tables, relationships: relsXml.split('<Relationship ').length - 1 };
+  return {
+    bytes,
+    paragraphs,
+    tables,
+    relationships: relsXml.split('<Relationship ').length - 1,
+    restoredBlocks: ctx.restored.blocks,
+    unknownMarkers: ctx.restored.unknownMarkers,
+    restoredParts,
+  };
 }
+
+/** Re-exported for callers that only need the natural size of an embedded picture. */
+export { imageSizeFromBase64 };

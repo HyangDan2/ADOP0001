@@ -4,7 +4,7 @@
 
 import type { EngineAdapter, EngineRequest, EngineResult, ProviderMode } from '../../adapters/types';
 import { baseName, sha256Hex } from '../../lib/util';
-import type { BundleAttributes, KotohaBundle } from './bundle';
+import { mergeAttributes, type BundleAttributes, type KotohaBundle, type LossWarning } from './bundle';
 import { decomposeDocx } from './read';
 import { rebuildDocx } from './write';
 import { buildSampleDocx } from './sample';
@@ -28,6 +28,14 @@ export interface KotohaOutput {
   docx?: Uint8Array;
   paragraphs?: number;
   tables?: number;
+  /** Structural limits hit while reading (KOT-001/KOT-002). */
+  warnings: LossWarning[];
+  /** On rebuild: how many preserved blocks were written back verbatim. */
+  restoredBlocks?: number;
+  /** On rebuild: package entries carried over from the original container. */
+  restoredParts?: number;
+  /** On rebuild: markers whose block id no longer exists in the bundle. */
+  unknownMarkers?: string[];
 }
 
 export class KotohaAdapter implements EngineAdapter<KotohaOutput, KotohaOptions> {
@@ -38,6 +46,7 @@ export class KotohaAdapter implements EngineAdapter<KotohaOutput, KotohaOptions>
   readonly capabilities = [
     'OOXML の document.xml から、スタイル・リスト・表・リンク・メディアを保って Markdown へ',
     'スタイル・テーマ・番号付け・ヘッダー・フッター・余白を保持するスタイルバンドル（.kotoha.json + IndexedDB）',
+    'Markdown で表せない要素は原本のまま保持し、制限は変換前に一覧で警告',
     'フォント・サイズ・行間・余白・見出し色を編集できるスタイル＆属性インスペクタ',
     'Markdown から元の見た目を保った有効な .docx への再構築',
     'ワンクリックでサンプル .docx を生成',
@@ -59,6 +68,7 @@ export class KotohaAdapter implements EngineAdapter<KotohaOutput, KotohaOptions>
         docx: bytes,
         paragraphs: document.bundle.stats.paragraphs,
         tables: document.bundle.stats.tables,
+        warnings: document.bundle.warnings ?? [],
       };
     } else if (options.action === 'decompose') {
       if (!options.bytes) throw new Error('No document bytes were supplied for decomposition.');
@@ -71,14 +81,16 @@ export class KotohaAdapter implements EngineAdapter<KotohaOutput, KotohaOptions>
         bundle: document.bundle,
         paragraphs: document.bundle.stats.paragraphs,
         tables: document.bundle.stats.tables,
+        warnings: document.bundle.warnings ?? [],
       };
     } else {
       const bundle = options.bundle;
       if (!bundle) throw new Error('No style bundle is loaded, so Markdown cannot be rebuilt.');
       const markdown = options.markdown ?? request.source;
+      // The bundle always carries the inspector's current attributes (KOT-003).
       const merged: KotohaBundle = {
         ...bundle,
-        attributes: { ...bundle.attributes, ...(options.attributes ?? {}) },
+        attributes: mergeAttributes(bundle.attributes, options.attributes),
       };
       const result = await rebuildDocx(markdown, merged);
       output = {
@@ -89,6 +101,10 @@ export class KotohaAdapter implements EngineAdapter<KotohaOutput, KotohaOptions>
         docx: result.bytes,
         paragraphs: result.paragraphs,
         tables: result.tables,
+        warnings: merged.warnings ?? [],
+        restoredBlocks: result.restoredBlocks,
+        restoredParts: result.restoredParts.length,
+        unknownMarkers: result.unknownMarkers,
       };
     }
 

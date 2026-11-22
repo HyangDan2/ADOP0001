@@ -105,22 +105,34 @@ the contracts a server-backed hybrid engine must satisfy.
   budgeting and `.fewshot.json` round trips, and the workspace tree builder, filter and file routing.
   `tests/haruhi-reliability.test.ts` and `tests/takane-reliability.test.ts` pin the Phase 1 engine
   matrix (case inputs, framework emitters, static mapping, Python parameter order, C/C++ file split,
-  literal escaping, MCU buffer bounds).
+  literal escaping, MCU buffer bounds). `tests/kotoha-integrity.test.ts` pins Phase 2 on six DOCX
+  fixtures (report, merged table, JPEG/PNG pictures, multi-level lists, multi-section, special
+  OOXML): package-part survival, preserved blocks, header-row and merge handling, picture extents,
+  per-list numbering, the bundle export/import SSoT and every read limit. `tests/drafts.test.ts`
+  covers the per-tool draft store (version, migration, size policy, explicit clear).
 - `npm run qa:generated` writes every scaffold to `.qa-out/` and verifies it independently:
   `ast.parse` + import for Python, `pytest`, `gcc`/`clang`/`zig cc -std=c11` and `-std=c++17`,
   a real Vitest project for the generated TypeScript, `go test`, and `javac` + JUnit 5 when a JDK
   and the standalone jar are available. Missing toolchains are reported as SKIP with the reason.
-- 11 Playwright end-to-end tests against the deployed site: all six tools, 貴音 generating and
+- Playwright end-to-end tests against the deployed site: all six tools, 貴音 generating and
   exporting Python/C/C++/MCU, the export dialog, the few-shot upload/persistence flow, the PC
   workspace rail, the 3-column layout, theme switch, kebab menu, help modal and a 390px mobile pass.
+  `tests/e2e/phase2.spec.ts` adds the data-integrity matrix: REG-01 (tool switch keeps input),
+  REG-02 (reload restores the draft), REG-07 (JPEG aspect ratio), REG-08 (merged table confirmed and
+  preserved), REG-09 (inspector edit → JSON → reimport → rebuild), REG-13 (oversized upload refused,
+  open document kept) and per-list numbering.
 
 ## Limitations
 
 - The static analysers are heuristic, not full AST parsers: unusual syntax (decorators, macros,
   templates with unbalanced braces) can be missed or misread.
-- Kotoha preserves the OOXML template faithfully, but rich structures it cannot express in
-  Markdown (text boxes, footnotes, tracked changes, SmartArt) are kept inside the bundle only
-  where they are part of styles/header/footer; body content of those blocks is not rebuilt.
+- Kotoha keeps every package part and rebuilds the body, but Markdown cannot express everything:
+  text boxes, footnotes, tracked changes, maths, content controls, fields, section breaks, floating
+  pictures and merged or nested tables stay **read-only**. They are stored verbatim in the bundle,
+  marked in the Markdown (`<!-- kotoha:preserved id=… -->`) and listed in the Inspector and in a
+  confirmation dialog before the document is replaced — never dropped silently.
+- Kotoha bounds its browser-side work (25 MB upload, 2,000 zip entries, 20 MB per entry, 80 MB
+  uncompressed); a file over a limit is refused with an explanation and the open document is kept.
 - UML auto-selection is a scored heuristic with an explicit confidence badge; every kind can be
   chosen manually.
 - Option B (AI hybrid) is designed and specified, not implemented: the prompt/few-shot pane collects

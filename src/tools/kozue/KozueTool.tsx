@@ -4,6 +4,8 @@ import { ExportModal } from '../../components/ExportModal';
 import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { downloadBlob } from '../../lib/util';
+import { useToolDraft } from '../../lib/drafts';
+import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
 import { KozueAdapter, kindLabel, type Direction, type KozueOutput, type UmlKind } from './adapter';
 import { loadMermaid, type MermaidTheme } from './mermaid';
@@ -21,10 +23,18 @@ const KIND_LABEL_JA: Record<UmlKind, string> = {
 };
 
 export function KozueTool() {
-  const [source, setSource] = useState(SAMPLE_BY_EXT[0].code);
-  const [fileName, setFileName] = useState(SAMPLE_BY_EXT[0].fileName);
-  const [kind, setKind] = useState<UmlKind | 'auto'>('auto');
-  const [direction, setDirection] = useState<Direction>('TD');
+  // APP-001: the diagram input and its two options are kept in a draft.
+  const { draft, setField, state: draftState } = useToolDraft('kozue', {
+    source: SAMPLE_BY_EXT[0].code,
+    fileName: SAMPLE_BY_EXT[0].fileName,
+    kind: 'auto' as UmlKind | 'auto',
+    direction: 'TD' as Direction,
+  });
+  const { source, fileName, kind, direction } = draft;
+  const setSource = (value: string) => setField('source', value);
+  const setFileName = (value: string) => setField('fileName', value);
+  const setKind = (value: UmlKind | 'auto') => setField('kind', value);
+  const setDirection = (value: Direction) => setField('direction', value);
   const [output, setOutput] = useState<KozueOutput | null>(null);
   const [svg, setSvg] = useState<string>('');
   const [renderError, setRenderError] = useState<string | null>(null);
@@ -323,6 +333,7 @@ export function KozueTool() {
       <div className="statusbar">
         <span className="dot" /> <span>Mermaid レンダラー</span>
         <span>{Math.round(scale * 100)}% ズーム</span>
+        <DraftStateBadge state={draftState} />
         <span className={renderError ? 'err' : 'ok'}>{renderError ? `エラー: ${renderError}` : 'エラーなし'}</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}

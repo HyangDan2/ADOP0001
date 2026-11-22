@@ -4,6 +4,10 @@ export interface XmlNode {
   tag: string;
   attrs: Record<string, string>;
   children: (XmlNode | string)[];
+  /** Byte offset of the opening `<` in the source string (set by `parseXml`). */
+  start?: number;
+  /** Offset just past the closing `>` in the source string. */
+  end?: number;
 }
 
 const ENTITIES: Record<string, string> = {
@@ -96,6 +100,7 @@ export function parseXml(xml: string): XmlNode {
       const tag = raw.slice(1).trim();
       for (let s = stack.length - 1; s > 0; s -= 1) {
         if (stack[s].tag === tag) {
+          stack[s].end = gt + 1;
           stack.length = s;
           break;
         }
@@ -108,9 +113,10 @@ export function parseXml(xml: string): XmlNode {
     const space = body.search(/\s/);
     const tag = (space === -1 ? body : body.slice(0, space)).trim();
     const attrs = space === -1 ? {} : parseAttrs(body.slice(space));
-    const node: XmlNode = { tag, attrs, children: [] };
+    const node: XmlNode = { tag, attrs, children: [], start: lt, end: gt + 1 };
     stack[stack.length - 1].children.push(node);
     if (!selfClosing) stack.push(node);
+    else node.end = gt + 1;
     i = gt + 1;
   }
   return root;

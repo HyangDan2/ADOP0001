@@ -8,6 +8,7 @@ import { TOOLS, toolFromHash, type ToolMeta } from './adapters/registry';
 import type { ToolId } from './adapters/types';
 import { publishOpenedFile, type OpenedFile } from './lib/fileBus';
 import { activeExampleCounts } from './lib/fewShotStore';
+import { resetAllDrafts } from './lib/drafts';
 import { ShioriTool } from './tools/shiori/ShioriTool';
 import { YayoiTool } from './tools/yayoi/YayoiTool';
 import { KozueTool } from './tools/kozue/KozueTool';
@@ -50,6 +51,8 @@ export default function App() {
   const [counts, setCounts] = useState<Record<ToolId, number>>(ZERO_COUNTS);
   const [fewShotVersion, setFewShotVersion] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  /** Bumped after an explicit draft reset so the open tool re-reads empty storage. */
+  const [draftEpoch, setDraftEpoch] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const refreshCounts = useCallback(() => {
@@ -134,6 +137,12 @@ export default function App() {
   const go = (id: string) => {
     window.location.hash = `#/${id}`;
     setTool(toolFromHash(`#/${id}`));
+    setMenuOpen(false);
+  };
+
+  const resetDrafts = async () => {
+    await resetAllDrafts(TOOLS.map((item) => item.id));
+    setDraftEpoch((value) => value + 1);
     setMenuOpen(false);
   };
 
@@ -257,6 +266,12 @@ export default function App() {
                   </button>
                 ))}
                 <div className="menu-sep" />
+                <div className="menu-group">作業データ</div>
+                <button type="button" role="menuitem" onClick={() => void resetDrafts()} data-testid="reset-drafts">
+                  <span className="menu-jp">初期化</span>
+                  <span>下書きをすべて破棄</span>
+                </button>
+                <div className="menu-sep" />
                 <div className="menu-group">HD2Lab</div>
                 <a href="https://hyangdan2.github.io/" role="menuitem" target="_blank" rel="noreferrer">
                   <span className="menu-jp">HQ</span>
@@ -292,7 +307,7 @@ export default function App() {
           />
         ) : null}
 
-        <main className="workspace" key={tool.id}>
+        <main className="workspace" key={`${tool.id}:${draftEpoch}`}>
           <div className="tool-head">
             <div>
               <h1>

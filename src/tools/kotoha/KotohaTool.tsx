@@ -1,12 +1,23 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { EmptyHint, LineEditor, ToolPane } from '../../components/ui';
 import { ExportModal } from '../../components/ExportModal';
 import { DOCX_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { copyText, downloadBlob } from '../../lib/util';
 import { KotohaAdapter, type KotohaOutput } from './adapter';
-import type { BundleAttributes, KotohaBundle } from './bundle';
-import { inchToTwips, loadLatestBundle, saveBundle, storageLabel, twipsToInch } from './index';
+import { parseBundleExport, withAttributes, type BundleAttributes, type KotohaBundle, type LossWarning } from './bundle';
+import {
+  inchToTwips,
+  kotohaErrorCode,
+  loadDocumentDraft,
+  loadLatestBundle,
+  saveBundle,
+  saveDocumentDraft,
+  clearKotohaDocument,
+  storageLabel,
+  twipsToInch,
+  KOTOHA_LIMITS,
+} from './index';
 
 const adapter = new KotohaAdapter();
 const PRESET_KEY = 'adop0001.kotoha.presets';
@@ -14,6 +25,28 @@ const PRESET_KEY = 'adop0001.kotoha.presets';
 /** The store reports `indexeddb` / `memory`; the UI shows a Japanese label. */
 function storageName(storage: 'indexeddb' | 'memory'): string {
   return storage === 'indexeddb' ? 'IndexedDB' : 'メモリ';
+}
+
+/**
+ * User-facing Japanese explanation for a read/bundle failure. The engine keeps its
+ * messages in English; the UI never shows them raw (KOT-004).
+ */
+const ERROR_LABEL: Record<string, string> = {
+  'file-too-large': `ファイルが大きすぎます。上限は ${KOTOHA_LIMITS.maxFileBytes / 1024 / 1024} MB です。`,
+  'too-many-entries': `この .docx は中身の部品が多すぎます（上限 ${KOTOHA_LIMITS.maxEntries} 個）。`,
+  'entry-too-large': 'この .docx の内部パーツが大きすぎるため、安全のため読み込みを中止しました。',
+  'expanded-too-large': 'この .docx を展開すると大きくなりすぎるため、安全のため読み込みを中止しました。',
+  'corrupt-zip': 'ファイルが壊れているか、.docx（zip）ではありません。',
+  'no-document-xml': 'このファイルには word/document.xml がありません。.docx 文書ではありません。',
+  'no-body': 'この文書には本文（w:body）がありません。',
+  'bad-bundle': 'この JSON は琴葉のバンドルではありません。',
+};
+
+function explainError(cause: unknown, fallback: string): string {
+  const code = kotohaErrorCode(cause);
+  if (code && ERROR_LABEL[code]) return ERROR_LABEL[code];
+  if (cause instanceof Error && cause.name === 'BundleFormatError') return cause.message;
+  return cause instanceof Error ? cause.message : fallback;
 }
 
 interface Preset {
@@ -30,6 +63,11 @@ function readPresets(): Preset[] {
   }
 }
 
+function warningSummary(warnings: LossWarning[]): string {
+  const total = warnings.reduce((sum, item) => sum + item.count, 0);
+  return `原本のまま保持する箇所 ${total} 件`;
+}
+
 export function KotohaTool() {
   const [document, setDocument] = useState<{ bundle: KotohaBundle; markdown: string } | null>(null);
   const [markdown, setMarkdown] = useState('');
@@ -44,16 +82,43 @@ export function KotohaTool() {
   const [presetName, setPresetName] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [exportOpen, setExportOpen] = useState(false);
+  const [pending, setPending] = useState<KotohaOutput | null>(null);
+  const [restored, setRestored] = useState<string | null>(null);
+  /** Guards the async draft restore: a user action always wins over a late load. */
+  const userTouched = useRef(false);
 
   useEffect(() => {
     void loadLatestBundle().then((record) => {
       if (record) setStorage(`${new Date(record.savedAt).toLocaleString('ja-JP')} に保存したバンドル · ${storageLabel()}`);
     });
+    void loadDocumentDraft().then((draft) => {
+      if (!draft || !draft.bundle || userTouched.current) return;
+      setDocument({ bundle: draft.bundle, markdown: draft.markdown });
+      setMarkdown(draft.markdown);
+      setAttributes(draft.attributes ?? draft.bundle.attributes);
+      setRestored(new Date(draft.savedAt).toLocaleString('ja-JP'));
+      setStorage(`下書きを復元しました · ${storageLabel()}`);
+    });
   }, []);
+
+  // The draft keeps the edited Markdown, the inspector attributes and the bundle together.
+  useEffect(() => {
+    if (!document) return;
+    const timer = window.setTimeout(() => {
+      void saveDocumentDraft({
+        markdown,
+        attributes,
+        bundle: withAttributes(document.bundle, attributes),
+      }).then((saved) => {
+        if (saved.storage === 'memory') setStorage('下書きを保存できませんでした（メモリのみ）');
+      });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [document, markdown, attributes]);
 
   const showToast = (message: string) => {
     setToast(message);
-    window.setTimeout(() => setToast(null), 2000);
+    window.setTimeout(() => setToast(null), 2200);
   };
 
   const adopt = async (outputValue: KotohaOutput) => {
@@ -62,11 +127,28 @@ export function KotohaTool() {
     setAttributes(outputValue.bundle.attributes);
     setOutput(outputValue);
     setElapsed(0);
+    setPending(null);
+    setRestored(null);
     const saved = await saveBundle(outputValue.bundle);
+    await saveDocumentDraft({
+      markdown: outputValue.markdown,
+      attributes: outputValue.bundle.attributes,
+      bundle: outputValue.bundle,
+    });
     setStorage(`スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString('ja-JP')}`);
   };
 
+  /** A document with structural limits is shown to the user *before* it replaces the current work. */
+  const offer = async (outputValue: KotohaOutput) => {
+    if (outputValue.warnings.length) {
+      setPending(outputValue);
+      return;
+    }
+    await adopt(outputValue);
+  };
+
   const runSample = async () => {
+    userTouched.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -81,15 +163,20 @@ export function KotohaTool() {
       setElapsed(result.elapsedMs);
       showToast('サンプル .docx を生成して分解しました');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'サンプルを生成できませんでした。');
+      setError(explainError(cause, 'サンプルを生成できませんでした。'));
     } finally {
       setBusy(false);
     }
   };
 
   const loadDocx = async (file: File) => {
-    setBusy(true);
+    userTouched.current = true;
     setError(null);
+    if (file.size > KOTOHA_LIMITS.maxFileBytes) {
+      setError(ERROR_LABEL['file-too-large']);
+      return;
+    }
+    setBusy(true);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const result = await adapter.run({
@@ -99,30 +186,33 @@ export function KotohaTool() {
         options: { action: 'decompose', bytes, fileName: file.name },
         mode: 'local-static',
       });
-      await adopt(result.output);
+      await offer(result.output);
       setElapsed(result.elapsedMs);
       showToast(`${file.name} を分解しました`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'このファイルは .docx 文書として読み取れませんでした。');
+      // The current document is untouched on failure (KOT-004).
+      setError(explainError(cause, 'このファイルは .docx 文書として読み取れませんでした。'));
     } finally {
       setBusy(false);
     }
   };
 
   const loadBundleFile = async (file: File) => {
+    userTouched.current = true;
     setError(null);
     try {
-      const parsed = JSON.parse(await file.text()) as { bundle?: KotohaBundle; markdown?: string };
-      if (!parsed.bundle) throw new Error('この JSON ファイルにはスタイルバンドルが含まれていません。');
-      setDocument({ bundle: parsed.bundle, markdown: parsed.markdown ?? '' });
-      setMarkdown(parsed.markdown ?? '');
-      setAttributes(parsed.bundle.attributes);
-      setOutput(null);
-      const saved = await saveBundle(parsed.bundle);
-      setStorage(`スタイルバンドルを読み込み、${storageName(saved.storage)} に保存しました`);
+      const parsed = parseBundleExport(await file.text());
+      await adopt({
+        action: 'decompose',
+        fileName: parsed.bundle.fileName,
+        markdown: parsed.markdown,
+        bundle: parsed.bundle,
+        warnings: parsed.bundle.warnings ?? [],
+      });
+      setStorage(`スタイルバンドルを読み込み、${storageLabel()} に保存しました`);
       showToast('スタイルバンドルを読み込みました');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'このファイルは琴葉のバンドルではありません。');
+      setError(explainError(cause, 'このファイルは琴葉のバンドルではありません。'));
     }
   };
 
@@ -145,6 +235,9 @@ export function KotohaTool() {
       });
       setOutput(result.output);
       setElapsed(result.elapsedMs);
+      // The rebuilt bundle carries the same attributes that were applied (KOT-003).
+      setDocument({ bundle: result.output.bundle, markdown });
+      await saveDocumentDraft({ markdown, attributes: result.output.bundle.attributes, bundle: result.output.bundle });
       if (download && result.output.docx) {
         downloadBlob(
           result.output.fileName,
@@ -154,7 +247,7 @@ export function KotohaTool() {
       }
       showToast('保持したバンドルで .docx を再構築しました');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '文書を再構築できませんでした。');
+      setError(explainError(cause, '文書を再構築できませんでした。'));
     } finally {
       setBusy(false);
     }
@@ -165,20 +258,35 @@ export function KotohaTool() {
     else void loadBundleFile(opened.file);
   });
 
+  /** Export always merges the inspector's current values into the bundle (KOT-003). */
   const exportBundle = (base?: string) => {
     if (!document) return;
+    const source = withAttributes(document.bundle, attributes);
     const payload = {
       version: 1,
       tool: 'kotoha',
       exportedAt: new Date().toISOString(),
       markdown,
-      bundle: document.bundle,
+      bundle: source,
     };
     downloadBlob(
       `${base ?? document.bundle.fileName.replace(/\.docx$/i, '')}.kotoha.json`,
       JSON.stringify(payload, null, 2),
       'application/json;charset=utf-8',
     );
+  };
+
+  const resetDocument = async () => {
+    setDocument(null);
+    setMarkdown('');
+    setAttributes(null);
+    setOutput(null);
+    setPending(null);
+    setRestored(null);
+    setError(null);
+    setStorage('未保存');
+    await clearKotohaDocument();
+    showToast('この文書と下書きを破棄しました');
   };
 
   const savePreset = () => {
@@ -195,6 +303,8 @@ export function KotohaTool() {
   };
 
   const stats = document?.bundle.stats;
+  const warnings = document?.bundle.warnings ?? [];
+  const preservedCount = Object.keys(document?.bundle.preservedBlocks ?? {}).length;
   const attributesReady = Boolean(attributes);
 
   const update = (patch: Partial<BundleAttributes>) => {
@@ -224,6 +334,9 @@ export function KotohaTool() {
                   data-testid="kotoha-file"
                   onChange={(event) => {
                     const file = event.target.files?.[0];
+                    // Reset first so choosing the same file again (e.g. after cancelling
+                    // the loss confirmation) still fires a change event.
+                    event.target.value = '';
                     if (file) void loadDocx(file);
                   }}
                 />
@@ -234,8 +347,10 @@ export function KotohaTool() {
                   type="file"
                   accept=".json"
                   style={{ display: 'none' }}
+                  data-testid="kotoha-bundle-file"
                   onChange={(event) => {
                     const file = event.target.files?.[0];
+                    event.target.value = '';
                     if (file) void loadBundleFile(file);
                   }}
                 />
@@ -246,7 +361,7 @@ export function KotohaTool() {
             <>
               <span>{document?.bundle.fileName ?? '文書が読み込まれていません'}</span>
               <span>{markdown.split('\n').length} 行の Markdown</span>
-              <span>{storage}</span>
+              <span data-testid="kotoha-storage">{storage}</span>
             </>
           }
         >
@@ -255,6 +370,11 @@ export function KotohaTool() {
               <EmptyHint title="サンプルか、お手元の .docx から始めましょう">
                 琴葉は文書を Markdown に分解しながら、テンプレートをスタイルバンドルとして保持します。
               </EmptyHint>
+              {restored ? (
+                <p style={{ color: 'var(--muted)', fontSize: 12, textAlign: 'center' }}>
+                  前回の下書き（{restored}）を復元しました。
+                </p>
+              ) : null}
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
                 <button type="button" className="btn btn-primary" onClick={() => void runSample()} disabled={busy} data-testid="kotoha-sample">
                   {busy ? <span className="spinner" /> : null} サンプル .docx を生成
@@ -286,7 +406,18 @@ export function KotohaTool() {
                 <button type="button" className="btn btn-sm" onClick={() => void copyText(markdown).then((ok) => showToast(ok ? 'Markdown をコピーしました' : 'コピーに失敗しました'))}>
                   MD をコピー
                 </button>
+                <button type="button" className="btn btn-sm btn-ghost" onClick={() => void resetDocument()} data-testid="kotoha-reset">
+                  破棄
+                </button>
               </div>
+              {warnings.length ? (
+                <div
+                  data-testid="kotoha-warning-banner"
+                  style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', color: 'var(--warn)', fontSize: 12 }}
+                >
+                  {warningSummary(warnings)} — インスペクタの「制限事項」で確認できます。
+                </div>
+              ) : null}
               <LineEditor value={markdown} onChange={setMarkdown} ariaLabel="Markdown 文書" />
             </div>
           )}
@@ -333,6 +464,7 @@ export function KotohaTool() {
                   <div className="stat"><b>{stats?.footers ?? 0}</b><span>フッター</span></div>
                   <div className="stat"><b>{stats?.images ?? 0}</b><span>メディア</span></div>
                   <div className="stat"><b>{stats?.tables ?? 0}</b><span>表</span></div>
+                  <div className="stat"><b>{preservedCount}</b><span>原本保持ブロック</span></div>
                 </div>
 
                 <div className="inspector-grid">
@@ -349,6 +481,7 @@ export function KotohaTool() {
                       max="30"
                       value={attributes.baseFontSizePt}
                       onChange={(event) => update({ baseFontSizePt: Number(event.target.value) })}
+                      data-testid="attr-size"
                     />
                   </label>
                   <label className="field">
@@ -360,8 +493,8 @@ export function KotohaTool() {
                       max="3"
                       value={attributes.lineSpacing}
                       onChange={(event) => update({ lineSpacing: Number(event.target.value) })}
-                    />
-                  </label>
+                      data-testid="attr-line"
+                    /></label>
                   <label className="field">
                     ページ
                     <input value={pageLabel} readOnly />
@@ -404,6 +537,7 @@ export function KotohaTool() {
                           onChange={(event) =>
                             update({ headingColors: { ...attributes.headingColors, [`Heading${level}`]: event.target.value.replace('#', '').toUpperCase() } })
                           }
+                          data-testid={`attr-heading-${level}`}
                         />
                       </span>
                     </label>
@@ -414,6 +548,23 @@ export function KotohaTool() {
                   <span className="badge soft">ヘッダー{attributes.headerPreserved ? '保持済み' : 'なし'}</span>
                   <span className="badge soft">フッター{attributes.footerPreserved ? '保持済み' : 'なし'}</span>
                   <span className="badge soft">sectPr の余白を適用</span>
+                </div>
+
+                <div style={{ display: 'grid', gap: 6 }} data-testid="kotoha-warnings">
+                  <strong style={{ fontSize: 12.5, color: 'var(--ink)' }}>制限事項</strong>
+                  {warnings.length === 0 ? (
+                    <span style={{ color: 'var(--muted)', fontSize: 12 }}>なし — すべてのブロックを Markdown で編集できます。</span>
+                  ) : (
+                    warnings.map((warning) => (
+                      <div key={warning.code} className="check-item">
+                        <span className="check-mark">·</span>
+                        <span>
+                          {warning.labelJa}
+                          <span style={{ color: 'var(--muted)' }}> · {warning.count} 件{warning.detail ? ` · ${warning.detail}` : ''}</span>
+                        </span>
+                      </div>
+                    ))
+                  )}
                 </div>
 
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -453,6 +604,9 @@ export function KotohaTool() {
                 {output?.docx ? (
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     <span className="save-state ok">再構築済み: {output.fileName}</span>
+                    <span className="badge soft" data-testid="kotoha-roundtrip">
+                      原本保持 {output.restoredBlocks ?? 0} ブロック · パーツ {output.restoredParts ?? 0} 件
+                    </span>
                     <button
                       type="button"
                       className="btn btn-sm"
@@ -481,6 +635,7 @@ export function KotohaTool() {
                   <div className="stat"><b>{Object.keys(document.bundle.ooxml.headers).length}</b><span>ヘッダー要素</span></div>
                   <div className="stat"><b>{Object.keys(document.bundle.ooxml.footers).length}</b><span>フッター要素</span></div>
                   <div className="stat"><b>{Object.keys(document.bundle.ooxml.media).length}</b><span>メディア要素</span></div>
+                  <div className="stat"><b>{Object.keys(document.bundle.ooxml.extraParts ?? {}).length}</b><span>その他パーツ</span></div>
                 </div>
                 <div className="table-scroll">
                   <table className="grid">
@@ -532,6 +687,37 @@ export function KotohaTool() {
         <span className={error ? 'err' : 'ok'}>{error ? `エラー: ${error}` : 'エラーなし'}</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
+
+      {pending ? (
+        <div className="modal-backdrop" data-testid="kotoha-loss-dialog" role="dialog" aria-modal="true" aria-label="変換前の確認">
+          <div className="modal" style={{ width: 'min(620px, 100%)' }}>
+            <h2>変換前の確認<span className="jp">原本保持</span></h2>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <p style={{ color: 'var(--muted)', fontSize: 12.5 }}>
+                Markdown で正確に表せない要素があります。これらは削除せず原本の OOXML のまま保持し、再構築時にその位置へ戻します（編集はできません）。
+              </p>
+              {pending.warnings.map((warning) => (
+                <div key={warning.code} className="check-item">
+                  <span className="check-mark">·</span>
+                  <span>
+                    {warning.labelJa}
+                    <span style={{ color: 'var(--muted)' }}> · {warning.count} 件</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="row" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button type="button" className="btn" onClick={() => { setPending(null); showToast('読み込みを中止しました（現在の文書はそのままです）'); }} data-testid="kotoha-loss-cancel">
+                読み込まない
+              </button>
+              <button type="button" className="btn btn-primary" onClick={() => void adopt(pending)} data-testid="kotoha-loss-continue">
+                このまま読み込む
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {exportOpen && document ? (
         <ExportModal
           toolLabel="Docx↔MD往復（琴葉）"

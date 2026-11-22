@@ -4,6 +4,8 @@ import { ExportModal } from '../../components/ExportModal';
 import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { downloadBlob } from '../../lib/util';
+import { useToolDraft } from '../../lib/drafts';
+import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
 import { FRAMEWORK_LABEL, HaruhiAdapter, outputFileName, type Framework, type HaruhiOutput } from './adapter';
 
@@ -25,9 +27,16 @@ function branchReasonLabel(item: { reasonCode?: string; reason?: string }): stri
 const FRAMEWORKS: Framework[] = ['vitest', 'jest', 'pytest', 'junit5', 'go'];
 
 export function HaruhiTool() {
-  const [source, setSource] = useState(SAMPLE_BY_EXT[0].code);
-  const [fileName, setFileName] = useState(SAMPLE_BY_EXT[0].fileName);
-  const [framework, setFramework] = useState<Framework>('vitest');
+  // APP-001: source, name and target framework are kept in a draft.
+  const { draft, setField, state: draftState } = useToolDraft('haruhi', {
+    source: SAMPLE_BY_EXT[0].code,
+    fileName: SAMPLE_BY_EXT[0].fileName,
+    framework: 'vitest' as Framework,
+  });
+  const { source, fileName, framework } = draft;
+  const setSource = (value: string) => setField('source', value);
+  const setFileName = (value: string) => setField('fileName', value);
+  const setFramework = (value: Framework) => setField('framework', value);
   const [output, setOutput] = useState<HaruhiOutput | null>(null);
   const [tab, setTab] = useState<'code' | 'checklist'>('code');
   const [busy, setBusy] = useState(false);
@@ -198,6 +207,7 @@ export function HaruhiTool() {
       <div className="statusbar">
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
+        <DraftStateBadge state={draftState} />
         <span className="ok">エラーなし</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
