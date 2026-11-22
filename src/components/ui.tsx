@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 export function Segmented<T extends string>(props: {
   value: T;
@@ -35,6 +35,20 @@ export function LineEditor(props: {
   const gutterRef = useRef<HTMLDivElement>(null);
   const lineCount = Math.max(1, props.value.split('\n').length);
   const highlight = new Set(props.highlightLines ?? []);
+  // UI-002: a long file rebuilds thousands of gutter rows on every keystroke.
+  // The row list only changes with the line count or the highlighted lines, so it
+  // is memoised instead of being recreated for each character typed.
+  const highlightKey = (props.highlightLines ?? []).join(',');
+  const gutter = useMemo(
+    () =>
+      Array.from({ length: lineCount }, (_, index) => (
+        <div key={index} className={highlight.has(index + 1) ? 'hl' : undefined}>
+          {index + 1}
+        </div>
+      )),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lineCount, highlightKey],
+  );
 
   useEffect(() => {
     if (areaRef.current && gutterRef.current) {
@@ -45,11 +59,7 @@ export function LineEditor(props: {
   return (
     <div className="editor-wrap">
       <div className="editor-gutter" ref={gutterRef} aria-hidden="true">
-        {Array.from({ length: lineCount }, (_, index) => (
-          <div key={index} className={highlight.has(index + 1) ? 'hl' : undefined}>
-            {index + 1}
-          </div>
-        ))}
+        {gutter}
       </div>
       <textarea
         ref={areaRef}
