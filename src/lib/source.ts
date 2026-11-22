@@ -338,6 +338,27 @@ function normaliseCondition(raw: string): string {
   return raw.replace(/\s+/g, ' ').replace(/^\((.*)\)$/s, '$1').trim();
 }
 
+/** Decorators that change how a Python method is called (`@staticmethod`, `@classmethod`). */
+function pythonMethodModifiers(lines: string[], defIndex: number): string[] {
+  const modifiers = ['method'];
+  for (let i = defIndex - 1; i >= 0; i -= 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (!line.startsWith('@')) break;
+    const name = line.slice(1).split('(')[0].trim();
+    if (name === 'staticmethod') modifiers.push('static');
+    if (name === 'classmethod') modifiers.push('classmethod');
+  }
+  return modifiers;
+}
+
+/** Java method modifiers: a `throws` clause is useful context, `static` changes the call shape. */
+function staticOrThrows(line: string, throwsClause?: string): string[] {
+  const modifiers = /\bstatic\b/.test(line) ? ['static'] : [];
+  if (throwsClause) modifiers.push(`throws ${throwsClause}`);
+  return modifiers;
+}
+
 function extractGuards(
   bodyLines: { text: string; line: number }[],
   lang: Lang,
@@ -661,7 +682,7 @@ function parseJsLike(module: ParsedModule): void {
           guards,
           errors,
           calls: collectCalls(bodyLines.map((b) => b.text).join('\n'), lang),
-          modifiers: ['method'],
+          modifiers: /\bstatic\b/.test(methodLine) ? ['method', 'static'] : ['method'],
         });
         j = methodEnd;
       }
@@ -833,7 +854,7 @@ function parsePython(module: ParsedModule): void {
           guards,
           errors,
           calls: collectCalls(bodyLines.map((b) => b.text).join('\n'), 'python'),
-          modifiers: ['method'],
+          modifiers: pythonMethodModifiers(lines, j),
         });
       }
       i = end;
@@ -958,7 +979,7 @@ function parseJava(module: ParsedModule): void {
           guards,
           errors,
           calls: collectCalls(bodyLines.map((b) => b.text).join('\n'), 'java'),
-          modifiers: throwsClause ? [`throws ${throwsClause}`] : [],
+          modifiers: staticOrThrows(line, throwsClause),
         });
         j = methodEnd;
       }

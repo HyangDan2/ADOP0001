@@ -8,6 +8,20 @@ import { SAMPLE_BY_EXT } from '../samples';
 import { FRAMEWORK_LABEL, HaruhiAdapter, outputFileName, type Framework, type HaruhiOutput } from './adapter';
 
 const adapter = new HaruhiAdapter();
+
+/** Japanese explanation for a branch that no running test reaches. */
+function branchReasonLabel(item: { reasonCode?: string; reason?: string }): string {
+  switch (item.reasonCode) {
+    case 'skipped-case':
+      return 'このフレームワークではスキップされます';
+    case 'loop':
+      return 'ループ・catch はテスト用の代替実装が必要です';
+    case 'no-target':
+      return 'この条件を狙うケースがありません';
+    default:
+      return item.reason ?? '根拠なし';
+  }
+}
 const FRAMEWORKS: Framework[] = ['vitest', 'jest', 'pytest', 'junit5', 'go'];
 
 export function HaruhiTool() {
@@ -135,7 +149,8 @@ export function HaruhiTool() {
           foot={
             <>
               <span>{output ? `${output.cases.length} ケース` : '—'}</span>
-              <span>{output ? `分岐カバレッジ ${output.coverage}%` : '—'}</span>
+              <span data-testid="haruhi-static-mapping">{output ? output.coverageLabel : '—'}</span>
+              <span data-testid="haruhi-executed-coverage">{output ? output.executedCoverageLabel : '—'}</span>
               <span>{output?.fileName ?? '—'}</span>
             </>
           }
@@ -162,11 +177,16 @@ export function HaruhiTool() {
               <div className="checklist">
                 {output.checklist.length === 0 ? <EmptyHint title="分岐が見つかりません" /> : null}
                 {output.checklist.map((item, index) => (
-                  <div key={`${item.function}-${item.line}-${index}`} className={`check-item ${item.covered ? 'covered' : ''}`}>
-                    <span className="check-mark">{item.covered ? '✓' : '·'}</span>
+                  <div key={`${item.function}-${item.line}-${index}`} className={`check-item ${item.status === 'mapped' ? 'covered' : ''}`}>
+                    <span className="check-mark">{item.status === 'mapped' ? '✓' : item.status === 'unsupported' ? '−' : '·'}</span>
                     <span>
                       <code>{item.function}</code> {item.line} 行目 — {item.branch}
-                      {item.caseId ? <span style={{ color: 'var(--muted)' }}> · {item.caseId}</span> : <span style={{ color: 'var(--warn)' }}> · 未カバー</span>}
+                      <span style={{ color: item.status === 'mapped' ? 'var(--muted)' : 'var(--warn)' }}>
+                        {' · '}
+                        {item.status === 'mapped' ? '対応' : item.status === 'unmapped' ? '未対応' : '対象外'}
+                        {item.caseIds?.length ? ` · ${item.caseIds.join(', ')}` : ''}
+                        {item.status !== 'mapped' ? ` · ${branchReasonLabel(item)}` : ''}
+                      </span>
                     </span>
                   </div>
                 ))}

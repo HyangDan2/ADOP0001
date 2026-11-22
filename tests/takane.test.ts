@@ -104,66 +104,86 @@ describe('Takane code generation', () => {
 
   it('emits a C11 header with structs, enums, prototypes and negative status codes', () => {
     const output = generate('c');
+    // TAK-001: declarations live in the header, definitions in the translation unit.
     expect(output.fileName).toBe('payment_service.c');
-    expect(output.code).toContain('#ifndef PAYMENT_SERVICE_H');
-    expect(output.code).toContain('#include <stdint.h>');
-    expect(output.code).toContain('PAYMENT_SERVICE_OK = 0,');
-    expect(output.code).toContain('PAYMENT_SERVICE_ERR_INVALID_ARG = -1,');
-    expect(output.code).toContain('typedef struct PaymentRequest {');
-    expect(output.code).toContain('    const char *invoice_id;');
-    expect(output.code).toContain('    double amount;');
-    expect(output.code).toContain('    PaymentStatus status;');
-    expect(output.code).toContain('PaymentServiceStatus payment_service_charge(const PaymentRequest *request, PaymentResult *out);');
-    expect(output.code).toContain('if (request->invoice_id == NULL) {');
-    expect(output.code).toContain('return PAYMENT_SERVICE_ERR_INVALID_ARG; /* invoiceId is required */');
-    expect(output.code).toContain('/* TODO: implement PaymentService.charge. */');
-    expect(output.code).toContain('return PAYMENT_SERVICE_ERR_UNIMPLEMENTED;');
-    expect(output.code).toContain('@param[out] out Receives the PaymentResult result.');
+    expect(output.files.map((file) => file.name)).toEqual(['payment_service.h', 'payment_service.c']);
+    const [header, unit] = output.files;
+    expect(header.code).toContain('#ifndef PAYMENT_SERVICE_H');
+    expect(header.code).toContain('#include <stdint.h>');
+    expect(header.code).toContain('PAYMENT_SERVICE_OK = 0,');
+    expect(header.code).toContain('PAYMENT_SERVICE_ERR_INVALID_ARG = -1,');
+    expect(header.code).toContain('typedef struct PaymentRequest {');
+    expect(header.code).toContain('    const char *invoice_id;');
+    expect(header.code).toContain('    double amount;');
+    expect(header.code).toContain('    PaymentStatus status;');
+    expect(header.code).toContain('PaymentServiceStatus payment_service_charge(const PaymentRequest *request, PaymentResult *out);');
+    expect(header.code).not.toContain('ERR_UNIMPLEMENTED;');
+    expect(unit.code).toContain('#include "payment_service.h"');
+    expect(unit.code).toContain('if (request->invoice_id == NULL) {');
+    expect(unit.code).toContain('return PAYMENT_SERVICE_ERR_INVALID_ARG; /* invoiceId is required */');
+    expect(unit.code).toContain('/* TODO: implement PaymentService.charge. */');
+    expect(unit.code).toContain('return PAYMENT_SERVICE_ERR_UNIMPLEMENTED;');
+    expect(unit.code).toContain('@param[out] out Receives the PaymentResult result.');
     // Generated C never allocates and never declares a class.
-    expect(output.code).not.toContain('malloc(');
-    expect(output.code).not.toContain('class ');
+    for (const file of output.files) {
+      expect(file.code).not.toContain('malloc(');
+      expect(file.code).not.toContain('class ');
+    }
   });
 
   it('emits a C++17 header with enum class, std::optional and stdexcept guards', () => {
     const output = generate('cpp');
+    // TAK-001: the header declares, the translation unit defines.
     expect(output.fileName).toBe('payment_service.cpp');
-    expect(output.code).toContain('#pragma once');
-    expect(output.code).toContain('namespace payment_service {');
-    expect(output.code).toContain('enum class PaymentStatus {');
-    expect(output.code).toContain('    std::optional<std::string> currency{};');
-    expect(output.code).toContain('struct PaymentRequest {');
-    expect(output.code).toContain('class PaymentService {');
-    expect(output.code).toContain('PaymentResult charge(const PaymentRequest &request) {');
-    expect(output.code).toContain('if (request.invoice_id.empty()) {');
-    expect(output.code).toContain('throw std::invalid_argument("invoiceId is required");');
-    expect(output.code).toContain('throw std::runtime_error("not implemented: PaymentService.charge");');
-    expect(output.code).toContain('#include <stdexcept>');
+    expect(output.files.map((file) => file.name)).toEqual(['payment_service.hpp', 'payment_service.cpp']);
+    const [header, unit] = output.files;
+    expect(header.code).toContain('#pragma once');
+    expect(header.code).toContain('namespace payment_service {');
+    expect(header.code).toContain('enum class PaymentStatus {');
+    expect(header.code).toContain('    std::optional<std::string> currency{};');
+    expect(header.code).toContain('struct PaymentRequest {');
+    expect(header.code).toContain('class PaymentService {');
+    expect(header.code).toContain('PaymentResult charge(const PaymentRequest &request);');
+    expect(header.code).toContain('#include <stdexcept>');
+    expect(unit.code).toContain('#include "payment_service.hpp"');
+    expect(unit.code).toContain('PaymentResult PaymentService::charge(const PaymentRequest &request) {');
+    expect(unit.code).toContain('if (request.invoice_id.empty()) {');
+    expect(unit.code).toContain('throw std::invalid_argument("invoiceId is required");');
+    expect(unit.code).toContain('throw std::runtime_error("not implemented: PaymentService.charge");');
   });
 
   it('emits MCU C with fixed-width integers, static buffers and MCU status codes', () => {
     const output = generate('mcu');
     expect(output.fileName).toBe('payment_service_mcu.c');
-    expect(output.code).toContain('#ifndef PAYMENT_SERVICE_MCU_H');
-    expect(output.code).toContain('MCU_OK = 0,');
-    expect(output.code).toContain('MCU_ERR_INVALID_ARG = -1,');
-    expect(output.code).toContain('MCU_ERR_UNIMPLEMENTED = -2');
-    expect(output.code).toContain('typedef uint8_t McuStatusByte;');
-    expect(output.code).toContain('sizeof(uint16_t) == 2U');
-    expect(output.code).toContain('    char invoice_id[PAYMENT_REQUEST_TEXT_MAX];');
-    expect(output.code).toContain('    int32_t amount;');
-    expect(output.code).toContain("if (request->invoice_id[0] == '\\0') {");
-    expect(output.code).toContain('return MCU_ERR_INVALID_ARG;');
-    expect(output.code).toContain('return MCU_ERR_UNIMPLEMENTED;');
-    expect(output.code).not.toContain('malloc(');
-    expect(output.code).not.toContain('#include <stdlib.h>');
+    expect(output.files.map((file) => file.name)).toEqual(['payment_service_mcu.h', 'payment_service_mcu.c']);
+    const [header, unit] = output.files;
+    expect(header.code).toContain('#ifndef PAYMENT_SERVICE_MCU_H');
+    expect(header.code).toContain('MCU_OK = 0,');
+    expect(header.code).toContain('MCU_ERR_INVALID_ARG = -1,');
+    expect(header.code).toContain('MCU_ERR_UNIMPLEMENTED = -2');
+    expect(header.code).toContain('typedef uint8_t McuStatusByte;');
+    expect(header.code).toContain('sizeof(uint16_t) == 2U');
+    expect(header.code).toContain('    char invoice_id[PAYMENT_REQUEST_TEXT_MAX];');
+    expect(header.code).toContain('    int32_t amount;');
+    // TAK-001: the buffer bound is checked before the field is read.
+    expect(header.code).toContain('_Static_assert(PAYMENT_REQUEST_TEXT_MAX >= 2U');
+    expect(unit.code).toContain("memchr(request->invoice_id, '\\0', sizeof(request->invoice_id))");
+    expect(unit.code).toContain("if (request->invoice_id[0] == '\\0') {");
+    expect(unit.code).toContain('return MCU_ERR_INVALID_ARG;');
+    expect(unit.code).toContain('return MCU_ERR_UNIMPLEMENTED;');
+    for (const file of output.files) {
+      expect(file.code).not.toContain('malloc(');
+      expect(file.code).not.toContain('#include <stdlib.h>');
+    }
   });
 
   it('maps array fields to fixed buffers with a count on the MCU target', () => {
     const output = buildTakane('order-workflow.spec.md', ORDER_SPEC, 'mcu');
-    expect(output.code).toContain('    OrderLine lines[ORDER_STATE_ITEMS_MAX];');
-    expect(output.code).toContain('    size_t lines_count;');
-    expect(output.code).toContain('McuStatus cancel(const char *order_id, const char *reason, OrderState *out);');
-    expect(output.code).toContain("if (order_id[0] == '\\0') {");
+    const [header, unit] = output.files;
+    expect(header.code).toContain('    OrderLine lines[ORDER_STATE_ITEMS_MAX];');
+    expect(header.code).toContain('    size_t lines_count;');
+    expect(header.code).toContain('McuStatus cancel(const char *order_id, const char *reason, OrderState *out);');
+    expect(unit.code).toContain("if (order_id[0] == '\\0') {");
   });
 
   it('keeps every generated artifact in English', () => {
@@ -213,10 +233,12 @@ describe('Shiori to Takane round trip', () => {
     expect(python.stats.methods).toBeGreaterThan(0);
 
     const c = buildTakane('payment-service.spec.md', spec, 'c');
-    expect(c.code).toContain('typedef struct PaymentRequest {');
+    expect(c.files[0].code).toContain('typedef struct PaymentRequest {');
+    expect(c.files[1].code).toContain('PaymentServiceStatus payment_service_charge(');
 
     const cpp = buildTakane('payment-service.spec.md', spec, 'cpp');
-    expect(cpp.code).toContain('PaymentResult charge(const PaymentRequest &request)');
+    expect(cpp.files[0].code).toContain('PaymentResult charge(const PaymentRequest &request);');
+    expect(cpp.files[1].code).toContain('PaymentResult PaymentService::charge(');
 
     const mcu = buildTakane('payment-service.spec.md', spec, 'mcu');
     expect(mcu.code).toContain('MCU_ERR_UNIMPLEMENTED');

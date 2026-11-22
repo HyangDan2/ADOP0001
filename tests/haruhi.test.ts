@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { forgeTests, outputFileName } from '../src/tools/haruhi/adapter';
 import { GO_SAMPLE, JAVA_SAMPLE, PY_SAMPLE, TS_SAMPLE } from '../src/tools/samples';
+import { HARUHI_RELIABILITY_JAVA, HARUHI_RELIABILITY_PY } from './fixtures/haruhi-fixtures';
 
 describe('Haruhi test case forge', () => {
   it('derives happy, boundary, guard and error cases', () => {
@@ -21,7 +22,9 @@ describe('Haruhi test case forge', () => {
     expect(vitest.code).toContain('// Given');
 
     const jest = forgeTests('payment-service.ts', TS_SAMPLE, { framework: 'jest' });
-    expect(jest.code).toContain("from 'jest'");
+    // HAR-002: Jest globals come from @jest/globals, not from the `jest` package.
+    expect(jest.code).toContain("from '@jest/globals'");
+    expect(jest.code).not.toContain("from 'jest'");
     expect(jest.code).toContain('jest.fn()');
   });
 
@@ -29,12 +32,20 @@ describe('Haruhi test case forge', () => {
     const pytest = forgeTests('account_service.py', PY_SAMPLE, { framework: 'pytest' });
     expect(pytest.code).toContain('import pytest');
     expect(pytest.code).toContain('def test_');
-    expect(pytest.code).toContain('pytest.raises');
+    expect(pytest.code).toContain('from account_service import');
+    // HAR-002: a class whose constructor needs dependencies is skipped, with the reason.
+    expect(pytest.code).toContain('@pytest.mark.skip(reason=');
+    const pytestRaises = forgeTests('account_service.py', HARUHI_RELIABILITY_PY, { framework: 'pytest' });
+    expect(pytestRaises.code).toContain('pytest.raises(ValueError)');
 
     const junit = forgeTests('InvoiceService.java', JAVA_SAMPLE, { framework: 'junit5' });
     expect(junit.code).toContain('org.junit.jupiter.api.Test');
-    expect(junit.code).toContain('assertThrows');
     expect(junit.code).toContain('class InvoiceServiceTest');
+    // HAR-002: no dummy assertion; what cannot be constructed is disabled with a reason.
+    expect(junit.code).not.toContain('assertTrue(true)');
+    expect(junit.code).toContain('@Disabled');
+    const junitThrows = forgeTests('LedgerService.java', HARUHI_RELIABILITY_JAVA, { framework: 'junit5' });
+    expect(junitThrows.code).toContain('assertThrows(IllegalArgumentException.class');
 
     const go = forgeTests('billing_service.go', GO_SAMPLE, { framework: 'go' });
     expect(go.code).toContain('func Test');

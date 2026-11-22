@@ -81,8 +81,12 @@ export interface SpecInputModel {
 export interface TakaneOutput {
   model: SpecInputModel;
   language: TakaneLanguage;
+  /** Primary artifact: the implementation file (or the module for Python). */
   fileName: string;
   code: string;
+  /** Every generated file, header first when the language has a header. */
+  files: TakaneFile[];
+  diagnostics: TakaneDiagnostic[];
   stats: {
     types: number;
     methods: number;
@@ -652,10 +656,18 @@ export function parseSpecMarkdown(markdown: string, fileName = 'specification.md
     const contract = model.contracts.find((item) => item.name === bare(guard.target));
     if (!guard.message && guard.detail) guard.message = guard.detail.replace(/^`+|`+$/g, '').trim();
     if (!guard.message && contract) {
-      const path = model.errorPaths.find((item) => item.target && bare(item.target) === contract.name);
-      if (path?.message) guard.message = path.message;
+      // Only reuse an error-path message when the mapping is unambiguous: one
+      // error path and one guard. Otherwise the message would describe a
+      // different condition than the one being checked.
+      const paths = model.errorPaths.filter((item) => item.target && bare(item.target) === contract.name);
+      const silentGuards = model.guards.filter(
+        (item) => bare(item.target) === contract.name && !item.message && !item.detail,
+      );
+      if (paths.length === 1 && silentGuards.length === 1 && paths[0].message) guard.message = paths[0].message;
     }
-    if (!guard.message && contract?.errors.length) guard.message = `${contract.name} must reject ${guard.condition}`;
+    if (!guard.message && contract?.errors.length) {
+      guard.message = `${contract.name}: ${guard.condition} is not allowed`;
+    }
   }
 
   if (!model.contracts.length && model.types.length) {
@@ -1077,8 +1089,22 @@ export function resolvePath(model: SpecInputModel, contract: SpecContract, path:
 }
 
 /* ------------------------------------------------------------------ */
-/* Generators                                                          */
+/* Diagnostics, escaping and naming                                    */
 /* ------------------------------------------------------------------ */
+
+/** One file of a generated scaffold. */
+export interface TakaneFile {
+  /** File name, e.g. `payment_service.h`. */
+  name: string;
+  role: 'header' | 'implementation';
+  code: string;
+}
+
+export interface TakaneDiagnostic {
+  code: string;
+  severity: 'info' | 'warn' | 'error';
+  message: string;
+}
 
 interface GenerationContext {
   model: SpecInputModel;
@@ -1086,14 +1112,46 @@ interface GenerationContext {
   types: SpecTypeDecl[];
   moduleName: string;
   guardsFor: (contract: SpecContract) => GuardRule[];
+  diagnostics: TakaneDiagnostic[];
 }
 
-function errorMessageFor(_context: GenerationContext, guard: GuardRule, contract: SpecContract, _language: TakaneLanguage): string {
-  const message = (guard.message ?? `${contract.name} received an invalid value`)
-    .replace(/^['"`]+|['"`]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return message.replace(/'/g, "\\'");
+/** Escapes a string for a C-family double-quoted literal. */
+function cString(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r?\n/g, '\\n')
+    .replace(/\t/g, '\\t');
+}
+
+/** Escapes a string for a Python quoted literal. */
+function pythonString(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '\\"')
+    .replace(/\r?\n/g, '\\n')
+    .replace(/\t/g, '\\t');
+}
+
+/** Keeps a doc comment from closing the block comment it lives in. */
+function docText(value: string): string {
+  return value.replace(/\*\//g, '* /').replace(/\s+/g, ' ').trim();
+}
+
+function messageOf(guard: GuardRule, contract: SpecContract): string {
+  return (
+    (guard.message ?? `${contract.name} received an invalid value`)
+      .replace(/^['"`]+|['"`]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim() || `${contract.name} received an invalid value`
+  );
+}
+
+/** Message literal for a guard, escaped for the target language. */
+function errorMessageFor(guard: GuardRule, contract: SpecContract, language: TakaneLanguage): string {
+  const message = messageOf(guard, contract);
+  return language === 'python' ? pythonString(message) : cString(message);
 }
 
 function classGroups(contracts: SpecContract[]): { owner: string | null; members: SpecContract[] }[] {
@@ -1107,10 +1165,15 @@ function classGroups(contracts: SpecContract[]): { owner: string | null; members
   return [...groups.entries()].map(([owner, members]) => ({ owner: owner || null, members }));
 }
 
+/* ------------------------------------------------------------------ */
+/* C11 and MCU C: header and translation unit                          */
+/* ------------------------------------------------------------------ */
+
 interface CFunctionPlan {
   name: string;
   params: string[];
   paramNames: string[];
+  paramNodes: { name: string; node: TypeNode }[];
   outName?: string;
   contract: SpecContract;
 }
@@ -1172,12 +1235,13 @@ function cOutDecls(node: TypeNode, style: 'c' | 'mcu', name = 'out'): string[] {
 function cFunctionPlan(contract: SpecContract, style: 'c' | 'mcu'): CFunctionPlan {
   const params: string[] = [];
   const paramNames: string[] = [];
+  const paramNodes: { name: string; node: TypeNode }[] = [];
   for (const param of contract.params) {
     const node = parseType(param.type);
-    const name = snake(param.name);
-    const decls = cParamDecls(name, node, style);
-    params.push(...decls);
+    const name = snake(param.name) || 'arg';
+    params.push(...cParamDecls(name, node, style));
     paramNames.push(name);
+    paramNodes.push({ name, node });
   }
   const returnNode = parseType(contract.returns);
   const outDecls = cOutDecls(returnNode, style);
@@ -1187,145 +1251,254 @@ function cFunctionPlan(contract: SpecContract, style: 'c' | 'mcu'): CFunctionPla
     name: `${prefix}${snake(contract.name)}`,
     params,
     paramNames,
+    paramNodes,
     outName: outDecls.length ? 'out' : undefined,
     contract,
   };
 }
 
+/** MCU fixed buffers must be NUL terminated inside their declared size. */
+function mcuBufferChecks(plan: CFunctionPlan, context: GenerationContext): string[] {
+  const lines: string[] = [];
+  for (const param of plan.paramNodes) {
+    if (param.node.kind !== 'ref') continue;
+    const referenceName = param.node.name;
+    const declaration =
+      context.types.find((type) => pascal(type.name) === referenceName) ??
+      context.types.find((type) => type.name === referenceName);
+    if (!declaration) continue;
+    for (const field of declaration.fields) {
+      if (parseType(field.type).kind !== 'string') continue;
+      const access = `${param.name}->${snake(field.name)}`;
+      lines.push(`    if (memchr(${access}, '\\0', sizeof(${access})) == NULL) {`);
+      lines.push(`        return MCU_ERR_INVALID_ARG; /* fixed buffer is not NUL terminated */`);
+      lines.push('    }');
+    }
+  }
+  return lines;
+}
+
+function mcuBufferDefines(context: GenerationContext): string[] {
+  const defines: string[] = [];
+  for (const type of context.types) {
+    if (type.kind === 'enum') continue;
+    const upper = snake(type.name).toUpperCase();
+    if (type.fields.some((field) => parseType(field.type).kind === 'string')) {
+      defines.push(`#define ${upper}_TEXT_MAX 64U`);
+    }
+    if (type.fields.some((field) => parseType(field.type).kind === 'array')) {
+      defines.push(`#define ${upper}_ITEMS_MAX 8U`);
+    }
+  }
+  return defines;
+}
+
 /**
- * Emits a C11 header/implementation scaffold, and the same shape with
- * fixed-width integers and static buffers for the MCU target.
- * Contracts return a status code; the contract result travels through an
- * out-parameter because a C function has a single return value.
+ * Emits a C11 (or MCU) header and its translation unit. The header carries the
+ * declarations, the translation unit carries the definitions; a declaration
+ * never travels with a body.
  */
-function generateC(context: GenerationContext, style: 'c' | 'mcu'): string {
+export function generateC(context: GenerationContext, style: 'c' | 'mcu'): { header: string; implementation: string } {
   const mcu = style === 'mcu';
-  const moduleUpper = snake(context.moduleName).toUpperCase() || 'MODULE';
+  const moduleIdent = snake(context.moduleName) || 'module';
+  const moduleUpper = moduleIdent.toUpperCase() || 'MODULE';
   const statusType = mcu ? 'McuStatus' : `${pascal(context.moduleName)}Status`;
   const statusPrefix = mcu ? 'MCU' : moduleUpper;
   const guardMacro = `${moduleUpper}_${mcu ? 'MCU_' : ''}H`;
-  const out: string[] = [];
+  const headerName = `${moduleIdent}${mcu ? '_mcu' : ''}.h`;
+  const header: string[] = [];
+  const impl: string[] = [];
 
-  out.push('/**');
-  out.push(` * ${context.model.title} - ${mcu ? 'bare-metal MCU' : 'C11'} scaffold.`);
-  out.push(' * Generated by HD2Lab Aomatsukan Takane (deterministic, in-browser).');
-  if (mcu) out.push(' * Fixed-width integers, static buffers, no dynamic allocation.');
-  out.push(` * Specification: ${context.model.title}. Replace every TODO before shipping.`);
-  out.push(' */', '');
-  out.push(`#ifndef ${guardMacro}`, `#define ${guardMacro}`, '');
-  for (const include of ['<stdbool.h>', '<stddef.h>', '<stdint.h>', '<string.h>']) out.push(`#include ${include}`);
-  out.push('', '#ifdef __cplusplus', 'extern "C" {', '#endif', '');
-
-  out.push('/** Status codes shared by every contract in this module. */');
-  out.push('typedef enum {');
-  out.push(`    ${statusPrefix}_OK = 0,`);
-  out.push(`    ${statusPrefix}_ERR_INVALID_ARG = -1,`);
-  out.push(`    ${statusPrefix}_ERR_UNIMPLEMENTED = -2`);
-  out.push(`} ${statusType};`, '');
-
-  if (mcu) {
-    out.push('/* Fixed-width aliases and build-time width checks for the target. */');
-    out.push('typedef uint8_t McuStatusByte;');
-    out.push(`typedef char ${snake(context.moduleName) || 'module'}_width_check[(sizeof(uint16_t) == 2U && sizeof(uint32_t) == 4U) ? 1 : -1];`);
-    out.push('');
-    const defines = new Set<string>();
-    for (const type of context.types) {
-      const upper = snake(type.name).toUpperCase();
-      if (type.fields.some((field) => parseType(field.type).kind === 'string')) defines.add(`#define ${upper}_TEXT_MAX 64U`);
-      if (type.fields.some((field) => parseType(field.type).kind === 'array')) defines.add(`#define ${upper}_ITEMS_MAX 8U`);
-    }
-    if (defines.size) out.push(...[...defines], '');
-  }
+  header.push('/**');
+  header.push(` * ${docText(context.model.title)} - ${mcu ? 'bare-metal MCU' : 'C11'} declarations.`);
+  header.push(' * Generated by HD2Lab Aomatsukan Takane (deterministic, in-browser).');
+  if (mcu) header.push(' * Fixed-width integers, static buffers, no dynamic allocation.');
+  header.push(' * Syntax-valid is not feature-complete: replace every TODO before shipping.');
+  header.push(' */', '');
+  header.push(`#ifndef ${guardMacro}`, `#define ${guardMacro}`, '');
+  for (const include of ['<stdbool.h>', '<stddef.h>', '<stdint.h>']) header.push(`#include ${include}`);
+  header.push('', '#ifdef __cplusplus', 'extern "C" {', '#endif', '');
 
   const enums = enumTypeNames(context.types);
   const unknown = undeclaredRefs(context);
+
+  header.push('/** Status codes shared by every contract in this module. */');
+  header.push('typedef enum {');
+  header.push(`    ${statusPrefix}_OK = 0,`);
+  header.push(`    ${statusPrefix}_ERR_INVALID_ARG = -1,`);
+  header.push(`    ${statusPrefix}_ERR_UNIMPLEMENTED = -2`);
+  header.push(`} ${statusType};`, '');
+
+  if (mcu) {
+    header.push('/* Fixed-width aliases and build-time width checks for the target. */');
+    header.push('typedef uint8_t McuStatusByte;');
+    header.push(
+      `typedef char ${moduleIdent}_width_check[(sizeof(uint16_t) == 2U && sizeof(uint32_t) == 4U) ? 1 : -1];`,
+    );
+    const defines = mcuBufferDefines(context);
+    if (defines.length) {
+      header.push('');
+      for (const define of defines) header.push(define);
+      header.push('');
+      for (const define of defines) {
+        const name = define.replace(/^#define\s+(\w+)\s+.*$/, '$1');
+        const minimum = name.endsWith('_TEXT_MAX') ? 2 : 1;
+        header.push(
+          `_Static_assert(${name} >= ${minimum}U, "${name} must be at least ${minimum} on this target.");`,
+        );
+      }
+    }
+    header.push('');
+  }
+
   if (unknown.length) {
-    out.push('/* Types owned by another module; link the matching header. */');
-    for (const name of unknown) out.push(`typedef struct ${name} ${name};`);
-    out.push('');
+    header.push('/* Types owned by another module. */');
+    for (const name of unknown) {
+      header.push(`// TODO: include the header that declares ${name}.`);
+      header.push(`typedef struct ${name} ${name};`);
+    }
+    header.push('');
   }
 
   for (const type of context.types) {
     if (type.kind !== 'enum') continue;
     const name = pascal(type.name);
-    out.push(`/** ${type.name} - enumerated values declared in the specification. */`);
-    out.push('typedef enum {');
+    header.push(`/** ${docText(type.name)} - enumerated values declared in the specification. */`);
+    header.push('typedef enum {');
     type.fields.forEach((field, index) => {
-      out.push(`    ${snake(field.name).toUpperCase()} = ${index},`);
+      header.push(`    ${snake(field.name).toUpperCase() || `VALUE_${index}`} = ${index},`);
     });
-    out.push(`} ${name};`, '');
+    header.push(`} ${name};`, '');
   }
 
   for (const type of context.types) {
-    const name = pascal(type.name);
     if (type.kind === 'enum') continue;
-    out.push(`/** ${type.name} - data type declared in the specification. */`);
-    out.push(`typedef struct ${name} {`);
+    const name = pascal(type.name);
+    header.push(`/** ${docText(type.name)} - data type declared in the specification. */`);
+    header.push(`typedef struct ${name} {`);
     const upper = snake(type.name).toUpperCase();
+    let fieldCount = 0;
     for (const field of type.fields) {
       const node = parseType(field.type);
-      const fieldName = snake(field.name);
+      const fieldName = snake(field.name) || 'field';
       if (!mcu) {
-        for (const line of cFieldLines(fieldName, node, enums)) out.push(line);
+        for (const line of cFieldLines(fieldName, node, enums)) {
+          header.push(line);
+          fieldCount += 1;
+        }
         continue;
       }
       if (node.kind === 'string') {
-        out.push(`    char ${fieldName}[${upper}_TEXT_MAX];`);
+        header.push(`    char ${fieldName}[${upper}_TEXT_MAX];`);
       } else if (node.kind === 'array') {
-        out.push(`    ${mcuScalarType(node.inner)} ${fieldName}[${upper}_ITEMS_MAX];`, `    size_t ${fieldName}_count;`);
+        header.push(`    ${mcuScalarType(node.inner)} ${fieldName}[${upper}_ITEMS_MAX];`, `    size_t ${fieldName}_count;`);
       } else if (node.kind === 'map') {
-        out.push(`    /* ${fieldName}: associative containers are not supported on the MCU target. */`);
+        header.push(`    /* ${fieldName}: associative containers are not supported on the MCU target. */`);
       } else {
-        out.push(`    ${mcuScalarType(node)} ${fieldName};`);
+        header.push(`    ${mcuScalarType(node)} ${fieldName};`);
       }
+      fieldCount += 1;
     }
-    out.push(`} ${name};`, '');
+    if (!fieldCount) header.push('    /* TODO: the specification declares no fields for this type. */');
+    header.push(`} ${name};`, '');
   }
 
   const plans = context.contracts.map((contract) => cFunctionPlan(contract, style));
 
-  out.push('/* Prototypes */');
-  for (const plan of plans) out.push(`${statusType} ${plan.name}(${plan.params.join(', ')});`);
-  out.push('');
+  header.push('/* Prototypes */');
+  if (!plans.length) header.push('/* TODO: the specification declares no callable contracts. */');
+  for (const plan of plans) header.push(`${statusType} ${plan.name}(${plan.params.join(', ')});`);
+  header.push('');
+  header.push('#ifdef __cplusplus', '}', '#endif', '', `#endif /* ${guardMacro} */`);
+
+  impl.push('/**');
+  impl.push(` * ${docText(context.model.title)} - ${mcu ? 'bare-metal MCU' : 'C11'} definitions.`);
+  impl.push(' * Generated by HD2Lab Aomatsukan Takane (deterministic, in-browser).');
+  impl.push(' * Compiles as a translation unit; it does not implement the behaviour yet.');
+  impl.push(' */', '');
+  impl.push(`#include "${headerName}"`);
+  impl.push('#include <string.h>', '');
 
   for (const plan of plans) {
     const contract = plan.contract;
-    out.push('/**');
-    out.push(` * ${contract.name}${contract.owner ? ` (${contract.owner})` : ''}`);
-    out.push(' *');
-    for (const param of contract.params) out.push(` * @param ${snake(param.name)} ${param.type}.`);
-    if (plan.outName) out.push(` * @param[out] ${plan.outName} Receives the ${unwrapReturnType(contract.returns)} result.`);
-    out.push(` * @return ${statusPrefix}_OK on success, a negative status code on failure.`);
-    if (contract.async) out.push(' * @note Declared asynchronous in the specification; the scaffold is synchronous.');
-    out.push(' */');
-    out.push(`${statusType} ${plan.name}(${plan.params.join(', ')}) {`);
+    impl.push('/**');
+    impl.push(` * ${docText(contract.name)}${contract.owner ? ` (${docText(contract.owner)})` : ''}`);
+    impl.push(' *');
+    for (const param of contract.params) impl.push(` * @param ${snake(param.name)} ${docText(param.type)}.`);
+    if (plan.outName) impl.push(` * @param[out] ${plan.outName} Receives the ${docText(unwrapReturnType(contract.returns))} result.`);
+    impl.push(` * @return ${statusPrefix}_OK on success, a negative status code on failure.`);
+    if (contract.async) impl.push(' * @note Declared asynchronous in the specification; the scaffold is synchronous.');
+    impl.push(' */');
+    impl.push(`${statusType} ${plan.name}(${plan.params.join(', ')}) {`);
+    if (mcu) impl.push(...mcuBufferChecks(plan, context));
     for (const guard of context.guardsFor(contract)) {
       const translated = translateCondition(guard.condition, mcu ? 'mcu' : 'c', (path) =>
         resolvePath(context.model, contract, path),
       );
-      const message = errorMessageFor(context, guard, contract, mcu ? 'mcu' : 'c');
+      const message = errorMessageFor(guard, contract, mcu ? 'mcu' : 'c');
       if (translated.expression) {
-        out.push(`    if (${translated.expression}) {`);
-        out.push(`        return ${statusPrefix}_ERR_INVALID_ARG; /* ${message} */`);
-        out.push('    }');
+        impl.push(`    if (${translated.expression}) {`);
+        impl.push(`        return ${statusPrefix}_ERR_INVALID_ARG; /* ${message} */`);
+        impl.push('    }');
       } else {
-        out.push(`    /* TODO: guard "${guard.condition}" could not be translated to ${mcu ? 'MCU C' : 'C'}. */`);
+        impl.push(`    /* TODO: guard "${docText(guard.condition)}" could not be translated to ${mcu ? 'MCU C' : 'C'}. */`);
       }
     }
     for (const errorPath of context.model.errorPaths.filter(
       (item) => item.target.split('.').pop() === contract.name,
     )) {
-      out.push(`    /* Error path: ${errorPath.error}${errorPath.message ? ` - ${errorPath.message}` : ''}. */`);
+      impl.push(
+        `    /* Error path: ${docText(errorPath.error)}${errorPath.message ? ` - ${docText(errorPath.message)}` : ''}. */`,
+      );
     }
-    for (const paramName of plan.paramNames) out.push(`    (void)${paramName};`);
-    out.push(`    /* TODO: implement ${contract.owner ? `${contract.owner}.` : ''}${contract.name}. */`);
-    out.push(`    return ${statusPrefix}_ERR_UNIMPLEMENTED;`);
-    out.push('}', '');
+    for (const paramName of plan.paramNames) impl.push(`    (void)${paramName};`);
+    impl.push(`    /* TODO: implement ${contract.owner ? `${docText(contract.owner)}.` : ''}${docText(contract.name)}. */`);
+    impl.push(`    return ${statusPrefix}_ERR_UNIMPLEMENTED;`);
+    impl.push('}', '');
   }
 
-  out.push('#ifdef __cplusplus', '}', '#endif', '', `#endif /* ${guardMacro} */`);
+  return {
+    header: `${header.join('\n').trimEnd()}\n`,
+    implementation: `${impl.join('\n').trimEnd()}\n`,
+  };
+}
 
-  return `${out.join('\n').trimEnd()}\n`;
+/* ------------------------------------------------------------------ */
+/* Python                                                              */
+/* ------------------------------------------------------------------ */
+
+/** Python needs every required parameter before the first optional one. */
+function orderedPythonParams(contract: SpecContract, context: GenerationContext): SpecParam[] {
+  const required = contract.params.filter((param) => !param.optional);
+  const optional = contract.params.filter((param) => param.optional);
+  const firstOptional = contract.params.findIndex((param) => param.optional);
+  const misplaced = firstOptional >= 0 && contract.params.slice(firstOptional).some((param) => !param.optional);
+  if (misplaced) {
+    const message = `${contract.owner ? `${contract.owner}.` : ''}${contract.name}: Python cannot put an optional parameter before a required one. `
+      + `Reordered (${contract.params.map((param) => param.name).join(', ')}) to (${[...required, ...optional].map((param) => param.name).join(', ')}). `
+      + 'Keyword arguments keep every existing call site valid.';
+    if (!context.diagnostics.some((item) => item.code === 'PY-PARAM-ORDER' && item.message === message)) {
+      context.diagnostics.push({ code: 'PY-PARAM-ORDER', severity: 'warn', message });
+    }
+  }
+  return [...required, ...optional];
+}
+
+/** Python dataclasses need every field without a default first. */
+function orderedPythonFields(type: SpecTypeDecl, context: GenerationContext): SpecField[] {
+  const required = type.fields.filter((field) => !field.optional);
+  const optional = type.fields.filter((field) => field.optional);
+  const firstOptional = type.fields.findIndex((field) => field.optional);
+  const misplaced = firstOptional >= 0 && type.fields.slice(firstOptional).some((field) => !field.optional);
+  if (misplaced) {
+    context.diagnostics.push({
+      code: 'PY-FIELD-ORDER',
+      severity: 'warn',
+      message: `${type.name}: a dataclass cannot declare a default field before a required one. `
+        + `Reordered (${type.fields.map((field) => field.name).join(', ')}) to (${[...required, ...optional].map((field) => field.name).join(', ')}).`,
+    });
+  }
+  return [...required, ...optional];
 }
 
 function pythonParamType(param: SpecParam): string {
@@ -1333,10 +1506,10 @@ function pythonParamType(param: SpecParam): string {
   return param.optional ? `${base} | None = None` : base;
 }
 
-function generatePython(context: GenerationContext): string {
+export function generatePython(context: GenerationContext): string {
   const out: string[] = [];
-  out.push('"""Generated by HD2Lab Aomatsukan · Takane — deterministic scaffold.');
-  out.push(`Specification: ${context.model.title}. Replace every TODO before shipping.`);
+  out.push('"""Generated by HD2Lab Aoomatsukan · Takane — deterministic scaffold.');
+  out.push(`Specification: ${docText(context.model.title)}. Replace every TODO before shipping.`);
   out.push('"""', '');
   out.push('from __future__ import annotations', '');
   if (context.types.some((type) => type.kind !== 'enum')) out.push('from dataclasses import dataclass');
@@ -1345,207 +1518,284 @@ function generatePython(context: GenerationContext): string {
     (type) => type.kind !== 'enum' && type.fields.some((field) => parseType(field.type).kind === 'any'),
   );
   if (usesAny) out.push('from typing import Any');
-  if (context.types.some((type) => type.fields.some((field) => parseType(field.type).kind === 'date'))) out.push('from datetime import datetime');
+  if (context.types.some((type) => type.fields.some((field) => parseType(field.type).kind === 'date'))) {
+    out.push('from datetime import datetime');
+  }
   out.push('');
 
   for (const type of context.types) {
     if (type.kind === 'enum') {
       out.push(`class ${pascal(type.name)}(str, Enum):`);
-      for (const field of type.fields) out.push(`    ${snake(field.name).toUpperCase()} = "${snake(field.name)}"`);
+      if (!type.fields.length) out.push('    """TODO: the specification declares no values for this enum."""');
+      for (const field of type.fields) {
+        out.push(`    ${snake(field.name).toUpperCase()} = "${pythonString(snake(field.name))}"`);
+      }
       out.push('', '');
       continue;
     }
-    out.push(`@dataclass`);
+    out.push('@dataclass');
     out.push(`class ${pascal(type.name)}:`);
-    if (type.doc) out.push(`    """${type.doc}"""`);
-    if (!type.fields.length) {
+    if (type.doc) out.push(`    """${docText(type.doc)}"""`);
+    const fields = orderedPythonFields(type, context);
+    if (!fields.length) {
       out.push('    """Contract declared in the specification."""');
       out.push('    pass');
     }
-    for (const field of type.fields) {
+    for (const field of fields) {
       const annotation = pythonType(parseType(field.type));
-      if (field.optional) out.push(`    ${snake(field.name)}: ${annotation} | None = None`);
-      else out.push(`    ${snake(field.name)}: ${annotation}`);
+      const name = snake(field.name) || 'field';
+      if (field.optional) out.push(`    ${name}: ${annotation} | None = None`);
+      else out.push(`    ${name}: ${annotation}`);
     }
     out.push('', '');
   }
 
   for (const group of classGroups(context.contracts)) {
+    const indent = group.owner ? '    ' : '';
     if (group.owner) {
       out.push(`class ${group.owner}:`);
-      out.push(`    """Contracts: ${group.members.map((item) => item.name).join(', ')}."""`, '');
-      for (const contract of group.members) {
-        const params = ['self', ...contract.params.map((param) => `${snake(param.name)}: ${pythonParamType(param)}`)].join(', ');
-        const returns = pythonType(parseType(contract.returns));
-        out.push(`    def ${snake(contract.name)}(${params}) -> ${returns === 'None' ? 'None' : `"${returns}"`}:`);
-        out.push(`        """${contract.name}`);
-        out.push('');
-        out.push(`        Returns: ${returns}`);
-        out.push('        """');
-        for (const guard of context.guardsFor(contract)) {
-          out.push(`        if ${pythonCondition(guard.condition)}:`);
-          out.push(`            raise ValueError("${errorMessageFor(context, guard, contract, 'python')}")`);
-        }
-        out.push(`        # TODO: implement ${contract.name}.`);
-        out.push(`        raise NotImplementedError("Not implemented: ${group.owner}.${contract.name}")`);
-        out.push('');
-      }
-      out.push('', '');
-      continue;
+      out.push(`    """Contracts: ${group.members.map((item) => docText(item.name)).join(', ')}."""`, '');
     }
     for (const contract of group.members) {
-      const params = contract.params.map((param) => `${snake(param.name)}: ${pythonParamType(param)}`).join(', ');
+      const params = orderedPythonParams(contract, context);
+      const signature = ['self', ...params.map((param) => `${snake(param.name) || 'arg'}: ${pythonParamType(param)}`)]
+        .slice(group.owner ? 0 : 1)
+        .join(', ');
       const returns = pythonType(parseType(contract.returns));
-      out.push(`def ${snake(contract.name)}(${params}) -> ${returns === 'None' ? 'None' : `"${returns}"`}:`);
-      out.push(`    """${contract.name}`);
+      out.push(`${indent}def ${snake(contract.name)}(${signature}) -> ${returns === 'None' ? 'None' : `"${returns}"`}:`);
+      out.push(`${indent}    """${docText(contract.name)}`);
       out.push('');
-      out.push(`    Returns: ${returns}`);
-      out.push('    """');
+      out.push(`${indent}    Returns: ${docText(returns)}`);
+      out.push(`${indent}    """`);
       for (const guard of context.guardsFor(contract)) {
-        out.push(`    if ${pythonCondition(guard.condition)}:`);
-        out.push(`        raise ValueError("${errorMessageFor(context, guard, contract, 'python')}")`);
+        out.push(`${indent}    if ${pythonCondition(guard.condition)}:`);
+        out.push(`${indent}        raise ValueError("${errorMessageFor(guard, contract, 'python')}")`);
       }
-      out.push(`    # TODO: implement ${contract.name}.`);
-      out.push(`    raise NotImplementedError("Not implemented: ${contract.name}")`);
-      out.push('', '');
+      out.push(`${indent}    # TODO: implement ${docText(contract.name)}.`);
+      out.push(
+        `${indent}    raise NotImplementedError("Not implemented: ${pythonString(`${group.owner ? `${group.owner}.` : ''}${contract.name}`)}")`,
+      );
+      out.push('');
     }
+    out.push('');
   }
 
   return `${out.join('\n').trimEnd()}\n`;
 }
 
-function cppParamDecl(name: string, node: TypeNode, optional: boolean): string {
-  if (optional) {
-    const type = cppType(node, true);
-    if (node.kind === 'array' || node.kind === 'map') return `${type} ${name} = {}`;
-    return `${type} ${name} = std::nullopt`;
-  }
+/* ------------------------------------------------------------------ */
+/* C++17: header and translation unit                                  */
+/* ------------------------------------------------------------------ */
+
+function cppParamDecl(name: string, node: TypeNode, optional: boolean, withDefault = true): string {
+  // A referenced type may be declared in another header; wrapping it in
+  // std::optional would need the complete type, so references stay plain.
+  const optionalType = optional && node.kind !== 'ref' && node.kind !== 'array' && node.kind !== 'map';
+  const type = optionalType ? cppType(node, true) : cppType(node, false);
+  const suffix = optionalType && withDefault ? ' = std::nullopt' : '';
   switch (node.kind) {
     case 'string':
-      return `const std::string &${name}`;
+      return optionalType ? `${type} ${name}${suffix}` : `const std::string &${name}`;
     case 'array':
     case 'map':
       return `const ${cppType(node)} &${name}`;
     case 'ref':
       return `const ${node.name} &${name}`;
     case 'any':
-      return `const std::any &${name}`;
+      return optionalType ? `${type} ${name}${suffix}` : `const std::any &${name}`;
     case 'void':
       return '';
     default:
-      return `${cppType(node)} ${name}`;
+      return `${type} ${name}${suffix}`;
   }
 }
 
-function cppNeeds(node: TypeNode, kind: TypeNode['kind'], seen = new Set<string>()): boolean {
+function cppNeeds(node: TypeNode, kind: TypeNode['kind']): boolean {
   if (node.kind === kind) return true;
-  if (node.kind === 'array') return cppNeeds(node.inner, kind, seen);
-  if (node.kind === 'map') return cppNeeds(node.key, kind, seen) || cppNeeds(node.value, kind, seen);
+  if (node.kind === 'array') return cppNeeds(node.inner, kind);
+  if (node.kind === 'map') return cppNeeds(node.key, kind) || cppNeeds(node.value, kind);
   return false;
 }
 
-/** Emits a C++17 header-only scaffold with structs, `enum class` and guarded methods. */
-function generateCpp(context: GenerationContext): string {
-  const out: string[] = [];
+/** C++ needs the same parameter order rule as Python: no default before a required one. */
+function orderedCppParams(contract: SpecContract, context: GenerationContext): SpecParam[] {
+  const required = contract.params.filter((param) => !param.optional);
+  const optional = contract.params.filter((param) => param.optional);
+  const firstOptional = contract.params.findIndex((param) => param.optional);
+  const misplaced = firstOptional >= 0 && contract.params.slice(firstOptional).some((param) => !param.optional);
+  if (misplaced) {
+    const message = `${contract.owner ? `${contract.owner}.` : ''}${contract.name}: C++ cannot give a parameter a default before a required one. `
+      + `Reordered (${contract.params.map((param) => param.name).join(', ')}) to (${[...required, ...optional].map((param) => param.name).join(', ')}).`;
+    if (!context.diagnostics.some((item) => item.code === 'CPP-PARAM-ORDER' && item.message === message)) {
+      context.diagnostics.push({ code: 'CPP-PARAM-ORDER', severity: 'warn', message });
+    }
+  }
+  return [...required, ...optional];
+}
+
+function cppSignature(contract: SpecContract, withDefaults: boolean, context?: GenerationContext): { params: string; returns: string } {
+  const params = (context ? orderedCppParams(contract, context) : contract.params)
+    .map((param) => cppParamDecl(snake(param.name) || 'arg', parseType(param.type), param.optional, withDefaults))
+    .filter(Boolean)
+    .join(', ');
+  return { params, returns: cppType(parseType(contract.returns)) };
+}
+
+/**
+ * Emits a C++17 header (declarations) and a translation unit (definitions).
+ * Inline bodies never travel inside the header.
+ */
+export function generateCpp(context: GenerationContext): { header: string; implementation: string } {
   const namespaceName = snake(context.moduleName) || 'module';
-  out.push(`// ${context.model.title} - C++17 scaffold.`);
-  out.push('// Generated by HD2Lab Aomatsukan Takane (deterministic, in-browser).');
-  out.push(`// Specification: ${context.model.title}. Replace every TODO before shipping.`);
-  out.push('', '#pragma once', '');
-  out.push('#include <cstdint>');
-  out.push('#include <optional>');
-  out.push('#include <stdexcept>');
-  out.push('#include <string>');
-  out.push('#include <vector>');
+  const headerName = `${namespaceName}.hpp`;
+  const header: string[] = [];
+  const impl: string[] = [];
+
+  header.push(`// ${docText(context.model.title)} - C++17 declarations.`);
+  header.push('// Generated by HD2Lab Aomatsukan Takane (deterministic, in-browser).');
+  header.push('// Syntax-valid is not feature-complete: replace every TODO before shipping.');
+  header.push('', '#pragma once', '');
+  header.push('#include <cstdint>');
+  header.push('#include <optional>');
+  header.push('#include <stdexcept>');
+  header.push('#include <string>');
+  header.push('#include <vector>');
   const allNodes: TypeNode[] = [];
   for (const type of context.types) for (const field of type.fields) allNodes.push(parseType(field.type));
   for (const contract of context.contracts) {
     for (const param of contract.params) allNodes.push(parseType(param.type));
     allNodes.push(parseType(contract.returns));
   }
-  if (allNodes.some((node) => cppNeeds(node, 'map'))) out.push('#include <map>');
-  if (allNodes.some((node) => cppNeeds(node, 'any'))) out.push('#include <any>');
-  out.push('', `namespace ${namespaceName} {`, '');
+  if (allNodes.some((node) => cppNeeds(node, 'map'))) header.push('#include <map>');
+  if (allNodes.some((node) => cppNeeds(node, 'any'))) header.push('#include <any>');
+  header.push('', `namespace ${namespaceName} {`, '');
 
   const unknown = undeclaredRefs(context);
   if (unknown.length) {
-    out.push('// Types owned by another translation unit.');
-    for (const name of unknown) out.push(`struct ${name};`);
-    out.push('');
+    header.push('// Types owned by another translation unit.');
+    for (const name of unknown) {
+      header.push(`// TODO: include the header that declares ${name}.`);
+      header.push(`struct ${name};`);
+    }
+    header.push('');
   }
 
   for (const type of context.types) {
     if (type.kind !== 'enum') continue;
     const name = pascal(type.name);
-    out.push(`/** ${type.name} - enumerated values declared in the specification. */`);
-    out.push(`enum class ${name} {`);
-    for (const field of type.fields) out.push(`    ${snake(field.name)},`);
-    out.push('};', '');
+    header.push(`/** ${docText(type.name)} - enumerated values declared in the specification. */`);
+    header.push(`enum class ${name} {`);
+    for (const field of type.fields) header.push(`    ${snake(field.name)},`);
+    if (!type.fields.length) header.push('    // TODO: the specification declares no values for this enum.');
+    header.push('};', '');
   }
 
   for (const type of context.types) {
     if (type.kind === 'enum') continue;
     const name = pascal(type.name);
-    out.push(`/** ${type.name} - data type declared in the specification. */`);
-    out.push(`struct ${name} {`);
+    header.push(`/** ${docText(type.name)} - data type declared in the specification. */`);
+    header.push(`struct ${name} {`);
     for (const field of type.fields) {
-      out.push(`    ${cppType(parseType(field.type), field.optional)} ${snake(field.name)}{};`);
+      header.push(`    ${cppType(parseType(field.type), field.optional)} ${snake(field.name) || 'field'}{};`);
     }
-    if (!type.fields.length) out.push('    // No fields are declared in the specification.');
-    out.push('};', '');
+    if (!type.fields.length) header.push('    // No fields are declared in the specification.');
+    header.push('};', '');
   }
 
-  const emitMethod = (contract: SpecContract, owner: string | null, indent: string) => {
-    const returnType = cppType(parseType(contract.returns));
-    const params = contract.params
-      .map((param) => cppParamDecl(snake(param.name), parseType(param.type), param.optional))
-      .filter(Boolean)
-      .join(', ');
-    const modifier = owner ? (contract.visibility === 'internal' ? 'private:' : 'public:') : '';
-    if (modifier) out.push(`${indent}${modifier}`);
-    out.push(`${indent}/**`);
-    out.push(`${indent} * ${contract.name}`);
-    if (contract.doc) out.push(`${indent} * ${contract.doc}`);
-    for (const param of contract.params) out.push(`${indent} * @param ${snake(param.name)} ${param.type}.`);
-    if (returnType !== 'void') out.push(`${indent} * @return ${unwrapReturnType(contract.returns)}.`);
-    out.push(`${indent} * @throws std::invalid_argument when a guard condition is violated.`);
-    if (contract.async) out.push(`${indent} * @note Declared asynchronous in the specification; run it on a worker.`);
-    out.push(`${indent} */`);
-    out.push(`${indent}${returnType === 'void' ? 'void' : returnType} ${snake(contract.name)}(${params}) {`);
-    const inner = `${indent}    `;
+  impl.push(`// ${docText(context.model.title)} - C++17 definitions.`);
+  impl.push('// Generated by HD2Lab Aomatsukan Takane (deterministic, in-browser).');
+  impl.push(`#include "${headerName}"`, '');
+  impl.push(`namespace ${namespaceName} {`, '');
+
+  const emitDefinition = (contract: SpecContract, owner: string | null, indent: string) => {
+    const declaration = cppSignature(contract, false, context);
+    const returnNode = parseType(contract.returns);
+    const returnDeclared =
+      returnNode.kind !== 'ref' ||
+      context.types.some((type) => pascal(type.name) === returnNode.name || type.name === returnNode.name);
+    if (!returnDeclared) {
+      impl.push(`${indent}// TODO: ${docText(contract.name)} returns ${docText(returnNode.name)}, which is declared in another header.`);
+      impl.push(`${indent}// Include that header and define the function once the type is complete.`, '');
+      return;
+    }
+    const returns = declaration.returns;
+    const qualified = owner ? `${owner}::${snake(contract.name)}` : snake(contract.name);
+    impl.push(`${indent}${returns === 'void' ? 'void' : returns} ${qualified}(${declaration.params}) {`);
     for (const guard of context.guardsFor(contract)) {
-      const translated = translateCondition(guard.condition, 'cpp', (path) => resolvePath(context.model, contract, path));
-      const message = errorMessageFor(context, guard, contract, 'cpp');
+      const translated = translateCondition(guard.condition, 'cpp', (path) =>
+        resolvePath(context.model, contract, path),
+      );
+      const message = errorMessageFor(guard, contract, 'cpp');
       if (translated.expression) {
-        out.push(`${inner}if (${translated.expression}) {`);
-        out.push(`${inner}    throw std::invalid_argument("${message}");`);
-        out.push(`${inner}}`);
+        impl.push(`${indent}    if (${translated.expression}) {`);
+        impl.push(`${indent}        throw std::invalid_argument("${message}");`);
+        impl.push(`${indent}    }`);
       } else {
-        out.push(`${inner}// TODO: guard "${guard.condition}" could not be translated to C++.`);
+        impl.push(`${indent}    // TODO: guard "${docText(guard.condition)}" could not be translated to C++.`);
       }
     }
-    out.push(`${inner}// TODO: implement ${owner ? `${owner}.` : ''}${contract.name}.`);
-    out.push(`${inner}throw std::runtime_error("not implemented: ${owner ? `${owner}.` : ''}${contract.name}");`);
-    out.push(`${indent}}`, '');
+    impl.push(`${indent}    // TODO: implement ${owner ? `${docText(owner)}.` : ''}${docText(contract.name)}.`);
+    impl.push(`${indent}    throw std::runtime_error("not implemented: ${cString(`${owner ? `${owner}.` : ''}${contract.name}`)}");`);
+    impl.push(`${indent}}`, '');
   };
 
   for (const group of classGroups(context.contracts)) {
     if (group.owner) {
-      out.push(`/** ${group.owner} - contracts declared in the specification. */`);
-      out.push(`class ${group.owner} {`);
-      for (const contract of group.members) emitMethod(contract, group.owner, '    ');
-      if (out[out.length - 1] === '') out.pop();
-      out.push('};', '');
+      header.push(`/** ${docText(group.owner)} - contracts declared in the specification. */`);
+      header.push(`class ${group.owner} {`);
+      header.push('public:');
+      for (const contract of group.members) {
+        const declaration = cppSignature(contract, true, context);
+        if (contract.visibility === 'internal') header.push('private:');
+        header.push(`    /**`);
+        header.push(`     * ${docText(contract.name)}`);
+        for (const param of contract.params) header.push(`     * @param ${snake(param.name)} ${docText(param.type)}.`);
+        if (declaration.returns !== 'void') header.push(`     * @return ${docText(unwrapReturnType(contract.returns))}.`);
+        header.push('     * @throws std::invalid_argument when a guard condition is violated.');
+        if (contract.async) header.push('     * @note Declared asynchronous in the specification; run it on a worker.');
+        header.push('     */');
+        header.push(`    ${declaration.returns === 'void' ? 'void' : declaration.returns} ${snake(contract.name)}(${declaration.params});`);
+        if (contract.visibility === 'internal') header.push('public:');
+      }
+      if (header[header.length - 1] === 'public:') header.pop();
+      header.push('};', '');
+      for (const contract of group.members) emitDefinition(contract, group.owner, '');
       continue;
     }
-    for (const contract of group.members) emitMethod(contract, null, '');
+    for (const contract of group.members) {
+      const declaration = cppSignature(contract, true, context);
+      header.push(`/**`);
+      header.push(` * ${docText(contract.name)}`);
+      for (const param of contract.params) header.push(` * @param ${snake(param.name)} ${docText(param.type)}.`);
+      if (declaration.returns !== 'void') header.push(` * @return ${docText(unwrapReturnType(contract.returns))}.`);
+      header.push(' * @throws std::invalid_argument when a guard condition is violated.');
+      header.push(' */');
+      header.push(`${declaration.returns === 'void' ? 'void' : declaration.returns} ${snake(contract.name)}(${declaration.params});`, '');
+      emitDefinition(contract, null, '');
+    }
   }
 
-  out.push(`}  // namespace ${namespaceName}`);
-  return `${out.join('\n').trimEnd()}\n`;
+  header.push(`}  // namespace ${namespaceName}`);
+  impl.push(`}  // namespace ${namespaceName}`);
+
+  return {
+    header: `${header.join('\n').trimEnd()}\n`,
+    implementation: `${impl.join('\n').trimEnd()}\n`,
+  };
 }
 
-export function generateCode(model: SpecInputModel, language: TakaneLanguage): { code: string; fileName: string } {
+/* ------------------------------------------------------------------ */
+/* Entry points                                                        */
+/* ------------------------------------------------------------------ */
+
+export interface GeneratedArtifacts {
+  code: string;
+  fileName: string;
+  files: TakaneFile[];
+  diagnostics: TakaneDiagnostic[];
+}
+
+export function generateCode(model: SpecInputModel, language: TakaneLanguage): GeneratedArtifacts {
   const guardsFor = (contract: SpecContract) =>
     model.guards.filter((guard) => guard.target.split('.').pop() === contract.name);
   const context: GenerationContext = {
@@ -1554,36 +1804,68 @@ export function generateCode(model: SpecInputModel, language: TakaneLanguage): {
     types: model.types,
     moduleName: model.moduleName,
     guardsFor,
+    diagnostics: [],
   };
 
   const baseName = snake(model.title.replace(/\.md$/i, '').replace(/^specification[-\s]*/i, '')) || 'module';
   switch (language) {
-    case 'c':
-      return { code: generateC(context, 'c'), fileName: `${baseName || 'module'}.c` };
-    case 'cpp':
-      return { code: generateCpp(context), fileName: `${baseName || 'module'}.cpp` };
-    case 'mcu':
-      return { code: generateC(context, 'mcu'), fileName: `${baseName || 'module'}_mcu.c` };
+    case 'c': {
+      const { header, implementation } = generateC(context, 'c');
+      const files: TakaneFile[] = [
+        { name: `${baseName}.h`, role: 'header', code: header },
+        { name: `${baseName}.c`, role: 'implementation', code: implementation },
+      ];
+      return { code: implementation, fileName: `${baseName}.c`, files, diagnostics: context.diagnostics };
+    }
+    case 'cpp': {
+      const { header, implementation } = generateCpp(context);
+      const files: TakaneFile[] = [
+        { name: `${baseName}.hpp`, role: 'header', code: header },
+        { name: `${baseName}.cpp`, role: 'implementation', code: implementation },
+      ];
+      return { code: implementation, fileName: `${baseName}.cpp`, files, diagnostics: context.diagnostics };
+    }
+    case 'mcu': {
+      const { header, implementation } = generateC(context, 'mcu');
+      const files: TakaneFile[] = [
+        { name: `${baseName}_mcu.h`, role: 'header', code: header },
+        { name: `${baseName}_mcu.c`, role: 'implementation', code: implementation },
+      ];
+      return { code: implementation, fileName: `${baseName}_mcu.c`, files, diagnostics: context.diagnostics };
+    }
     case 'python':
-    default:
-      return { code: generatePython(context), fileName: `${baseName || 'module'}.py` };
+    default: {
+      const code = generatePython(context);
+      return {
+        code,
+        fileName: `${baseName}.py`,
+        files: [{ name: `${baseName}.py`, role: 'implementation', code }],
+        diagnostics: context.diagnostics,
+      };
+    }
   }
 }
 
 export function buildTakane(fileName: string, markdown: string, language: TakaneLanguage): TakaneOutput {
   const model = parseSpecMarkdown(markdown, fileName);
-  const { code, fileName: generatedName } = generateCode(model, language);
+  const artifacts = generateCode(model, language);
+  const diagnostics: TakaneDiagnostic[] = [
+    ...model.notes.map((note) => ({ code: 'SPEC-NOTE', severity: 'info' as const, message: note })),
+    ...artifacts.diagnostics,
+  ];
   return {
     model,
     language,
-    fileName: generatedName,
-    code,
+    fileName: artifacts.fileName,
+    code: artifacts.code,
+    files: artifacts.files,
+    diagnostics,
     stats: {
       types: model.types.length,
       methods: model.contracts.length,
       guards: model.guards.length,
       errors: model.errorPaths.length,
-      lines: code.split('\n').length,
+      lines: artifacts.files.reduce((total, file) => total + file.code.split('\n').length, 0),
     },
   };
 }
@@ -1595,9 +1877,9 @@ export class TakaneAdapter implements EngineAdapter<TakaneOutput, TakaneOptions>
   readonly providerMode: ProviderMode = 'local-static';
   readonly capabilities = [
     '枝織形式の仕様書（契約表・振る舞い・エラー経路・型定義）と、一般的な Markdown 仕様書の読み取り',
-    'Python・C・C++・MCU の4言語へのコード生成',
+    'Python・C・C++・MCU の4言語へのコード生成（C と C++ はヘッダーと実装を分けて出力）',
     '型宣言・メソッド／関数シグネチャ・ガード節・エラー経路・Doc コメントの生成',
-    '枝織の出力を読み込み、コード→仕様書→コードの往復をブラウザ内で試せる',
+    '生成コードの構文検証（Python の引数順・dataclass のフィールド順・固定バッファの境界）',
     'Few-shot 例（Python・C・C++・MCU）をローカルに蓄え、オプションBのプロンプトへ差し込む準備ができる',
   ] as const;
 
@@ -1606,7 +1888,10 @@ export class TakaneAdapter implements EngineAdapter<TakaneOutput, TakaneOptions>
     const language: TakaneLanguage = request.options?.language ?? 'python';
     const output = buildTakane(request.sourceName, request.source, language);
     const cacheKey = await sha256Hex(`${this.id}|${request.mode}|${request.source}|${language}`);
-    const diagnostics = output.model.notes.map((note) => ({ severity: 'info' as const, message: note }));
+    const diagnostics = output.diagnostics.map((item) => ({
+      severity: item.severity === 'error' ? ('error' as const) : item.severity === 'warn' ? ('warn' as const) : ('info' as const),
+      message: `${item.code}: ${item.message}`,
+    }));
     return {
       output,
       providerMode: this.providerMode,
