@@ -377,6 +377,30 @@ flowchart LR
 * Bundle export/import validates `kind`, `version <= 1`, and per-example output text; imports merge by
   id.
 
+### 3.5.1 Per-tool working drafts (`src/lib/drafts.ts`)
+
+Switching tools unmounts the active tool (`<main key={tool.id}>`), so every tool keeps its input in a
+versioned draft rather than in component state alone:
+
+```mermaid
+flowchart LR
+  HOOK[useToolDraft] --> SYNC[localStorage<br/>adop0001.draft.*· v1]
+  HOOK --> IDB[(IndexedDB<br/>adop0001-drafts)]
+  HOOK -.fallback.-> MEM[in-memory map]
+```
+
+* A draft is the source text, the file name and the tool's options (`sections`, `framework`, `style`,
+  `depth`, `kind`, `direction`, `language`). Results are recomputed from them, which keeps a draft
+  small and free of stale output.
+* The small mirror is written synchronously (250 ms debounce plus a `pagehide`/`beforeunload` flush),
+  so a reload restores the last keystrokes; IndexedDB stores anything larger than 200k characters.
+* Records carry `version: 1`. A v0 record is migrated, a record from a newer build is ignored rather
+  than guessed at.
+* A failed write is reported in the status bar (`draft-state`), never swallowed.
+* `⋮ → 下書きをすべて破棄` (`resetAllDrafts`) is the explicit reset; the tool remounts empty.
+* 琴葉 keeps its working document (Markdown + attributes + bundle) in `src/tools/kotoha/store.ts`
+  with the same version/migration rules, so a rejected import never costs the open document.
+
 ### 3.6 Unified export
 
 One `src/components/ExportModal.tsx` serves all six tools. Each tool passes its formattable artifacts
@@ -415,10 +439,51 @@ Preserved verbatim in the bundle and written back on rebuild: `styles.xml`, `the
 `docProps/*`, `[Content_Types].xml`, package and document relationships, and the section
 properties (`sectPr`, with edited page size/margins patched in place).
 
+Every *other* package entry (`ooxml.extraParts`: `footnotes.xml`, `endnotes.xml`, `comments.xml`,
+`customXml/*`, `word/fonts/*`, embeddings, part-level `*.rels`) is carried through untouched, so
+the rebuilt container keeps the relationships the body still points at.
+
+#### 3.7.1 Editable blocks vs preserved blocks
+
+Markdown can express only part of a Word body. Kotoha classifies every body block:
+
+| Class | Examples | Behaviour |
+| --- | --- | --- |
+| Editable | plain paragraphs, headings, runs with bold/italic/strike/underline, hyperlinks, simple tables, lists, inline pictures, code-style paragraphs | rendered as Markdown, edited freely, regenerated on rebuild |
+| Preserved | text boxes and shapes, footnotes/endnotes, tracked changes, maths, content controls, comments, fields (TOC, mail merge), section breaks, floating pictures, merged/nested tables, empty bookmark anchors | sliced byte-for-byte from `word/document.xml`, stored in `bundle.preservedBlocks`, and marked in the Markdown as `<!-- kotoha:preserved id=Pn -->` |
+
+A preserved block is written back at the marker's position (it can be moved or deleted by deleting
+the marker). Every limitation reached while reading is recorded in `bundle.warnings` with a Japanese
+label and a count, shown in the Inspector and in a confirmation dialog *before* the document
+replaces the one already open. Nothing is dropped silently.
+
+#### 3.7.2 Structure Markdown cannot carry
+
+- Tables: `w:tblHeader` decides whether the first row is a header. A table without it is written
+  with an empty Markdown header row, so the first row stays a body row on rebuild. `w:gridSpan`,
+  `w:vMerge`, nested tables and ragged grids make a table preserved-only (`bundle.tables`).
+- Pictures: `wp:extent` (EMU) is kept per media path in `bundle.images`, and the natural pixel size
+  is decoded from the bytes (PNG/JPEG/GIF/BMP). A rebuild uses the original extent, or the natural
+  size with its aspect ratio — never the old fixed 480×320 box.
+- Lists: each list keeps its `numId` (and therefore its own numbering definition, restart included,
+  because `numbering.xml` is preserved). A list whose `numId` differs from the first definition is
+  prefixed with `<!-- kotoha:list numId=N -->`; indentation carries `ilvl`.
+
+#### 3.7.3 Reading limits
+
+`KOTOHA_LIMITS` bounds the browser-side work: 25 MB upload, 2,000 zip entries, 20 MB per entry and
+80 MB uncompressed in total. A violation raises a `KotohaError` with a stable code that the UI turns
+into a Japanese explanation, and the document already open is left untouched.
+
 The Style & Attribute Inspector edits a typed view of the bundle (`BundleAttributes`): base font,
 body size, line spacing, page margins, heading colours. On rebuild those edits are applied to
 `styles.xml` (docDefaults + Normal + Heading1..3) and to `pgSz`/`pgMar`, so a rebuild both keeps the
 template and honours the edits.
+
+`withAttributes(bundle, attributes)` is the single source of truth: the rebuild, the `.kotoha.json`
+export and the IndexedDB save all derive from it, so what the Inspector shows is what the export and
+the rebuilt document contain. `buildBundleExport` / `parseBundleExport` are the only export/import
+path (the import validates the payload and rejects a newer bundle format instead of guessing).
 
 ---
 

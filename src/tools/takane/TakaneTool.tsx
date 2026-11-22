@@ -4,6 +4,8 @@ import { ExportModal } from '../../components/ExportModal';
 import { SPEC_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { downloadBlob } from '../../lib/util';
+import { useToolDraft } from '../../lib/drafts';
+import { DraftStateBadge } from '../../components/DraftStateBadge';
 import {
   LANGUAGE_EXTENSION,
   LANGUAGE_LABEL,
@@ -56,9 +58,16 @@ function readShioriRecord(): ShioriRecord | null {
 }
 
 export function TakaneTool() {
-  const [source, setSource] = useState(TAKANE_SAMPLES[0].markdown);
-  const [fileName, setFileName] = useState(TAKANE_SAMPLES[0].fileName);
-  const [language, setLanguage] = useState<TakaneLanguage>('python');
+  // APP-001: the specification and target language are kept in a draft.
+  const { draft, setField, state: draftState } = useToolDraft('takane', {
+    source: TAKANE_SAMPLES[0].markdown,
+    fileName: TAKANE_SAMPLES[0].fileName,
+    language: 'python' as TakaneLanguage,
+  });
+  const { source, fileName, language } = draft;
+  const setSource = (value: string) => setField('source', value);
+  const setFileName = (value: string) => setField('fileName', value);
+  const setLanguage = (value: TakaneLanguage) => setField('language', value);
   const [view, setView] = useState<'preview' | 'code'>('preview');
   const [output, setOutput] = useState<TakaneOutput | null>(null);
   const [activeFile, setActiveFile] = useState(0);
@@ -391,6 +400,7 @@ export function TakaneTool() {
       <div className="statusbar">
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
+        <DraftStateBadge state={draftState} />
         <span className={error ? 'err' : 'ok'}>{error ? `エラー: ${error}` : 'エラーなし'}</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}

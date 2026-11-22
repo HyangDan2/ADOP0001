@@ -4,6 +4,8 @@ import { ExportModal } from '../../components/ExportModal';
 import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { downloadBlob } from '../../lib/util';
+import { useToolDraft } from '../../lib/drafts';
+import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
 import { ALL_SECTIONS, ShioriAdapter, type ShioriOutput, type SpecSection } from './adapter';
 
@@ -21,9 +23,15 @@ const SECTION_LABEL: Record<SpecSection, string> = {
 type View = 'preview' | 'markdown' | 'html';
 
 export function ShioriTool() {
-  const [source, setSource] = useState(SAMPLE_BY_EXT[0].code);
-  const [fileName, setFileName] = useState(SAMPLE_BY_EXT[0].fileName);
-  const [sections, setSections] = useState<SpecSection[]>(ALL_SECTIONS);
+  // APP-001: the input survives a tool switch and a reload.
+  const { draft, setField, state: draftState } = useToolDraft('shiori', {
+    source: SAMPLE_BY_EXT[0].code,
+    fileName: SAMPLE_BY_EXT[0].fileName,
+    sections: ALL_SECTIONS as SpecSection[],
+  });
+  const { source, fileName, sections } = draft;
+  const setSource = (value: string) => setField('source', value);
+  const setFileName = (value: string) => setField('fileName', value);
   const [output, setOutput] = useState<ShioriOutput | null>(null);
   const [view, setView] = useState<View>('preview');
   const [busy, setBusy] = useState(false);
@@ -102,9 +110,10 @@ export function ShioriTool() {
   };
 
   const toggleSection = (section: SpecSection) => {
-    setSections((current) =>
-      current.includes(section) ? current.filter((s) => s !== section) : [...ALL_SECTIONS.filter((s) => current.includes(s) || s === section)],
-    );
+    const next = sections.includes(section)
+      ? sections.filter((s) => s !== section)
+      : [...ALL_SECTIONS.filter((s) => sections.includes(s) || s === section)];
+    setField('sections', next);
   };
 
   const model = output?.model;
@@ -331,6 +340,7 @@ export function ShioriTool() {
       <div className="statusbar">
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
+        <DraftStateBadge state={draftState} />
         <span className={error ? 'err' : 'ok'}>{error ? `エラー: ${error}` : 'エラーなし'}</span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
