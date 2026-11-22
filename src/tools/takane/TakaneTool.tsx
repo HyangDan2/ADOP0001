@@ -30,6 +30,14 @@ function takaneFileName(language: TakaneLanguage, base: string): string {
   return `${base}.${LANGUAGE_EXTENSION[language]}`;
 }
 
+/** Header file name for the languages that split declarations from definitions. */
+function takaneHeaderName(language: TakaneLanguage, base: string): string | null {
+  if (language === 'c') return `${base}.h`;
+  if (language === 'cpp') return `${base}.hpp`;
+  if (language === 'mcu') return `${base}_mcu.h`;
+  return null;
+}
+
 interface ShioriRecord {
   markdown: string;
   fileName: string;
@@ -53,6 +61,7 @@ export function TakaneTool() {
   const [language, setLanguage] = useState<TakaneLanguage>('python');
   const [view, setView] = useState<'preview' | 'code'>('preview');
   const [output, setOutput] = useState<TakaneOutput | null>(null);
+  const [activeFile, setActiveFile] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -124,9 +133,20 @@ export function TakaneTool() {
 
   const baseName = fileName.replace(/(\.spec)?\.md$/i, '').replace(/\.[^.]+$/, '') || 'module';
 
-  const download = (target: TakaneLanguage, base: string) => {
+  const files = output?.files ?? [];
+  const current = files[Math.min(activeFile, Math.max(files.length - 1, 0))] ?? null;
+
+  /** File name an artifact gets for the edited base name. */
+  const artifactName = (target: TakaneLanguage, base: string, role: 'header' | 'implementation') =>
+    role === 'header'
+      ? takaneHeaderName(target, base) ?? takaneFileName(target, base)
+      : takaneFileName(target, base);
+
+  /** Downloads one artifact of the freshly generated scaffold. */
+  const download = (target: TakaneLanguage, base: string, role: 'header' | 'implementation') => {
     const built = buildTakane(fileName, source, target);
-    downloadBlob(takaneFileName(target, base), built.code, 'text/plain;charset=utf-8');
+    const file = built.files.find((item) => item.role === role) ?? built.files[built.files.length - 1];
+    downloadBlob(artifactName(target, base, role), file.code, 'text/plain;charset=utf-8');
   };
 
   const stats = useMemo(
@@ -272,7 +292,23 @@ export function TakaneTool() {
             {!error && !output ? (
               <EmptyHint title="まだ生成結果がありません">仕様書を貼り付けるか、サンプルを選んでください。</EmptyHint>
             ) : null}
-            {!error && output && view === 'code' ? <pre className="code-view">{output.code}</pre> : null}
+            {!error && output && view === 'code' && files.length > 1 ? (
+              <div style={{ display: 'flex', gap: 6, padding: '8px 12px', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
+                {files.map((file, index) => (
+                  <button
+                    key={file.name}
+                    type="button"
+                    className={`btn btn-sm ${index === activeFile ? 'btn-primary' : 'btn-ghost'}`}
+                    onClick={() => setActiveFile(index)}
+                    data-testid={`takane-file-${index}`}
+                    aria-pressed={index === activeFile}
+                  >
+                    {file.name}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {!error && output && view === 'code' ? <pre className="code-view">{current?.code ?? ''}</pre> : null}
             {!error && output && view === 'preview' ? (
               <div className="spec-preview" data-testid="takane-preview">
                 <h2 className="spec-title">スキャフォールド — {output.model.title}</h2>
@@ -310,9 +346,31 @@ export function TakaneTool() {
                 <div className="spec-section">
                   <h3>出力ファイル</h3>
                   <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>
-                    {output.fileName} · {LANGUAGE_LABEL[output.language]} · {output.stats.lines} 行
+                    {LANGUAGE_LABEL[output.language]} · {output.stats.lines} 行 · {files.length} ファイル
+                  </p>
+                  <ul>
+                    {files.map((file) => (
+                      <li key={file.name} style={{ fontSize: 12.5, color: 'var(--muted)' }}>
+                        <code>{file.name}</code> — {file.role === 'header' ? '宣言（ヘッダー）' : '実装'}
+                      </li>
+                    ))}
+                  </ul>
+                  <p style={{ fontSize: 12, color: 'var(--muted)' }}>
+                    構文が通ることは、機能が完成したことを意味しません。TODO を確認してください。
                   </p>
                 </div>
+                {output.diagnostics.length ? (
+                  <div className="spec-section">
+                    <h3>診断</h3>
+                    <ul>
+                      {output.diagnostics.map((item, index) => (
+                        <li key={`${item.code}-${index}`} style={{ fontSize: 12.5, color: item.severity === 'warn' ? 'var(--warn)' : 'var(--muted)' }}>
+                          <code>{item.code}</code> — {item.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
                 {output.model.notes.length ? (
                   <div className="spec-section">
                     <h3>注記</h3>
@@ -348,29 +406,63 @@ export function TakaneTool() {
               label: '.py',
               description: 'Python スキャフォールド（dataclass・型ヒント・docstring）',
               fileName: (base) => takaneFileName('python', base),
-              run: (base) => download('python', base),
+              run: (base) => download('python', base, 'implementation'),
               copy: () => output.code,
             },
             {
               id: 'c',
               label: '.c',
-              description: 'C11 スキャフォールド（struct・enum・プロトタイプ・状態コード）',
+              description: 'C11 の実装（関数定義・状態コード・TODO）',
               fileName: (base) => takaneFileName('c', base),
-              run: (base) => download('c', base),
+              run: (base) => download('c', base, 'implementation'),
+            },
+            {
+              id: 'c-header',
+              label: '.h',
+              description: 'C11 のヘッダー（struct・enum・プロトタイプ宣言）',
+              fileName: (base) => takaneHeaderName('c', base) ?? `${base}.h`,
+              run: (base) => download('c', base, 'header'),
             },
             {
               id: 'cpp',
               label: '.cpp',
-              description: 'C++17 スキャフォールド（struct・enum class・std::optional）',
+              description: 'C++17 の実装（メンバー定義・ガード節）',
               fileName: (base) => takaneFileName('cpp', base),
-              run: (base) => download('cpp', base),
+              run: (base) => download('cpp', base, 'implementation'),
+            },
+            {
+              id: 'cpp-header',
+              label: '.hpp',
+              description: 'C++17 のヘッダー（struct・enum class・クラス宣言）',
+              fileName: (base) => takaneHeaderName('cpp', base) ?? `${base}.hpp`,
+              run: (base) => download('cpp', base, 'header'),
             },
             {
               id: 'mcu',
               label: '.c（MCU）',
-              description: 'MCU 向け C（uint8_t/uint32_t・静的バッファ・MCU_ERR 状態コード）',
+              description: 'MCU 向け C の実装（uint8_t/uint32_t・固定バッファ・MCU_ERR 状態コード）',
               fileName: (base) => takaneFileName('mcu', base),
-              run: (base) => download('mcu', base),
+              run: (base) => download('mcu', base, 'implementation'),
+            },
+            {
+              id: 'mcu-header',
+              label: '.h（MCU）',
+              description: 'MCU 向け C のヘッダー（固定幅の型・バッファ長・プロトタイプ）',
+              fileName: (base) => takaneHeaderName('mcu', base) ?? `${base}_mcu.h`,
+              run: (base) => download('mcu', base, 'header'),
+            },
+            {
+              id: 'all',
+              label: 'すべて',
+              description: 'いま選んでいる言語のファイルをすべて書き出す',
+              fileName: (base) => takaneFileName(language, base),
+              run: (base) => {
+                const target = language;
+                const built = buildTakane(fileName, source, target);
+                for (const file of built.files) {
+                  downloadBlob(artifactName(target, base, file.role), file.code, 'text/plain;charset=utf-8');
+                }
+              },
             },
           ]}
         />

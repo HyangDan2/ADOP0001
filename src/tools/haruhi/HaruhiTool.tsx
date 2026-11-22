@@ -135,7 +135,8 @@ export function HaruhiTool() {
           foot={
             <>
               <span>{output ? `${output.cases.length} ケース` : '—'}</span>
-              <span>{output ? `分岐カバレッジ ${output.coverage}%` : '—'}</span>
+              <span data-testid="haruhi-static-mapping">{output ? output.coverageLabel : '—'}</span>
+              <span data-testid="haruhi-executed-coverage">{output ? output.executedCoverageLabel : '—'}</span>
               <span>{output?.fileName ?? '—'}</span>
             </>
           }
@@ -162,11 +163,16 @@ export function HaruhiTool() {
               <div className="checklist">
                 {output.checklist.length === 0 ? <EmptyHint title="分岐が見つかりません" /> : null}
                 {output.checklist.map((item, index) => (
-                  <div key={`${item.function}-${item.line}-${index}`} className={`check-item ${item.covered ? 'covered' : ''}`}>
-                    <span className="check-mark">{item.covered ? '✓' : '·'}</span>
+                  <div key={`${item.function}-${item.line}-${index}`} className={`check-item ${item.status === 'mapped' ? 'covered' : ''}`}>
+                    <span className="check-mark">{item.status === 'mapped' ? '✓' : item.status === 'unsupported' ? '−' : '·'}</span>
                     <span>
                       <code>{item.function}</code> {item.line} 行目 — {item.branch}
-                      {item.caseId ? <span style={{ color: 'var(--muted)' }}> · {item.caseId}</span> : <span style={{ color: 'var(--warn)' }}> · 未カバー</span>}
+                      <span style={{ color: item.status === 'mapped' ? 'var(--muted)' : 'var(--warn)' }}>
+                        {' · '}
+                        {item.status === 'mapped' ? '対応' : item.status === 'unmapped' ? '未対応' : '対象外'}
+                        {item.caseIds?.length ? ` · ${item.caseIds.join(', ')}` : ''}
+                        {item.reason ? ` · ${item.reason}` : ''}
+                      </span>
                     </span>
                   </div>
                 ))}
