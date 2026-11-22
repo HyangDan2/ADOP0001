@@ -183,6 +183,7 @@ export function PromptPane(props: {
       <footer className="pane-foot">
         <span>有効 {active.length} 件 · 約 {activeTokens} トークン</span>
         <span>ローカル保存のみ・送信なし</span>
+        <span data-testid="prompt-static-note">現在の静的エンジンの出力には適用されません（将来の AI モード用の設定）</span>
       </footer>
       {feedback ? <div className="toast">{feedback}</div> : null}
     </section>

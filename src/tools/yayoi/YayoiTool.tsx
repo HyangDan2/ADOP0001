@@ -5,6 +5,7 @@ import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
+import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
 import { YayoiAdapter, type PseudoDepth, type PseudoLine, type PseudoStyle, type YayoiOutput } from './adapter';
@@ -34,19 +35,24 @@ export function YayoiTool() {
   const [exportOpen, setExportOpen] = useState(false);
   const [activeSource, setActiveSource] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const pseudoRefs = useRef(new Map<number, HTMLDivElement>());
   const timer = useRef<number | null>(null);
+  const nextRequest = useRequestGate();
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
         setOutput(null);
+        setError(null);
         return;
       }
+      const request = nextRequest();
       setBusy(true);
+      setError(null);
       void adapter
         .run({
           toolId: 'yayoi',
@@ -56,10 +62,18 @@ export function YayoiTool() {
           mode: 'local-static',
         })
         .then((result) => {
+          if (!request.isCurrent()) return;
           setOutput(result.output);
           setElapsed(result.elapsedMs);
         })
-        .finally(() => setBusy(false));
+        .catch((cause) => {
+          if (!request.isCurrent()) return;
+          setOutput(null);
+          setError(errorMessage(cause, '擬似コードを生成できませんでした。'));
+        })
+        .finally(() => {
+          if (request.isCurrent()) setBusy(false);
+        });
     }, 220);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
@@ -106,6 +120,7 @@ export function YayoiTool() {
       <div className="panes">
         <ToolPane
           title="元のソース"
+          testId="pane-yayoi-input"
           actions={
             <>
               <label className="btn btn-sm" data-testid="yayoi-open">
@@ -164,6 +179,7 @@ export function YayoiTool() {
 
         <ToolPane
           title="擬似コード"
+          testId="pane-yayoi-output"
           actions={
             <>
               <Segmented ariaLabel="擬似コードのスタイル" value={style} options={STYLES} onChange={setStyle} />
@@ -195,8 +211,9 @@ export function YayoiTool() {
             </span>
           </div>
           <div className="scroll" data-testid="yayoi-output">
-            {!output ? <EmptyHint title="まだ変換結果がありません">サンプルを読み込むか、ソースコードを貼り付けてください。</EmptyHint> : null}
-            {output?.blocks.map((block) => (
+            {error ? <EmptyHint title="変換できませんでした">{error}</EmptyHint> : null}
+            {!error && !output ? <EmptyHint title="まだ変換結果がありません">サンプルを読み込むか、ソースコードを貼り付けてください。</EmptyHint> : null}
+            {!error && output?.blocks.map((block) => (
               <div key={block.function}>
                 <div className="pseudo-head">{block.function}</div>
                 <div className="pseudo-list">
@@ -226,7 +243,13 @@ export function YayoiTool() {
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
         <DraftStateBadge state={draftState} />
-        <span className="ok">エラーなし</span>
+        <span
+          className={error ? 'err' : 'ok'}
+          data-testid="status-message"
+          data-state={error ? 'error' : busy ? 'busy' : 'ok'}
+        >
+          {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
+        </span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (

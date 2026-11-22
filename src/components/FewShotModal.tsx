@@ -5,18 +5,23 @@ import { downloadBlob } from '../lib/util';
 import { FEW_SHOT_FILE_ACCEPT, isBinaryFile, languageTagFor } from '../lib/fileKinds';
 import { MAX_INSTRUCTION_LENGTH, PROMPT_PLACEHOLDER, readPrompt, savePrompt } from '../lib/promptStore';
 import {
+  FEW_SHOT_LIMITS,
   assemblePromptPreview,
   bundleFileName,
   clearExamples,
   deleteExample,
+  describeStorage,
   estimateTokens,
   importExamples,
   listExamples,
+  onFewShotStorageChange,
   parseBundle,
   renderPromptText,
+  restoreExamples,
   saveExample,
   serializeBundle,
   setExampleEnabled,
+  type FewShotStorage,
 } from '../lib/fewShotStore';
 
 const TAKANE_LANGUAGES: { value: string; label: string }[] = [
@@ -59,12 +64,21 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
   const [feedback, setFeedback] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [undoImport, setUndoImport] = useState<FewShotExample[] | null>(null);
+  const [storage, setStorage] = useState<FewShotStorage | null>(null);
   const [busy, setBusy] = useState(false);
 
   const announce = (message: string) => {
     setFeedback(message);
     window.setTimeout(() => setFeedback(null), 2200);
   };
+
+  // DATA-001: a failed IndexedDB write falls back to localStorage or memory, and
+  // the user is told which one actually holds the examples.
+  useEffect(() => {
+    onFewShotStorageChange((next) => setStorage(next));
+    return () => onFewShotStorageChange(null);
+  }, []);
 
   const refresh = async () => {
     setExamples(await listExamples(toolId));
@@ -156,6 +170,10 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
       }
       await refresh();
       announce(`${added} 件の例を追加しました`);
+    } catch (cause) {
+      setImportError(
+        `保存できませんでした: ${cause instanceof Error ? cause.message : '理由不明のエラー'}`,
+      );
     } finally {
       setBusy(false);
     }
@@ -196,6 +214,10 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
       setDraft(null);
       await refresh();
       announce('例を保存しました');
+    } catch (cause) {
+      setImportError(
+        `保存できませんでした: ${cause instanceof Error ? cause.message : '理由不明のエラー'}`,
+      );
     } finally {
       setBusy(false);
     }
@@ -208,8 +230,23 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
   };
 
   const toggleExample = async (example: FewShotExample) => {
-    await setExampleEnabled(example.id, !example.enabled);
-    await refresh();
+    // The checkbox is controlled, so it only moves after storage answers. Paint
+    // the new state first and roll it back if the write fails.
+    const next = !example.enabled;
+    setExamples((current) =>
+      current.map((item) => (item.id === example.id ? { ...item, enabled: next } : item)),
+    );
+    try {
+      await setExampleEnabled(example.id, next);
+      await refresh();
+    } catch (cause) {
+      setExamples((current) =>
+        current.map((item) => (item.id === example.id ? { ...item, enabled: example.enabled } : item)),
+      );
+      setImportError(
+        `保存できませんでした: ${cause instanceof Error ? cause.message : '理由不明のエラー'}`,
+      );
+    }
   };
 
   const exportBundle = () => {
@@ -220,13 +257,32 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
   const importBundle = async (file: File) => {
     setImportError(null);
     try {
+      if (file.size > FEW_SHOT_LIMITS.bundleBytes) {
+        throw new Error(`ファイルが ${Math.round(FEW_SHOT_LIMITS.bundleBytes / 1024)} KB を超えています。`);
+      }
       const parsed = parseBundle(await file.text());
-      await importExamples(parsed);
+      const outcome = await importExamples(parsed);
+      setUndoImport(outcome.backup);
       await refresh();
-      announce(`${parsed.length} 件の例を読み込みました`);
+      const parts = [`${outcome.added} 件を追加`];
+      if (outcome.replaced) parts.push(`${outcome.replaced} 件を置き換え`);
+      announce(parts.join('・'));
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : 'このファイルは読み込めませんでした。';
       setImportError(`読み込めませんでした: ${message}`);
+    }
+  };
+
+  const undoLastImport = async () => {
+    if (!undoImport) return;
+    setImportError(null);
+    try {
+      await restoreExamples(undoImport);
+      setUndoImport(null);
+      await refresh();
+      announce('読み込み前の状態に戻しました');
+    } catch (cause) {
+      setImportError(`元に戻せませんでした: ${cause instanceof Error ? cause.message : '理由不明のエラー'}`);
     }
   };
 
@@ -274,6 +330,9 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
         <p className="fs-lead">
           参考にする例をこの端末に保存します。オプションAでは何もブラウザの外へ出ません（
           <strong>ローカル保存のみ・送信なし</strong>）。オプションBでは、有効な例だけが秘匿情報を伏せたうえで送信されます。
+        </p>
+        <p className="fs-lead fs-static-note" data-testid="fewshot-static-note">
+          いまの静的エンジン（ブラウザ内解析）はこれらの例を参照しません。ここで整えた例は、将来の AI モードで使うための設定です。
         </p>
 
         <div className="tabs" role="tablist" aria-label="Few-shot 例の表示">
@@ -343,6 +402,24 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
               </button>
             </div>
             {importError ? <p className="fs-error">{importError}</p> : null}
+            {storage && storage !== 'indexeddb' ? (
+              <p className="fs-error" data-testid="fewshot-storage-warning">
+                保存先: {describeStorage(storage)} — IndexedDB に書き込めませんでした。
+              </p>
+            ) : null}
+            {undoImport ? (
+              <div className="fs-toolbar" data-testid="fewshot-undo-row">
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>直前の読み込みを取り消せます。</span>
+                <button type="button" className="btn btn-sm" onClick={() => void undoLastImport()} data-testid="fewshot-import-undo">
+                  元に戻す
+                </button>
+              </div>
+            ) : null}
+            <p className="fs-note" data-testid="fewshot-limits">
+              読み込み上限: 1 ファイル {Math.round(FEW_SHOT_LIMITS.bundleBytes / 1024)} KB・
+              {FEW_SHOT_LIMITS.examples} 例まで。同じ ID の例は置き換え、未知のツール ID・不明な項目・
+              過大なトークン数を持つファイルは保存せずに拒否します。
+            </p>
 
             {draft ? (
               <div className="fs-editor" data-testid="fewshot-editor">

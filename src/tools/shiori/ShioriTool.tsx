@@ -5,6 +5,7 @@ import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
+import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
 import { ALL_SECTIONS, ShioriAdapter, type ShioriOutput, type SpecSection } from './adapter';
@@ -40,12 +41,15 @@ export function ShioriTool() {
   const [toast, setToast] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
+  const nextRequest = useRequestGate();
 
   const run = async (text: string, name: string, activeSections: SpecSection[]) => {
     if (!text.trim()) {
       setOutput(null);
+      setError(null);
       return;
     }
+    const request = nextRequest();
     setBusy(true);
     setError(null);
     try {
@@ -56,6 +60,7 @@ export function ShioriTool() {
         options: { sections: activeSections, includePrivate: true },
         mode: 'local-static',
       });
+      if (!request.isCurrent()) return;
       setOutput(result.output);
       setElapsed(result.elapsedMs);
       try {
@@ -67,9 +72,11 @@ export function ShioriTool() {
         /* storage unavailable: 貴音 offers its own samples instead */
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '仕様書を生成できませんでした。');
+      if (!request.isCurrent()) return;
+      setOutput(null);
+      setError(errorMessage(cause, '仕様書を生成できませんでした。'));
     } finally {
-      setBusy(false);
+      if (request.isCurrent()) setBusy(false);
     }
   };
 
@@ -133,6 +140,7 @@ export function ShioriTool() {
       <div className="panes">
         <ToolPane
           title="ソース入力"
+          testId="pane-shiori-input"
           actions={
             <>
               <label className="btn btn-sm" data-testid="shiori-open">
@@ -188,6 +196,7 @@ export function ShioriTool() {
 
         <ToolPane
           title="仕様書"
+          testId="pane-shiori-output"
           actions={
             <>
               <div className="tabs" role="tablist" aria-label="仕様書の表示">
@@ -307,6 +316,20 @@ export function ShioriTool() {
                     </div>
                   </div>
                 ) : null}
+                <div className="spec-section" data-testid="shiori-notes">
+                  <h3>解析メモ</h3>
+                  {output.model.notes.length ? (
+                    <ul>
+                      {output.model.notes.map((note) => (
+                        <li key={note} style={{ fontSize: 12, color: 'var(--muted)' }}>
+                          {note}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p style={{ fontSize: 12, color: 'var(--muted)' }}>完全に解析できました。注意事項はありません。</p>
+                  )}
+                </div>
                 {output.model.dependencies.length ? (
                   <div className="spec-section">
                     <h3>Dependencies</h3>
@@ -341,7 +364,9 @@ export function ShioriTool() {
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
         <DraftStateBadge state={draftState} />
-        <span className={error ? 'err' : 'ok'}>{error ? `エラー: ${error}` : 'エラーなし'}</span>
+        <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
+          {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
+        </span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (

@@ -67,6 +67,27 @@ describe('workspace tree builder', () => {
     expect(filterWorkspaceTree(tree, '   ')).toBe(tree);
   });
 
+  it('counts the filtered files under a directory, not its child entries (UI-002)', () => {
+    const tree = buildWorkspaceTree(FILES, { root: 'my-repo' });
+    const filtered = filterWorkspaceTree(tree, 'adapter');
+    const src = filtered.find((node) => node.name === 'src') as WorkspaceDirNode;
+    expect(src.fileCount).toBe(1);
+    const tools = src.children.find((child) => child.name === 'tools') as WorkspaceDirNode;
+    expect(tools.fileCount).toBe(1);
+    const takane = tools.children[0] as WorkspaceDirNode;
+    // One matching file, while the directory still has a sibling entry in the tree.
+    expect(takane.children).toHaveLength(1);
+    expect(takane.fileCount).toBe(1);
+    for (const node of [src, tools, takane]) {
+      expect(node.fileCount).toBe(flattenWorkspace([node]).length);
+    }
+
+    // A deeper tree keeps the count recursive: two files live under src/tools/takane.
+    const deeper = filterWorkspaceTree(tree, 'takane/');
+    const deepSrc = deeper.find((node) => node.name === 'src') as WorkspaceDirNode;
+    expect(deepSrc.fileCount).toBe(flattenWorkspace([deepSrc]).length);
+  });
+
   it('expands the first level by default', () => {
     const tree = buildWorkspaceTree(FILES, { root: 'my-repo' });
     const expanded = defaultExpanded(tree, 1);

@@ -502,9 +502,19 @@ export function analyzeReturn(fn: FunctionInfo, module: ParsedModule): ReturnChe
   const declared = (fn.returnType ?? '').trim();
   if (!declared) return fn.async ? { kind: 'primitive', type: 'string' } : { kind: 'none' };
   // Go reports `(string, error)` (or `string, error`): the error is a second result,
-  // not part of the value the test asserts.
-  const tuple = !declared.includes('<') && declared.includes(',')
-    ? declared.split(',').map((part) => part.trim()).filter((part) => part && part !== 'error')
+  // not part of the value the test asserts. A named result (`(out *Service, err error)`)
+  // keeps its type, so the result name is dropped.
+  const tupleText = /^\((.*)\)$/.test(declared) ? declared.slice(1, -1).trim() : declared;
+  const tuple = !declared.includes('<') && tupleText.includes(',')
+    ? tupleText
+        .split(',')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => {
+          const tokens = part.split(/\s+/);
+          return tokens.length > 1 ? tokens[tokens.length - 1] : part;
+        })
+        .filter((part) => part !== 'error')
     : null;
   const inner = unwrapTransport(tuple && tuple.length ? tuple[0] : declared).trim();
   const shape = typeShape(inner);

@@ -128,7 +128,10 @@ export function filterWorkspaceTree(nodes: WorkspaceNode[], query: string): Work
       continue;
     }
     const children = filterWorkspaceTree(node.children, needle);
-    if (children.length) result.push({ ...node, children, fileCount: children.length });
+    // UI-002: a directory that survives only through its descendants must report
+    // the files it still shows, not the number of child entries (which counts
+    // nested directories as one each).
+    if (children.length) result.push({ ...node, children, fileCount: countWorkspaceFiles(children) });
   }
   return result;
 }

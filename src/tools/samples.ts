@@ -241,9 +241,195 @@ func (s *Service) Charge(c Charge) (string, error) {
 }
 `;
 
+export const TS_PIPELINE_SAMPLE = `import { createHash } from 'node:crypto';
+import type { CacheStore } from './cache-store';
+
+export type Outcome<T, E> = { ok: true; value: T } | { ok: false; error: E };
+
+export interface Envelope<T> {
+  readonly id: string;
+  payload: T;
+  attempts?: number;
+}
+
+const MAX_ATTEMPTS = 3;
+
+/**
+ * Runs every envelope through \`transform\`, retrying transient failures and
+ * keeping the output order. A cache hit short-circuits the transform.
+ */
+export class ResultPipeline<T, U> {
+  private readonly cache: CacheStore<string, U>;
+
+  constructor(cache: CacheStore<string, U>, private readonly keyOf: (item: T) => string) {
+    this.cache = cache;
+  }
+
+  async run(items: Envelope<T>[], transform: (item: T) => Promise<U>): Promise<Outcome<U[], Error>> {
+    if (items.length === 0) {
+      return { ok: true, value: [] };
+    }
+    const output: U[] = [];
+    for (const envelope of items) {
+      const key = this.keyOf(envelope.payload);
+      if (!key) {
+        throw new TypeError('keyOf returned an empty key');
+      }
+      const cached = await this.cache.get(key);
+      if (cached !== undefined) {
+        output.push(cached);
+        continue;
+      }
+      const value = await this.attempt(envelope, transform);
+      await this.cache.set(key, value);
+      output.push(value);
+    }
+    return { ok: true, value: output };
+  }
+
+  private async attempt(envelope: Envelope<T>, transform: (item: T) => Promise<U>): Promise<U> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await transform(envelope.payload);
+      } catch (error) {
+        lastError = error;
+        if (attempt === MAX_ATTEMPTS) break;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('transform failed');
+  }
+
+  fingerprint(value: string): string {
+    return createHash('sha256').update(value).digest('hex').slice(0, 12);
+  }
+}
+
+export const groupByKey = <T, K extends string>(items: T[], keyOf: (item: T) => K): Record<K, T[]> =>
+  items.reduce((acc, item) => {
+    const key = keyOf(item);
+    (acc[key] ??= []).push(item);
+    return acc;
+  }, {} as Record<K, T[]>);
+`;
+
+export const JS_SAMPLE = `import { EventEmitter } from 'node:events';
+
+const DEFAULTS = { concurrency: 4, retryDelayMs: 25 };
+
+/**
+ * A tiny in-process job queue: bounded concurrency, one retry round and an event
+ * for every state change, so a failing job is never silent.
+ */
+export class JobQueue extends EventEmitter {
+  constructor(handler, options = {}) {
+    super();
+    if (typeof handler !== 'function') {
+      throw new TypeError('handler must be a function');
+    }
+    this.handler = handler;
+    this.options = { ...DEFAULTS, ...options };
+    this.pending = [];
+    this.active = 0;
+  }
+
+  add(job) {
+    if (!job || typeof job.id !== 'string') {
+      throw new TypeError('job.id is required');
+    }
+    this.pending.push({ attempts: 0, ...job });
+    this.emit('queued', job.id);
+    this.drain();
+    return this;
+  }
+
+  async drain() {
+    while (this.active < this.options.concurrency && this.pending.length > 0) {
+      const job = this.pending.shift();
+      this.active += 1;
+      try {
+        const result = await this.handler(job.payload);
+        this.emit('completed', job.id, result);
+      } catch (error) {
+        if (job.attempts >= 1) {
+          this.emit('failed', job.id, error);
+        } else {
+          this.pending.push({ ...job, attempts: job.attempts + 1 });
+          this.emit('retrying', job.id, error);
+        }
+      } finally {
+        this.active -= 1;
+      }
+    }
+  }
+
+  get size() {
+    return this.pending.length;
+  }
+}
+
+export const createQueue = (handler, options) => new JobQueue(handler, options);
+`;
+
+export const PY_ASYNC_SAMPLE = `from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from typing import Optional
+
+DEFAULT_TIMEOUT = 15
+
+
+@dataclass
+class Account:
+    email: str
+    roles: list[str] = field(default_factory=list)
+
+    @property
+    def is_admin(self) -> bool:
+        return "admin" in self.roles
+
+
+class AsyncRepository:
+    """Async account store that keeps a bounded in-memory index."""
+
+    def __init__(self, client, timeout: int = DEFAULT_TIMEOUT) -> None:
+        self.client = client
+        self.timeout = timeout
+        self.index: dict[str, list[int]] = {}
+
+    @staticmethod
+    def normalise(email: str) -> str:
+        return email.strip().lower()
+
+    @classmethod
+    async def connect(cls, dsn: str, **options) -> "AsyncRepository":
+        if not dsn:
+            raise ValueError("dsn is required")
+        return cls(dsn, **options)
+
+    async def fetch(self, email: str) -> Optional[Account]:
+        key = self.normalise(email)
+        if not key:
+            raise KeyError("email is required")
+        rows = await self.client.query(key)
+        if not rows:
+            return None
+        return Account(email=key, roles=list(rows[0].get("roles", [])))
+
+    async def fetch_many(self, emails: list[str], limit: int = 100) -> dict[str, Account]:
+        if len(emails) > limit:
+            raise ValueError("too many emails")
+        results = await asyncio.gather(*(self.fetch(email) for email in emails))
+        return {email: account for email, account in zip(emails, results) if account is not None}
+`;
+
 export const SAMPLE_BY_EXT: { label: string; fileName: string; code: string }[] = [
   { label: 'TypeScript · PaymentService', fileName: 'payment-service.ts', code: TS_SAMPLE },
+  { label: 'TypeScript · ResultPipeline', fileName: 'result-pipeline.ts', code: TS_PIPELINE_SAMPLE },
+  { label: 'JavaScript · JobQueue', fileName: 'job-queue.js', code: JS_SAMPLE },
   { label: 'Python · AccountService', fileName: 'account_service.py', code: PY_SAMPLE },
+  { label: 'Python · AsyncRepository', fileName: 'async_repository.py', code: PY_ASYNC_SAMPLE },
   { label: 'Java · InvoiceService', fileName: 'InvoiceService.java', code: JAVA_SAMPLE },
   { label: 'Go · billing service', fileName: 'billing_service.go', code: GO_SAMPLE },
 ];

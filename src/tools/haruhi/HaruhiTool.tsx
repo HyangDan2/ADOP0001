@@ -5,6 +5,7 @@ import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
+import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
 import { FRAMEWORK_LABEL, HaruhiAdapter, outputFileName, type Framework, type HaruhiOutput } from './adapter';
@@ -40,19 +41,24 @@ export function HaruhiTool() {
   const [output, setOutput] = useState<HaruhiOutput | null>(null);
   const [tab, setTab] = useState<'code' | 'checklist'>('code');
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const timer = useRef<number | null>(null);
+  const nextRequest = useRequestGate();
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
         setOutput(null);
+        setError(null);
         return;
       }
+      const request = nextRequest();
       setBusy(true);
+      setError(null);
       void adapter
         .run({
           toolId: 'haruhi',
@@ -62,10 +68,18 @@ export function HaruhiTool() {
           mode: 'local-static',
         })
         .then((result) => {
+          if (!request.isCurrent()) return;
           setOutput(result.output);
           setElapsed(result.elapsedMs);
         })
-        .finally(() => setBusy(false));
+        .catch((cause) => {
+          if (!request.isCurrent()) return;
+          setOutput(null);
+          setError(errorMessage(cause, 'テストを生成できませんでした。'));
+        })
+        .finally(() => {
+          if (request.isCurrent()) setBusy(false);
+        });
     }, 230);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
@@ -93,6 +107,7 @@ export function HaruhiTool() {
       <div className="panes">
         <ToolPane
           title="ソース入力"
+          testId="pane-haruhi-input"
           actions={
             <>
               <label className="btn btn-sm" data-testid="haruhi-open">
@@ -139,6 +154,7 @@ export function HaruhiTool() {
 
         <ToolPane
           title="生成されたテスト"
+          testId="pane-haruhi-output"
           actions={
             <select
               aria-label="テストフレームワーク"
@@ -180,9 +196,24 @@ export function HaruhiTool() {
             </span>
           </div>
           <div className="scroll" data-testid="haruhi-output">
-            {!output ? <EmptyHint title="まだテストがありません">サンプルを読み込むか、ソースコードを貼り付けてください。</EmptyHint> : null}
-            {output && tab === 'code' ? <pre className="code-view">{output.code}</pre> : null}
-            {output && tab === 'checklist' ? (
+            {error ? <EmptyHint title="テストを生成できませんでした">{error}</EmptyHint> : null}
+            {!error && !output ? <EmptyHint title="まだテストがありません">サンプルを読み込むか、ソースコードを貼り付けてください。</EmptyHint> : null}
+            {!error && output && tab === 'code' ? <pre className="code-view">{output.code}</pre> : null}
+            {!error && output ? (
+              <div className="engine-notes" data-testid="haruhi-notes">
+                <strong>生成メモ</strong>
+                <span data-testid="haruhi-dependency-note" data-blocked={output.blockedInstances.length}>
+                  {output.blockedInstances.length
+                    ? `フィクスチャが必要なクラス: ${output.blockedInstances.join(', ')}（コンストラクタ引数をテスト側で用意できないため、そのメソッドのケースはスキップで出力します）`
+                    : 'このソースは依存の注入なしで呼び出せます。'}
+                </span>
+                <span>実行カバレッジはテストを実行するまで N/A です（表示しているのは静的ブランチ対応率）。</span>
+                {output.notes.map((note) => (
+                  <span key={note}>{note}</span>
+                ))}
+              </div>
+            ) : null}
+            {!error && output && tab === 'checklist' ? (
               <div className="checklist">
                 {output.checklist.length === 0 ? <EmptyHint title="分岐が見つかりません" /> : null}
                 {output.checklist.map((item, index) => (
@@ -208,7 +239,13 @@ export function HaruhiTool() {
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
         <DraftStateBadge state={draftState} />
-        <span className="ok">エラーなし</span>
+        <span
+          className={error ? 'err' : 'ok'}
+          data-testid="status-message"
+          data-state={error ? 'error' : busy ? 'busy' : 'ok'}
+        >
+          {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
+        </span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (
