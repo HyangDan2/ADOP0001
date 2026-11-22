@@ -104,9 +104,9 @@ export function useDropFile(onFile: (file: File) => void) {
   return { active, handlers };
 }
 
-export function ToolPane(props: { title: string; actions?: ReactNode; children: ReactNode; foot?: ReactNode; className?: string }) {
+export function ToolPane(props: { title: string; actions?: ReactNode; children: ReactNode; foot?: ReactNode; className?: string; testId?: string }) {
   return (
-    <section className={`pane ${props.className ?? ''}`}>
+    <section className={`pane ${props.className ?? ''}`} data-testid={props.testId}>
       <header className="pane-head">
         <span className="pane-title">{props.title}</span>
         {props.actions}

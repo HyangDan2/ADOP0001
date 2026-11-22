@@ -10,10 +10,18 @@ export interface ExportFormat {
   description: string;
   /** Final file name for the edited base name. */
   fileName: (base: string) => string;
-  /** Performs the download; the modal shows the feedback itself. */
+  /**
+   * Performs the download. The modal only reports success once this resolves,
+   * so a failed or skipped export never shows a success message (UI-001).
+   */
   run: (base: string) => void | Promise<void>;
   /** Text copied by the copy button, when this format can be copied. */
   copy?: (base: string) => string;
+}
+
+interface Feedback {
+  kind: 'ok' | 'error';
+  message: string;
 }
 
 export function ExportModal(props: {
@@ -24,7 +32,8 @@ export function ExportModal(props: {
   onClose: () => void;
 }) {
   const [base, setBase] = useState(props.defaultBase);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [running, setRunning] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -35,9 +44,23 @@ export function ExportModal(props: {
   }, [props]);
   const cleanBase = base.trim().replace(/[\\/:*?"<>|]+/g, '-') || props.defaultBase;
 
-  const announce = (message: string) => {
-    setFeedback(message);
-    window.setTimeout(() => setFeedback(null), 1900);
+  const announce = (next: Feedback) => {
+    setFeedback(next);
+    window.setTimeout(() => setFeedback(null), 2400);
+  };
+
+  const exportFormat = async (format: ExportFormat) => {
+    if (running) return;
+    setRunning(format.id);
+    try {
+      await format.run(cleanBase);
+      announce({ kind: 'ok', message: `${format.fileName(cleanBase)} を書き出しました` });
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : '書き出しに失敗しました。';
+      announce({ kind: 'error', message: `書き出せませんでした: ${reason}` });
+    } finally {
+      setRunning(null);
+    }
   };
 
   return (
@@ -87,7 +110,11 @@ export function ExportModal(props: {
                     data-testid={`export-copy-${format.id}`}
                     onClick={() =>
                       void copyText(format.copy?.(cleanBase) ?? '').then((ok) =>
-                        announce(ok ? `${format.label} をコピーしました` : 'コピーに失敗しました'),
+                        announce(
+                          ok
+                            ? { kind: 'ok', message: `${format.label} をコピーしました` }
+                            : { kind: 'error', message: 'コピーに失敗しました' },
+                        ),
                       )
                     }
                   >
@@ -98,12 +125,10 @@ export function ExportModal(props: {
                   type="button"
                   className="btn btn-sm btn-primary"
                   data-testid={`export-${format.id}`}
-                  onClick={() => {
-                    void format.run(cleanBase);
-                    announce(`${format.fileName(cleanBase)} を書き出しました`);
-                  }}
+                  disabled={running !== null}
+                  onClick={() => void exportFormat(format)}
                 >
-                  {format.label} を書き出す
+                  {running === format.id ? '書き出し中…' : `${format.label} を書き出す`}
                 </button>
               </div>
             </div>
@@ -112,7 +137,16 @@ export function ExportModal(props: {
         </div>
 
         {props.note ? <p className="export-note">{props.note}</p> : null}
-        {feedback ? <div className="toast">{feedback}</div> : null}
+        {feedback ? (
+          <div
+            className={`toast ${feedback.kind === 'error' ? 'toast-error' : ''}`}
+            role="status"
+            data-testid="export-feedback"
+            data-kind={feedback.kind}
+          >
+            {feedback.message}
+          </div>
+        ) : null}
       </div>
     </div>
   );

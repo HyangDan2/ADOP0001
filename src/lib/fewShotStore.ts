@@ -15,6 +15,47 @@ const LOCAL_STORAGE_KEY = 'adop0001.fewshot.v1';
 
 export type FewShotStorage = 'indexeddb' | 'localstorage' | 'memory';
 
+/** The only tools an example may belong to (DATA-001). */
+export const FEW_SHOT_TOOL_IDS = ['shiori', 'yayoi', 'kozue', 'haruhi', 'kotoha', 'takane'] as const;
+
+export function isFewShotToolId(value: unknown): value is ToolId {
+  return typeof value === 'string' && (FEW_SHOT_TOOL_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * Import limits. They exist so a hostile or broken bundle cannot fill the store,
+ * freeze the tab while it is parsed, or smuggle oversized metadata into a future
+ * AI request. The numbers are deliberately generous for hand-written examples.
+ */
+export const FEW_SHOT_LIMITS = {
+  /** Bytes of the whole .fewshot.json file. */
+  bundleBytes: 512 * 1024,
+  /** Bytes of one example's input plus output text. */
+  exampleBytes: 128 * 1024,
+  /** Examples one bundle may carry. */
+  examples: 100,
+  /** Examples kept in this browser in total. */
+  storedExamples: 500,
+  /** Estimated tokens of one example (input + output). */
+  exampleTokens: 20_000,
+  /** Characters in a title. */
+  titleChars: 200,
+  /** Characters in an id; imported ids become IndexedDB keys. */
+  idChars: 120,
+} as const;
+
+/** Human-readable storage backend, used by the UI warning when IndexedDB is gone. */
+export function describeStorage(storage: FewShotStorage): string {
+  switch (storage) {
+    case 'indexeddb':
+      return 'IndexedDB';
+    case 'localstorage':
+      return 'localStorage（IndexedDB を利用できません）';
+    default:
+      return 'メモリのみ（このタブを閉じると消えます）';
+  }
+}
+
 export interface FewShotDraft {
   id?: string;
   toolId: ToolId;
@@ -87,6 +128,20 @@ function openDb(): Promise<IDBDatabase | null> {
       resolve(null);
     }
   });
+}
+
+type StorageListener = (storage: FewShotStorage) => void;
+let storageListener: StorageListener | null = null;
+
+/**
+ * DATA-001 — surfaces a failed IndexedDB write.
+ *
+ * The store silently falls back to localStorage or memory; without a listener the
+ * user would believe the example was saved to disk. The manager modal subscribes
+ * and shows the backend whenever it is not IndexedDB.
+ */
+export function onFewShotStorageChange(listener: StorageListener | null): void {
+  storageListener = listener;
 }
 
 function readLocalStorage(): FewShotExample[] | null {
@@ -162,6 +217,12 @@ async function load(): Promise<Map<string, FewShotExample>> {
 
 async function persist(): Promise<FewShotStorage> {
   const examples = [...(cache ?? new Map<string, FewShotExample>()).values()];
+  const storage = await writeThrough(examples);
+  storageListener?.(storage);
+  return storage;
+}
+
+async function writeThrough(examples: FewShotExample[]): Promise<FewShotStorage> {
   if (await writeIndexedDb(examples)) return 'indexeddb';
   if (writeLocalStorage(examples)) return 'localstorage';
   memory.clear();
@@ -247,6 +308,7 @@ export async function listExamples(toolId?: ToolId): Promise<FewShotExample[]> {
 }
 
 export async function saveExample(draft: FewShotDraft): Promise<FewShotExample> {
+  if (!isFewShotToolId(draft.toolId)) throw new Error(`Unknown tool id: ${String(draft.toolId)}`);
   const store = await load();
   const example = normalise(draft);
   store.set(example.id, example);
@@ -340,14 +402,53 @@ export function bundleFileName(toolId: ToolId | 'all'): string {
   return `${toolId}-fewshot.fewshot.json`;
 }
 
+const EXAMPLE_KEYS = [
+  'id',
+  'toolId',
+  'title',
+  'role',
+  'inputFileName',
+  'inputText',
+  'outputFileName',
+  'outputText',
+  'targetLanguage',
+  'enabled',
+  'estimatedTokens',
+  'updatedAt',
+] as const;
+
+const EXAMPLE_KEY_SET = new Set<string>(EXAMPLE_KEYS);
+
+function byteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+function optionalString(item: Record<string, unknown>, key: string, limit: number, label: string): string | undefined {
+  const value = item[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw new Error(`Example ${label} has a non-text ${key}.`);
+  if (value.length > limit) throw new Error(`Example ${label} has a ${key} that is too long.`);
+  return value;
+}
+
+/**
+ * The single validating entry point for an imported bundle (DATA-001).
+ *
+ * Everything is checked before a single example reaches the store: bundle size,
+ * example count, the tool-id whitelist, field types, unknown metadata, per-example
+ * size, token count and duplicate ids. A rejected file leaves the store untouched.
+ */
 export function parseBundle(json: string): FewShotExample[] {
+  if (byteLength(json) > FEW_SHOT_LIMITS.bundleBytes) {
+    throw new Error(`The file is larger than ${Math.round(FEW_SHOT_LIMITS.bundleBytes / 1024)} KB.`);
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
   } catch {
     throw new Error('The file is not valid JSON.');
   }
-  const bundle = parsed as Partial<FewShotBundle>;
+  const bundle = parsed as Partial<FewShotBundle> & Record<string, unknown>;
   if (!bundle || typeof bundle !== 'object' || bundle.kind !== FEW_SHOT_BUNDLE_KIND) {
     throw new Error(`The file is not a ${FEW_SHOT_BUNDLE_KIND} bundle.`);
   }
@@ -355,32 +456,120 @@ export function parseBundle(json: string): FewShotExample[] {
     throw new Error('The bundle version is newer than this app supports.');
   }
   if (!Array.isArray(bundle.examples)) throw new Error('The bundle has no examples array.');
+  if (bundle.examples.length > FEW_SHOT_LIMITS.examples) {
+    throw new Error(`The bundle has more than ${FEW_SHOT_LIMITS.examples} examples.`);
+  }
+
+  const seen = new Set<string>();
   return bundle.examples.map((raw, index) => {
-    const item = raw as Partial<FewShotExample>;
-    if (!item || typeof item.outputText !== 'string' || !item.outputText.trim()) {
-      throw new Error(`Example ${index + 1} has no output text.`);
+    const label = `${index + 1}`;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error(`Example ${label} is not an object.`);
     }
-    if (typeof item.toolId !== 'string') throw new Error(`Example ${index + 1} has no tool id.`);
-    return normalise({
-      id: typeof item.id === 'string' && item.id ? item.id : undefined,
-      toolId: item.toolId as ToolId,
-      title: typeof item.title === 'string' ? item.title : '',
-      inputFileName: item.inputFileName,
-      inputText: item.inputText,
-      outputFileName: item.outputFileName,
-      outputText: item.outputText,
-      targetLanguage: item.targetLanguage,
-      enabled: item.enabled ?? true,
+    const item = raw as unknown as Record<string, unknown>;
+    for (const key of Object.keys(item)) {
+      if (!EXAMPLE_KEY_SET.has(key)) {
+        throw new Error(`Example ${label} carries an unsupported field: ${key}.`);
+      }
+    }
+
+    const outputText = item.outputText;
+    if (typeof outputText !== 'string' || !outputText.trim()) {
+      throw new Error(`Example ${label} has no output text.`);
+    }
+    if (!isFewShotToolId(item.toolId)) {
+      throw new Error(`Example ${label} targets a tool this app does not have.`);
+    }
+    const inputText = optionalString(item, 'inputText', FEW_SHOT_LIMITS.exampleBytes, label);
+    const bytes = byteLength(outputText) + byteLength(inputText ?? '');
+    if (bytes > FEW_SHOT_LIMITS.exampleBytes) {
+      throw new Error(`Example ${label} is larger than ${Math.round(FEW_SHOT_LIMITS.exampleBytes / 1024)} KB.`);
+    }
+    const id = optionalString(item, 'id', FEW_SHOT_LIMITS.idChars, label);
+    if (id) {
+      if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Example ${label} has an invalid id.`);
+      if (seen.has(id)) throw new Error(`Example ${label} repeats the id ${id}.`);
+      seen.add(id);
+    }
+    if (item.enabled !== undefined && typeof item.enabled !== 'boolean') {
+      throw new Error(`Example ${label} has a non-boolean enabled flag.`);
+    }
+    if (item.role !== undefined && item.role !== 'pair' && item.role !== 'output') {
+      throw new Error(`Example ${label} has an unknown role.`);
+    }
+    const claimedTokens = item.estimatedTokens;
+    if (claimedTokens !== undefined && (typeof claimedTokens !== 'number' || !Number.isFinite(claimedTokens) || claimedTokens < 0)) {
+      throw new Error(`Example ${label} has an invalid token count.`);
+    }
+    if (typeof claimedTokens === 'number' && claimedTokens > FEW_SHOT_LIMITS.exampleTokens) {
+      throw new Error(`Example ${label} claims more than ${FEW_SHOT_LIMITS.exampleTokens} tokens.`);
+    }
+    if (item.updatedAt !== undefined && (typeof item.updatedAt !== 'string' || !item.updatedAt)) {
+      throw new Error(`Example ${label} has an invalid timestamp.`);
+    }
+
+    const example = normalise({
+      id: id || undefined,
+      toolId: item.toolId,
+      title: optionalString(item, 'title', FEW_SHOT_LIMITS.titleChars, label) ?? '',
+      inputFileName: optionalString(item, 'inputFileName', 260, label),
+      inputText,
+      outputFileName: optionalString(item, 'outputFileName', 260, label),
+      outputText,
+      targetLanguage: optionalString(item, 'targetLanguage', 40, label),
+      enabled: (item.enabled as boolean | undefined) ?? true,
     });
+    // The token count is recomputed from the text; a claimed value is only a
+    // sanity check, never trusted for budgeting.
+    if (example.estimatedTokens > FEW_SHOT_LIMITS.exampleTokens) {
+      throw new Error(`Example ${label} needs more than ${FEW_SHOT_LIMITS.exampleTokens} tokens.`);
+    }
+    return example;
   });
 }
 
-/** Merges parsed examples into the store (same id replaces, new id is added). */
-export async function importExamples(examples: FewShotExample[]): Promise<number> {
+export interface ImportOutcome {
+  /** Examples with an id that did not exist before. */
+  added: number;
+  /** Examples that replaced a stored example with the same id. */
+  replaced: number;
+  /** Examples the store held after the import. */
+  total: number;
+  /** Snapshot before the import, for `restoreExamples`. */
+  backup: FewShotExample[];
+  /** Where the change was written. */
+  storage: FewShotStorage;
+}
+
+/**
+ * Merges parsed examples into the store.
+ *
+ * Duplicate-id policy: an imported id that already exists **replaces** that
+ * example (an exported file can be re-imported as an update); ids are never
+ * merged silently across tools. Duplicate ids inside one file are rejected by
+ * `parseBundle`. The previous store is returned as `backup` so the UI can offer
+ * an immediate undo.
+ */
+export async function importExamples(examples: FewShotExample[]): Promise<ImportOutcome> {
   const store = await load();
+  const backup = [...store.values()];
+  const incomingIds = new Set(examples.map((example) => example.id));
+  const added = examples.filter((example) => !store.has(example.id)).length;
+  const replaced = examples.length - added;
+  if (backup.filter((example) => !incomingIds.has(example.id)).length + examples.length > FEW_SHOT_LIMITS.storedExamples) {
+    throw new Error(`The store cannot hold more than ${FEW_SHOT_LIMITS.storedExamples} examples.`);
+  }
   for (const example of examples) store.set(example.id, example);
-  await persist();
-  return examples.length;
+  const storage = await persist();
+  return { added, replaced, total: store.size, backup, storage };
+}
+
+/** Restores a snapshot taken by `importExamples` (one-step undo). */
+export async function restoreExamples(backup: FewShotExample[]): Promise<FewShotStorage> {
+  const store = await load();
+  store.clear();
+  for (const example of backup) store.set(example.id, example);
+  return persist();
 }
 
 /** Test helper: forget the cache and empty every backend. */

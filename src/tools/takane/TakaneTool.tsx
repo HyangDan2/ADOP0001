@@ -5,6 +5,7 @@ import { SPEC_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
+import { useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import {
   LANGUAGE_EXTENSION,
@@ -78,6 +79,7 @@ export function TakaneTool() {
   const [hasShiori, setHasShiori] = useState(() => Boolean(readShioriRecord()));
   const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
+  const nextRequest = useRequestGate();
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -87,6 +89,7 @@ export function TakaneTool() {
         setError(null);
         return;
       }
+      const request = nextRequest();
       setBusy(true);
       setError(null);
       void adapter
@@ -98,13 +101,18 @@ export function TakaneTool() {
           mode: 'local-static',
         })
         .then((result) => {
+          if (!request.isCurrent()) return;
           setOutput(result.output);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
+          if (!request.isCurrent()) return;
+          setOutput(null);
           setError(cause instanceof Error ? cause.message : 'コードを生成できませんでした。');
         })
-        .finally(() => setBusy(false));
+        .finally(() => {
+          if (request.isCurrent()) setBusy(false);
+        });
     }, 240);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
@@ -186,6 +194,7 @@ export function TakaneTool() {
       <div className="panes">
         <ToolPane
           title="仕様書"
+          testId="pane-takane-spec"
           actions={
             <>
               <label className="btn btn-sm" data-testid="takane-open">
@@ -253,6 +262,7 @@ export function TakaneTool() {
 
         <ToolPane
           title="生成コード"
+          testId="pane-takane-code"
           actions={
             <Segmented ariaLabel="生成する言語" value={language} options={LANGUAGES} onChange={setLanguage} />
           }
@@ -401,7 +411,9 @@ export function TakaneTool() {
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
         <DraftStateBadge state={draftState} />
-        <span className={error ? 'err' : 'ok'}>{error ? `エラー: ${error}` : 'エラーなし'}</span>
+        <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
+          {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
+        </span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (

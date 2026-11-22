@@ -5,6 +5,7 @@ import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
+import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
 import { KozueAdapter, kindLabel, type Direction, type KozueOutput, type UmlKind } from './adapter';
@@ -38,6 +39,7 @@ export function KozueTool() {
   const [output, setOutput] = useState<KozueOutput | null>(null);
   const [svg, setSvg] = useState<string>('');
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [busy, setBusy] = useState(false);
@@ -50,15 +52,19 @@ export function KozueTool() {
   const diagramRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
   const timer = useRef<number | null>(null);
+  const nextRequest = useRequestGate();
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
         setOutput(null);
+        setAnalysisError(null);
         return;
       }
+      const request = nextRequest();
       setBusy(true);
+      setAnalysisError(null);
       void adapter
         .run({
           toolId: 'kozue',
@@ -68,10 +74,19 @@ export function KozueTool() {
           mode: 'local-static',
         })
         .then((result) => {
+          if (!request.isCurrent()) return;
           setOutput(result.output);
           setElapsed(result.elapsedMs);
         })
-        .finally(() => setBusy(false));
+        .catch((cause) => {
+          if (!request.isCurrent()) return;
+          setOutput(null);
+          setSvg('');
+          setAnalysisError(errorMessage(cause, '図を解析できませんでした。'));
+        })
+        .finally(() => {
+          if (request.isCurrent()) setBusy(false);
+        });
     }, 240);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
@@ -173,7 +188,9 @@ export function KozueTool() {
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
       if (blob) downloadBlob(`${base}-${activeKind}.png`, blob, 'image/png');
     } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : 'PNG の書き出しに失敗しました。');
+      // The modal reports the failure; swallowing it here would announce a success
+      // for a file that was never written (UI-001).
+      throw cause instanceof Error ? cause : new Error('PNG の書き出しに失敗しました。');
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -190,6 +207,7 @@ export function KozueTool() {
       <div className="panes">
         <ToolPane
           title="ソース入力"
+          testId="pane-kozue-input"
           actions={
             <>
               <label className="btn btn-sm" data-testid="kozue-open">
@@ -236,6 +254,7 @@ export function KozueTool() {
 
         <ToolPane
           title="ダイアグラム"
+          testId="pane-kozue-diagram"
           actions={
             <>
               <Segmented
@@ -308,8 +327,9 @@ export function KozueTool() {
               drag.current = null;
             }}
           >
-            {renderError ? <EmptyHint title="ダイアグラムを描画できませんでした">{renderError}</EmptyHint> : null}
-            {!renderError && !svg ? <EmptyHint title={busy ? '描画中…' : 'まだダイアグラムがありません'}>ソースコードを読み込むと構成図を描画します。</EmptyHint> : null}
+            {analysisError ? <EmptyHint title="解析できませんでした">{analysisError}</EmptyHint> : null}
+            {!analysisError && renderError ? <EmptyHint title="ダイアグラムを描画できませんでした">{renderError}</EmptyHint> : null}
+            {!analysisError && !renderError && !svg ? <EmptyHint title={busy ? '描画中…' : 'まだダイアグラムがありません'}>ソースコードを読み込むと構成図を描画します。</EmptyHint> : null}
             <div
               className="diagram-inner"
               ref={diagramRef}
@@ -334,7 +354,19 @@ export function KozueTool() {
         <span className="dot" /> <span>Mermaid レンダラー</span>
         <span>{Math.round(scale * 100)}% ズーム</span>
         <DraftStateBadge state={draftState} />
-        <span className={renderError ? 'err' : 'ok'}>{renderError ? `エラー: ${renderError}` : 'エラーなし'}</span>
+        <span
+          className={analysisError || renderError ? 'err' : 'ok'}
+          data-testid="status-message"
+          data-state={analysisError || renderError ? 'error' : busy ? 'busy' : 'ok'}
+        >
+          {analysisError
+            ? `解析エラー: ${analysisError}`
+            : renderError
+              ? `描画エラー: ${renderError}`
+              : busy
+                ? '処理中'
+                : 'エラーなし'}
+        </span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && svg ? (
@@ -355,7 +387,7 @@ export function KozueTool() {
               label: '.png',
               description: 'スライドに貼れる 2 倍解像度の画像',
               fileName: (base) => `${base}-${activeKind}.png`,
-              run: (base) => void exportPng(base),
+              run: (base) => exportPng(base),
             },
             {
               id: 'mmd',

@@ -118,8 +118,8 @@ test.describe('HD2Lab Aomatsukan live application', () => {
 
     // The three columns: rail left of the centre stack, output to the right.
     const rail = await page.getByTestId('workspace-rail').boundingBox();
-    const input = await page.getByTestId('source-editor').boundingBox();
-    const output = await page.locator('.pane').nth(1).boundingBox();
+    const input = await page.getByTestId('pane-shiori-input').boundingBox();
+    const output = await page.getByTestId('pane-shiori-output').boundingBox();
     expect(rail && input && output).toBeTruthy();
     if (rail && input && output) {
       expect(rail.x + rail.width).toBeLessThanOrEqual(input.x + 1);
@@ -146,7 +146,9 @@ test.describe('HD2Lab Aomatsukan live application', () => {
     await expect(preview).toBeVisible();
     await expect(preview).toContainText('Contract table');
     await expect(preview).toContainText('charge');
-    await expect(page.locator('.pane-title').first()).toContainText('ソース入力');
+    // The prompt pane is the first `.pane` on a PC; the source pane is the tool's own.
+    await expect(page.getByTestId('pane-shiori-input').locator('.pane-title')).toContainText('ソース入力');
+    await expect(page.getByTestId('pane-shiori-output').locator('.pane-title')).toContainText('仕様書');
 
     await page.getByTestId('shiori-export').click();
     await expect(page.getByTestId('export-modal')).toBeVisible();

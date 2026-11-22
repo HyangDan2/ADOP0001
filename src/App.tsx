@@ -9,6 +9,7 @@ import type { ToolId } from './adapters/types';
 import { publishOpenedFile, type OpenedFile } from './lib/fileBus';
 import { activeExampleCounts } from './lib/fewShotStore';
 import { resetAllDrafts } from './lib/drafts';
+import { useMediaQuery } from './lib/useMediaQuery';
 import { ShioriTool } from './tools/shiori/ShioriTool';
 import { YayoiTool } from './tools/yayoi/YayoiTool';
 import { KozueTool } from './tools/kozue/KozueTool';
@@ -54,6 +55,8 @@ export default function App() {
   /** Bumped after an explicit draft reset so the open tool re-reads empty storage. */
   const [draftEpoch, setDraftEpoch] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
+  /** The PC studio (rail + prompt pane) only exists on a wide screen (UI-002). */
+  const desktop = useMediaQuery('(min-width: 1024px)');
 
   const refreshCounts = useCallback(() => {
     setFewShotVersion((value) => value + 1);
@@ -180,21 +183,23 @@ export default function App() {
           ))}
         </nav>
         <div className="topbar-actions">
-          <button
-            type="button"
-            className="chip-btn ws-toggle"
-            aria-pressed={railOpen}
-            aria-label={railOpen ? 'ワークスペースをたたむ' : 'ワークスペースを開く'}
-            title={railOpen ? 'ワークスペースをたたむ' : 'ワークスペースを開く'}
-            onClick={() => setRailOpen((open) => !open)}
-            data-testid="workspace-toggle"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
-              <rect x="3" y="5" width="18" height="14" rx="2" />
-              <path d="M9 5v14" />
-            </svg>
-            <span className="chip-label">ワークスペース</span>
-          </button>
+          {desktop ? (
+            <button
+              type="button"
+              className="chip-btn ws-toggle"
+              aria-pressed={railOpen}
+              aria-label={railOpen ? 'ワークスペースをたたむ' : 'ワークスペースを開く'}
+              title={railOpen ? 'ワークスペースをたたむ' : 'ワークスペースを開く'}
+              onClick={() => setRailOpen((open) => !open)}
+              data-testid="workspace-toggle"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
+                <rect x="3" y="5" width="18" height="14" rx="2" />
+                <path d="M9 5v14" />
+              </svg>
+              <span className="chip-label">ワークスペース</span>
+            </button>
+          ) : null}
           <button
             type="button"
             className="chip-btn fs-open"
@@ -298,7 +303,7 @@ export default function App() {
       </header>
 
       <div className="app-body">
-        {railOpen ? (
+        {railOpen && desktop ? (
           <WorkspacePanel
             activeToolId={tool.id}
             onOpenFile={openFromWorkspace}
@@ -321,12 +326,14 @@ export default function App() {
               <span className="badge">ローカル静的解析</span>
             </div>
           </div>
-          <PromptPane
-            tool={tool}
-            version={fewShotVersion}
-            onOpenManager={() => setFewShotOpen(true)}
-            onChanged={refreshCounts}
-          />
+          {desktop ? (
+            <PromptPane
+              tool={tool}
+              version={fewShotVersion}
+              onOpenManager={() => setFewShotOpen(true)}
+              onChanged={refreshCounts}
+            />
+          ) : null}
           {body}
         </main>
       </div>

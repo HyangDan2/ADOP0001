@@ -849,6 +849,7 @@ table.grid td code { font-family: var(--mono); font-size: 11.5px; color: var(--a
 .fs-instruction textarea:focus { outline: 1px solid var(--accent); }
 .fs-toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
 .fs-error { color: var(--danger); font-size: 12px; margin: 0 0 8px; }
+.fs-note { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin: 0 0 8px; }
 .fs-editor {
   border: 1px solid var(--border-strong);
   border-radius: 12px;

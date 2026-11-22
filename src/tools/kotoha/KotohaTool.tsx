@@ -84,6 +84,12 @@ export function KotohaTool() {
   const [exportOpen, setExportOpen] = useState(false);
   const [pending, setPending] = useState<KotohaOutput | null>(null);
   const [restored, setRestored] = useState<string | null>(null);
+  /**
+   * The markdown and attributes the current `output.docx` was built from
+   * (UI-001). Exporting after an edit would otherwise write an older document
+   * while the modal announced a fresh one.
+   */
+  const [docxSource, setDocxSource] = useState<{ markdown: string; attributes: string } | null>(null);
   /** Guards the async draft restore: a user action always wins over a late load. */
   const userTouched = useRef(false);
 
@@ -127,6 +133,11 @@ export function KotohaTool() {
     setAttributes(outputValue.bundle.attributes);
     setOutput(outputValue);
     setElapsed(0);
+    setDocxSource(
+      outputValue.docx
+        ? { markdown: outputValue.markdown, attributes: JSON.stringify(outputValue.bundle.attributes) }
+        : null,
+    );
     setPending(null);
     setRestored(null);
     const saved = await saveBundle(outputValue.bundle);
@@ -235,10 +246,16 @@ export function KotohaTool() {
       });
       setOutput(result.output);
       setElapsed(result.elapsedMs);
+      // A rebuild only counts as a success when it produced a document; otherwise
+      // the UI must say so instead of showing a success toast (UI-001).
+      if (!result.output.docx) {
+        throw new Error('再構築した .docx を作成できませんでした。');
+      }
       // The rebuilt bundle carries the same attributes that were applied (KOT-003).
       setDocument({ bundle: result.output.bundle, markdown });
+      setDocxSource({ markdown, attributes: JSON.stringify(result.output.bundle.attributes) });
       await saveDocumentDraft({ markdown, attributes: result.output.bundle.attributes, bundle: result.output.bundle });
-      if (download && result.output.docx) {
+      if (download) {
         downloadBlob(
           result.output.fileName,
           result.output.docx,
@@ -283,6 +300,7 @@ export function KotohaTool() {
     setOutput(null);
     setPending(null);
     setRestored(null);
+    setDocxSource(null);
     setError(null);
     setStorage('未保存');
     await clearKotohaDocument();
@@ -323,6 +341,7 @@ export function KotohaTool() {
       <div className="panes">
         <ToolPane
           title="文書"
+          testId="pane-kotoha-document"
           actions={
             <>
               <label className="btn btn-sm">
@@ -425,6 +444,7 @@ export function KotohaTool() {
 
         <ToolPane
           title="テンプレートと往復"
+          testId="pane-kotoha-template"
           actions={
             <>
               <div className="tabs" role="tablist" aria-label="テンプレートの表示">
@@ -684,7 +704,9 @@ export function KotohaTool() {
       <div className="statusbar">
         <span className="dot" /> <span>OOXML エンジン（JSZip）</span>
         <span>{busy ? '処理中' : '待機中'}</span>
-        <span className={error ? 'err' : 'ok'}>{error ? `エラー: ${error}` : 'エラーなし'}</span>
+        <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
+          {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
+        </span>
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
 
@@ -731,7 +753,17 @@ export function KotohaTool() {
               description: 'スタイル・ヘッダー・フッターを保った再構築済み文書',
               fileName: (base) => `${base}.docx`,
               run: (base) => {
-                if (!output?.docx) return;
+                if (!output?.docx) {
+                  throw new Error('先に「.docx を再構築」を実行してください。');
+                }
+                if (
+                  !docxSource ||
+                  docxSource.markdown !== markdown ||
+                  !attributes ||
+                  docxSource.attributes !== JSON.stringify(attributes)
+                ) {
+                  throw new Error('編集内容はまだ .docx に反映されていません。先に「.docx を再構築」を実行してください。');
+                }
                 downloadBlob(`${base}.docx`, output.docx, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
               },
             },

@@ -60,6 +60,12 @@ export interface HaruhiOutput {
   coverageLabel: string;
   executedCoverageLabel: string;
   notes: string[];
+  /**
+   * Classes whose constructor arguments the generated tests cannot build. Their
+   * instance methods are emitted as skipped, with the reason on each case, so the
+   * UI can say up front which fixtures are missing (Phase 1 item, surfaced here).
+   */
+  blockedInstances: string[];
 }
 
 export const FRAMEWORK_LABEL: Record<Framework, string> = {
@@ -135,6 +141,26 @@ export function forgeTests(fileName: string, source: string, options: HaruhiOpti
   }
   notes.push('The mapping rate is static: it counts targeted branches, not executed lines. Executed coverage is N/A until the generated tests run.');
 
+  // Dependency-injected classes: name them, so a skipped instance method has an
+  // explanation the user can act on (provide a fixture) rather than a silent gap.
+  const blockedInstances: string[] = [];
+  for (const type of mod.types) {
+    if (type.kind !== 'class' && type.kind !== 'struct') continue;
+    const ctor = mod.functions.find(
+      (fn) => fn.className === type.name && (fn.name === 'constructor' || fn.name === type.name || fn.name === '__init__'),
+    );
+    if (!ctor || ctor.params.length === 0) continue;
+    const hasInstanceMethod = mod.functions.some(
+      (fn) => fn.className === type.name && fn.isMethod && !fn.modifiers.includes('static') && fn.name !== ctor.name,
+    );
+    if (!hasInstanceMethod) continue;
+    blockedInstances.push(type.name);
+    const params = ctor.params.map((param) => `${param.name}: ${param.type ?? 'unknown'}`).join(', ');
+    notes.push(
+      `Fixture note: ${type.name} needs a constructor argument (${params}) before its instance methods can run; those cases are emitted as skipped.`,
+    );
+  }
+
   return {
     cases,
     code,
@@ -147,6 +173,7 @@ export function forgeTests(fileName: string, source: string, options: HaruhiOpti
     coverageLabel: `${STATIC_MAPPING_LABEL} ${staticMappingRate}%`,
     executedCoverageLabel: `${EXECUTED_COVERAGE_LABEL} N/A`,
     notes,
+    blockedInstances,
   };
 }
 
