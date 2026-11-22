@@ -192,7 +192,7 @@ function notConstructableReason(testCase: TestCase, module: ParsedModule): strin
 }
 
 /** Reason a case cannot be emitted for this framework, or null when it can. */
-function blockReason(framework: Framework, module: ParsedModule, testCase: TestCase): string | null {
+export function blockReason(framework: Framework, module: ParsedModule, testCase: TestCase): string | null {
   const { fn } = testCase;
   if (testCase.status === 'unsupported') return testCase.unsupportedReason ?? 'this case cannot be expressed in the target framework';
   if (fn.isMethod) {
@@ -200,8 +200,11 @@ function blockReason(framework: Framework, module: ParsedModule, testCase: TestC
     if (!isStatic(fn) && !constructable(module, testCase)) return notConstructableReason(testCase, module);
     return null;
   }
-  if (!fn.exported) return `${fn.name} is not exported, so the generated test cannot import it`;
-  if (framework === 'go') return null;
+  // A module import is only possible for an exported TypeScript symbol; Python and Go
+  // tests live in the same module/package, so a private name is still callable.
+  if ((framework === 'vitest' || framework === 'jest') && !fn.exported) {
+    return `${fn.name} is not exported, so the generated test cannot import it`;
+  }
   return null;
 }
 
@@ -331,7 +334,8 @@ function pytestImportNames(cases: TestCase[]): { functions: string[]; classes: s
   const classes = new Set<string>();
   for (const testCase of cases) {
     if (testCase.fn.isMethod && testCase.fn.className) classes.add(testCase.fn.className);
-    else if (testCase.fn.exported) functions.add(testCase.fn.name);
+    // `from module import name` reaches any module-level function, private or not.
+    else functions.add(testCase.fn.name);
   }
   return { functions: [...functions], classes: [...classes] };
 }

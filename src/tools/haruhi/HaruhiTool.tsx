@@ -8,6 +8,20 @@ import { SAMPLE_BY_EXT } from '../samples';
 import { FRAMEWORK_LABEL, HaruhiAdapter, outputFileName, type Framework, type HaruhiOutput } from './adapter';
 
 const adapter = new HaruhiAdapter();
+
+/** Japanese explanation for a branch that no running test reaches. */
+function branchReasonLabel(item: { reasonCode?: string; reason?: string }): string {
+  switch (item.reasonCode) {
+    case 'skipped-case':
+      return 'このフレームワークではスキップされます';
+    case 'loop':
+      return 'ループ・catch はテスト用の代替実装が必要です';
+    case 'no-target':
+      return 'この条件を狙うケースがありません';
+    default:
+      return item.reason ?? '根拠なし';
+  }
+}
 const FRAMEWORKS: Framework[] = ['vitest', 'jest', 'pytest', 'junit5', 'go'];
 
 export function HaruhiTool() {
@@ -171,7 +185,7 @@ export function HaruhiTool() {
                         {' · '}
                         {item.status === 'mapped' ? '対応' : item.status === 'unmapped' ? '未対応' : '対象外'}
                         {item.caseIds?.length ? ` · ${item.caseIds.join(', ')}` : ''}
-                        {item.reason ? ` · ${item.reason}` : ''}
+                        {item.status !== 'mapped' ? ` · ${branchReasonLabel(item)}` : ''}
                       </span>
                     </span>
                   </div>

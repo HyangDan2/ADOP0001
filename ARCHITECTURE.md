@@ -237,9 +237,34 @@ AST precision, and diagnostics surface that when nothing is found.
 | 枝織 | model → contracts/rules/deps → Markdown → standalone HTML | `ShioriOutput` |
 | 弥生 | model → statements → style renderer → pseudo lines + `toSource`/`fromSource` maps | `YayoiOutput` |
 | 梢絵 | model → five scored candidates → Mermaid for each kind → render selected | `KozueOutput` |
-| 春日 | model → cases (happy/boundary/guard/error) → framework emitter → checklist | `HaruhiOutput` |
+| 春日 | model → cases carrying their own inputs (happy/boundary/guard/error) → framework emitter → static branch checklist | `HaruhiOutput` |
 | 琴葉 | `.docx` bytes → JSZip → XML reader → Markdown + bundle → rebuild `.docx` | `KotohaOutput` |
 | 貴音 | Markdown specification → headings/tables/bullets/fences → `SpecInputModel` → per-language emitter (Python/C/C++/MCU) | `TakaneOutput` |
+
+### 3.2.1 Haruhi test-case IR and the two coverage numbers
+
+春日 derives cases once, in `src/tools/haruhi/ir.ts`, and every emitter in
+`src/tools/haruhi/emit.ts` renders that same list. A case owns:
+
+* `inputs` — one neutral literal per parameter (`0`, `''`, `[]`, `{ invoiceId: '' }`, …), so the
+  test name, the printed `Given`/`When` and the emitted call cannot disagree. Boundary values are
+  applied to one parameter at a time; guard conditions are turned back into inputs
+  (`b === 0` → `divide(42, 0)`, `!email` → `''`, `!request.invoiceId` → `{ invoiceId: '' }`,
+  `value < low` → `(0, 1)`), and an input that trips a guard is dropped from the passing cases.
+* `expectation` — `throws(RangeError)`, `returns` with a contract-level check, or `completes` for a
+  void function. Async functions get `await expect(...).rejects` / `resolves`, class methods get a
+  `new Subject()` (or are skipped when the constructor needs dependencies), static methods are
+  called on the class.
+* `status` — `asserted`, `todo` (only the declared return type is checked, the exact value is a
+  TODO) or `unsupported` (emitted as a skipped test with the reason, never as a dummy assertion).
+
+| Metric | Meaning | When it is shown |
+| --- | --- | --- |
+| 静的ブランチ対応率 (`staticMappingRate`) | share of reachable branches a non-skipped case targets, with `mapped` / `unmapped` / `unsupported` per branch and the function, line and case id as evidence | always |
+| 実行カバレッジ (`executedCoverage`) | coverage measured by running the generated tests | `N/A` — 春日 never runs them in the browser |
+
+`coverage` remains as a backwards-compatible alias of the static rate; the UI never presents it as
+executed coverage.
 
 ### 3.3 Takane specification-to-code pipeline
 
@@ -252,9 +277,9 @@ flowchart LR
   TABLE --> MODEL
   FENCE --> MODEL
   MODEL --> PY[Python emitter<br/>dataclass · typing · docstring]
-  MODEL --> C[C11 emitter<br/>typedef struct/enum · prototypes · status codes]
-  MODEL --> CPP[C++17 emitter<br/>struct · enum class · std::optional]
-  MODEL --> MCU[MCU C emitter<br/>fixed-width ints · static buffers · MCU_ERR_*]
+  MODEL --> C[C emitter<br/>header: struct/enum/prototypes<br/>unit: definitions · status codes]
+  MODEL --> CPP[C++17 emitter<br/>header: struct · enum class · class<br/>unit: definitions]
+  MODEL --> MCU[MCU C emitter<br/>header: fixed-width ints · static buffers<br/>unit: definitions · MCU_ERR_*]
 ```
 
 The parser accepts both the Markdown that 枝織 writes (`# Specification — …`, `## 2. Contract table`,
@@ -269,9 +294,18 @@ Four output targets ship today, and 貴音 defaults to `python`:
 | Target | Shape | Notes |
 | --- | --- | --- |
 | `python` | `@dataclass`, `str, Enum`, typed methods, docstrings | `raise ValueError` on guards, `NotImplementedError` placeholder |
-| `c` | C11 header: `typedef enum` status codes, `typedef struct`, prototypes, definitions | contracts return `int32_t`-style status; the result travels through an out-parameter |
-| `cpp` | C++17 header: `namespace`, `struct`, `enum class`, `class`, `std::optional`, `std::vector` | `std::invalid_argument` on guards, `std::runtime_error` placeholder |
-| `mcu` | the C emitter in embedded mode | `<stdint.h>` fixed-width integers (`uint8_t`, `uint16_t`, `uint32_t`, `int32_t`), `char` buffers with `_TEXT_MAX`, fixed arrays with `_ITEMS_MAX`, `MCU_OK = 0` / `MCU_ERR_INVALID_ARG` / `MCU_ERR_UNIMPLEMENTED`, no `malloc` |
+| `c` | two files: `payment_service.h` (guard macro, status enum, `typedef struct`, prototypes) and `payment_service.c` (`#include "payment_service.h"`, definitions) | contracts return a status code; the result travels through an out-parameter |
+| `cpp` | two files: `payment_service.hpp` (`#pragma once`, `namespace`, `struct`, `enum class`, class declarations) and `payment_service.cpp` (`Class::method` definitions) | `std::invalid_argument` on guards, `std::runtime_error` placeholder |
+| `mcu` | the C emitter in embedded mode, also split into `_mcu.h` (fixed buffers, `_Static_assert` bounds) and `_mcu.c` | `<stdint.h>` fixed-width integers (`uint8_t`, `uint16_t`, `uint32_t`, `int32_t`), `char` buffers with `_TEXT_MAX`, fixed arrays with `_ITEMS_MAX`, `memchr` NUL-termination checks, `MCU_OK = 0` / `MCU_ERR_INVALID_ARG` / `MCU_ERR_UNIMPLEMENTED`, no `malloc` |
+
+Signatures that a target language cannot express are repaired and reported rather than emitted
+broken: Python and C++ reorder a defaulted parameter that precedes a required one
+(`PY-PARAM-ORDER`, `CPP-PARAM-ORDER`), Python does the same for dataclass fields
+(`PY-FIELD-ORDER`), and both diagnostics appear in the output pane. Error messages are escaped
+per language (`\"`, `\\`, `\n`), and a return type that only exists in another header keeps its
+declaration but skips the definition with a TODO, because a by-value return needs the complete type.
+The output pane lists every generated file and the diagnostics; the export modal writes each file
+separately or all of them at once.
 
 Guard conditions are translated structurally rather than textually substituted: `!request.invoiceId`
 becomes `request->invoice_id == NULL` in C, `request.invoice_id.empty()` in C++, and
@@ -357,7 +391,7 @@ pane keeps only the `エクスポート` button, so the action bar stays quiet.
 | 梢絵 | `.svg`, `.png`, `.mmd` (+ Mermaid copy) |
 | 春日 | the active framework's test file (+ copy) |
 | 琴葉 | rebuilt `.docx`, `.kotoha.json`, edited `.md` (+ Markdown copy) |
-| 貴音 | `.py`, `.c`, `.cpp`, `.c` (MCU) generated on demand (+ code copy) |
+| 貴音 | `.py`, `.c` + `.h`, `.cpp` + `.hpp`, `.c` + `.h` (MCU), or all files of the active language (+ code copy) |
 
 ### 3.7 Kotoha OOXML engine
 
@@ -846,6 +880,8 @@ may only fill holes an example can justify.
 | Layer | What it proves |
 | --- | --- |
 | `tsc --noEmit` | Strict types across engine, UI and tests. |
+| Haruhi case IR | `tests/haruhi-reliability.test.ts` pins the work-order matrix: `isPositive(0/-1/42)`, `divide(42, 0)`, async resolve/reject, `Calculator.add()` on an instance, `voidFunction()`, `throwsOnInvalid()`, Jest `@jest/globals`, Pytest module imports and constructor handling, JUnit `@Disabled`, Go subtests and `(T, error)` returns, and the static-mapping metric. |
+| Generated artifacts (`npm run qa:generated`) | Writes every scaffold to `.qa-out/` and checks it with an independent toolchain: `ast.parse` + import for Python, `pytest` for the generated Pytest file, `gcc`/`clang`/`zig cc` (`-std=c11`, `-std=c++17`) for C, C++ and MCU, `vitest` in a real project for the generated TypeScript, `go test` for Go and `javac` + JUnit when a JDK and jar are available. A missing toolchain is reported as SKIP, never as a pass. |
 | Vitest (`tests/*.test.ts`) | Parser coverage for four languages; spec Markdown/HTML; pseudocode styles and line maps; all five UML kinds and manual override; four test frameworks; docx ZIP → Markdown → edit → rebuild with styles, headers, footers, media and margins intact; bundle store round trip; specification parsing in all three Markdown shapes and code generation for Python, C, C++ and MCU (fixed-width MCU types, static buffers, status codes, untranslated guards reported as TODO), including the 枝織 → 貴音 round trip; few-shot store CRUD, token estimation, budget truncation, `.fewshot.json` round trip and prompt preview; workspace tree building, noisy-directory pruning, filtering and file routing. |
 | Playwright (`tests/e2e/*.spec.ts`) | Live site: six tools exercised for real, Mermaid actually rendered, docx round trip downloaded, 貴音 generating Python/C/C++/MCU and exporting each through the export modal, few-shot upload → token count → prompt preview → reload persistence, workspace folder tree (PC) opening a file into the centre pane and attaching a few-shot example, 3-column layout at 1440x900, and a 390x844 pass with the rail hidden, zero horizontal overflow and zero console/network errors. |
 

@@ -23,7 +23,7 @@ import {
   type TestCase,
   type TestInput,
 } from './ir';
-import { emitGo, emitJunit, emitPytest, emitTs, type Framework } from './emit';
+import { blockReason, emitGo, emitJunit, emitPytest, emitTs, type Framework } from './emit';
 
 export type { BranchCheck, CaseKind, CaseStatus, Expectation, TestCase, TestInput, Framework };
 export type { FunctionInfo };
@@ -93,7 +93,8 @@ export function outputFileName(framework: Framework, fileName: string): string {
 export function forgeTests(fileName: string, source: string, options: HaruhiOptions): HaruhiOutput {
   const mod = parseSource(fileName, source);
   const cases = buildCaseList(mod);
-  const checklist = buildChecklist(mod, cases);
+  // A branch counts as mapped only when a test for it is really emitted, not skipped.
+  const checklist = buildChecklist(mod, cases, (item) => blockReason(options.framework, mod, item) === null);
   const code = (() => {
     switch (options.framework) {
       case 'vitest':

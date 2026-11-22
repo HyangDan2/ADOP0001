@@ -122,6 +122,8 @@ export interface BranchCheck {
   caseId?: string;
   caseIds?: string[];
   reason?: string;
+  /** Machine-readable reason so the UI can render its own Japanese label. */
+  reasonCode?: 'skipped-case' | 'loop' | 'no-target';
 }
 
 export const EMPTY_HINT = '—';
@@ -292,8 +294,26 @@ interface ClauseResult {
   note?: string;
 }
 
+function pascalCase(text: string): string {
+  return text.replace(/[^A-Za-z0-9]+/g, ' ').split(' ').filter(Boolean).map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join('');
+}
+
+/** Resolves `request.invoiceId` to the declared field shape, when the field is declared. */
+function fieldShape(module: ParsedModule, param: Param, path: string[]): TypeShape | null {
+  let shape = typeShape(param.type);
+  for (const segment of path) {
+    if (shape.base === 'list') shape = typeShape(shape.element);
+    if (shape.base !== 'ref' || !shape.name) return null;
+    const type = findType(module, shape.name);
+    const member = type?.members.find((item) => item.name === segment || pascalCase(item.name) === pascalCase(segment));
+    if (!member) return null;
+    shape = typeShape(member.type);
+  }
+  return shape;
+}
+
 /** One comparison clause such as `b === 0`, `!email`, `items.length === 0`, `not email`. */
-function readClause(clause: string, params: Param[], language: ParsedModule['language']): ClauseResult {
+function readClause(clause: string, params: Param[], module: ParsedModule, language: ParsedModule['language']): ClauseResult {
   const text = clause.trim().replace(/^\((.*)\)$/s, '$1').trim();
   const paramOf = (name: string) => params.find((param) => param.name === name);
 
@@ -307,12 +327,10 @@ function readClause(clause: string, params: Param[], language: ParsedModule['lan
       const shape = typeShape(param.type);
       return { ok: true, param: param.name, value: () => falsyLiteral(shape) };
     }
-    return {
-      ok: true,
-      param: param.name,
-      path: segments.slice(1),
-      value: () => null,
-    };
+    const path = segments.slice(1);
+    const shape = fieldShape(module, param, path);
+    if (!shape) return { ok: false };
+    return { ok: true, param: param.name, path, value: () => falsyLiteral(shape) };
   }
 
   // X.length === 0 / len(X) == 0
@@ -360,9 +378,9 @@ function readClause(clause: string, params: Param[], language: ParsedModule['lan
     const operator = compare[2];
     const token = compare[3].trim();
     const literal = parseLiteralToken(token, language);
-    const shape = typeShape(param.type);
+    const path = segments.slice(1);
+    const shape = path.length ? fieldShape(module, param, path) ?? typeShape(param.type) : typeShape(param.type);
     const setter = (): Literal | null => {
-      if (segments.length > 1) return null;
       if (operator === '===' || operator === '==') return literal;
       if (operator === '!== ' || operator === '!=') {
         if (literal?.kind === 'string') return { kind: 'string', value: literal.value === '' ? 'sample' : '' };
@@ -379,7 +397,7 @@ function readClause(clause: string, params: Param[], language: ParsedModule['lan
       }
       return null;
     };
-    return { ok: true, param: param.name, path: segments.length > 1 ? segments.slice(1) : undefined, value: setter };
+    return { ok: true, param: param.name, path: path.length ? path : undefined, value: setter };
   }
 
   // Bare truthiness check (`if (email)`).
@@ -437,7 +455,7 @@ export function inputsFromCondition(
         continue;
       }
     }
-    const clause = readClause(part, params, module.language);
+    const clause = readClause(part, params, module, module.language);
     if (!clause.ok || !clause.param) {
       notes.push(part);
       continue;
@@ -527,8 +545,10 @@ function literalLabel(value: Literal): string {
       return 'null';
     case 'list':
       return '[ ]';
-    case 'record':
-      return `{ ${value.fields.map((field) => field.name).join(', ')} }`;
+    case 'record': {
+      const rendered = value.fields.map((field) => `${field.name}: ${literalLabel(field.value)}`).join(', ');
+      return rendered.length > 48 ? `{ ${rendered.slice(0, 45)}... }` : `{ ${rendered} }`;
+    }
     case 'opaque':
       return value.code;
   }
@@ -789,7 +809,12 @@ function errorForGuard(fn: FunctionInfo, guard: Guard): string | undefined {
 /* Branch checklist (HAR-003)                                          */
 /* ------------------------------------------------------------------ */
 
-export function buildChecklist(module: ParsedModule, cases: TestCase[]): BranchCheck[] {
+export function buildChecklist(
+  module: ParsedModule,
+  cases: TestCase[],
+  /** True when the case is emitted as a running test in the selected framework. */
+  isRunnable: (testCase: TestCase) => boolean = (testCase) => testCase.status !== 'unsupported',
+): BranchCheck[] {
   const checks: BranchCheck[] = [];
   for (const fn of module.functions) {
     if (isConstructor(fn)) continue;
@@ -805,21 +830,25 @@ export function buildChecklist(module: ParsedModule, cases: TestCase[]): BranchC
 
     for (const branch of branches) {
       const matches = cases.filter((item) => item.fn.name === fn.name && item.sourceLine === branch.line);
-      const live = matches.filter((item) => item.status !== 'unsupported');
+      const live = matches.filter((item) => isRunnable(item));
       const isLoop = branch.branch.startsWith('for') || branch.branch.startsWith('while') || branch.branch.startsWith('catch');
       let status: BranchCheck['status'];
       let reason: string | undefined;
+      let reasonCode: BranchCheck['reasonCode'];
       if (live.length) {
         status = 'mapped';
       } else if (matches.length) {
         status = 'unsupported';
-        reason = `the generated case ${matches[0].id} is skipped`;
+        reason = `the generated case ${matches[0].id} is skipped: ${matches[0].unsupportedReason ?? 'it cannot run in this framework'}`;
+        reasonCode = 'skipped-case';
       } else if (isLoop) {
         status = 'unsupported';
         reason = 'loop and catch branches need a test double or fixture this generator cannot build';
+        reasonCode = 'loop';
       } else {
         status = 'unmapped';
         reason = 'no case targets this condition';
+        reasonCode = 'no-target';
       }
       checks.push({
         branch: branch.branch,
@@ -830,6 +859,7 @@ export function buildChecklist(module: ParsedModule, cases: TestCase[]): BranchC
         caseId: live[0]?.id ?? matches[0]?.id,
         caseIds: live.map((item) => item.id),
         reason,
+        reasonCode,
       });
     }
   }

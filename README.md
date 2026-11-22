@@ -23,9 +23,9 @@ Live: **https://hyangdan2.github.io/ADOP0001/**
 | 枝織 | 仕様書作成 | Specification Writer | `#/shiori` | Parses TS/JS, Python, Java and Go into a contract table, behaviour rules, error paths and dependencies. Markdown + standalone HTML. |
 | 弥生 | 擬似コード | Pseudocode Studio | `#/yayoi` | Strips syntax noise, keeps control flow in three styles and two depths, with line-level two-way highlighting. |
 | 梢絵 | UML自動設計 | UML Auto-Architect | `#/kozue` | Scores five UML kinds, explains the choice with confidence, renders Mermaid diagrams with pan/zoom and SVG/PNG export. |
-| 春日 | テスト生成 | Test Case Forge | `#/haruhi` | Derives happy, boundary, guard and error cases; emits Vitest/Jest, Pytest, JUnit 5, Go testing skeletons plus an uncovered-branch checklist. |
+| 春日 | テスト生成 | Test Case Forge | `#/haruhi` | Derives happy, boundary, guard and error cases that carry their own input values; emits Vitest/Jest, Pytest, JUnit 5 and Go testing skeletons, plus a static branch checklist with the evidence for every branch and an explicit `N/A` for executed coverage. |
 | 琴葉 | Docx↔MD往復 | Docx ↔ MD Round-Trip | `#/kotoha` | Decomposes `.docx` into Markdown while keeping styles, theme, numbering, headers, footers, media and page geometry; rebuilds a valid `.docx` that still looks like the original. |
-| 貴音 | 仕様書→コード | Spec → Code | `#/takane` | Reads the Markdown 枝織 writes (or any structured Markdown specification) and scaffolds Python, C, C++ or MCU C: types, typed signatures, guard clauses, error paths and doc comments. The MCU target keeps to fixed-width integer types, static buffers and `MCU_ERR_*` status codes. Loads the latest 枝織 specification for a code → spec → code loop. |
+| 貴音 | 仕様書→コード | Spec → Code | `#/takane` | Reads the Markdown 枝織 writes (or any structured Markdown specification) and scaffolds Python, C, C++ or MCU C: types, typed signatures, guard clauses, error paths and doc comments. C, C++ and MCU come as a header plus a translation unit. The MCU target keeps to fixed-width integer types, static buffers and `MCU_ERR_*` status codes. Loads the latest 枝織 specification for a code → spec → code loop. |
 
 ## Using it
 
@@ -97,12 +97,19 @@ the contracts a server-backed hybrid engine must satisfy.
 ## Testing
 
 - `tsc --noEmit` — clean.
-- 88 Vitest tests: parser coverage for four languages, specification output, pseudocode mapping,
+- Vitest: parser coverage for four languages, specification output, pseudocode mapping,
   UML auto-detection of all five kinds, four test frameworks, a real `.docx` ZIP → Markdown →
   edit → `.docx` rebuild with style/header/footer/media preservation, specification parsing plus
   code generation for Python, C, C++ and MCU (including the 枝織 → 貴音 round trip), a check that
   every generated artifact stays English while the UI stays Japanese, few-shot store CRUD and token
   budgeting and `.fewshot.json` round trips, and the workspace tree builder, filter and file routing.
+  `tests/haruhi-reliability.test.ts` and `tests/takane-reliability.test.ts` pin the Phase 1 engine
+  matrix (case inputs, framework emitters, static mapping, Python parameter order, C/C++ file split,
+  literal escaping, MCU buffer bounds).
+- `npm run qa:generated` writes every scaffold to `.qa-out/` and verifies it independently:
+  `ast.parse` + import for Python, `pytest`, `gcc`/`clang`/`zig cc -std=c11` and `-std=c++17`,
+  a real Vitest project for the generated TypeScript, `go test`, and `javac` + JUnit 5 when a JDK
+  and the standalone jar are available. Missing toolchains are reported as SKIP with the reason.
 - 11 Playwright end-to-end tests against the deployed site: all six tools, 貴音 generating and
   exporting Python/C/C++/MCU, the export dialog, the few-shot upload/persistence flow, the PC
   workspace rail, the 3-column layout, theme switch, kebab menu, help modal and a 390px mobile pass.
