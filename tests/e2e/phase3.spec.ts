@@ -345,6 +345,15 @@ test.describe('Phase 3 — analysis, UI and data hardening', () => {
 
     const header = fs.readFileSync(path.join(OUT, 'c-header.h'), 'utf8');
     const implementation = fs.readFileSync(path.join(OUT, 'c.c'), 'utf8');
+    // The implementation includes the header by its real export name; the test
+    // saved it under a synthetic name, so give the compiler that name too.
+    for (const [saved, source] of [
+      [path.join(OUT, 'c-header.h'), path.join(OUT, 'c.c')],
+      [path.join(OUT, 'cpp-header.hpp'), path.join(OUT, 'cpp.cpp')],
+    ] as [string, string][]) {
+      const include = fs.readFileSync(source, 'utf8').match(/#include\s+"([^"]+)"/);
+      if (include) fs.copyFileSync(saved, path.join(OUT, path.basename(include[1])));
+    }
     const declared = [...header.matchAll(/^[A-Za-z_][\w \*]*\s(\w+)\(/gm)].map((match) => match[1]);
     expect(declared.length).toBeGreaterThan(0);
     for (const name of declared) {
