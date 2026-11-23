@@ -96,6 +96,7 @@ from the named file, or if this table and the test disagree.
 | --- | --- | --- | --- |
 | Pytest module was not valid Python | `pytest/account_service` failed with `IndentationError: expected an indented block` at the first `@pytest.mark.skip` case | A disabled case emitted only `# TODO` as its body; a comment is not a statement | `emitPytest` emits `pytest.skip("reason")`; guarded by `tests/generated-matrix.test.ts` |
 | `Account()` raised `TypeError` | `pytest/async_repository`: `TypeError: Account.__init__() missing 1 required positional argument: 'email'` | `@dataclass` generates `__init__`, so the parser saw no constructor and treated the class as constructable | `dataclassRequiredFields()` marks the class unconstructable and emits a skip with the field list |
+| “下書きをすべて破棄” left the open document in place | REG-09 failed on the live site and locally: after reset, Kotoha still showed the loaded sample (no `kotoha-sample` button) | `resetAllDrafts()` cleared storage, but the mounted tool still held its document and re-saved it from the debounce timer or the `pagehide` flush, recreating the draft | `resetAllDrafts()` bumps a store epoch; writers captured in an older epoch are dropped; the app reloads so every tool starts from the cleared store (`src/App.tsx`, `src/lib/drafts.ts`); REG-09 covers it |
 
 Both were reproduced first through `npm run qa:generated`, then fixed, then
 re-run; the reliability fixtures that passed in Phase 1 still pass.

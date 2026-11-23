@@ -220,7 +220,16 @@ export async function clearDraft(toolId: ToolId): Promise<void> {
   db.close();
 }
 
+/**
+ * Bumped by `resetAllDrafts()`. A tool that was mounted before the reset keeps
+ * its own document in memory and would otherwise re-save it from a pending
+ * debounce or a pagehide flush, resurrecting the draft the user just cleared.
+ * Writers captured in an older epoch are dropped.
+ */
+let storeEpoch = 0;
+
 export async function resetAllDrafts(toolIds: ToolId[]): Promise<void> {
+  storeEpoch += 1;
   await Promise.all(toolIds.map((toolId) => clearDraft(toolId)));
 }
 
@@ -261,6 +270,7 @@ export function useToolDraft<T extends Record<string, unknown>>(toolId: ToolId, 
   const touched = useRef(false);
   const latest = useRef(snapshot.data);
   const timer = useRef<number | null>(null);
+  const epoch = useRef(storeEpoch);
 
   latest.current = snapshot.data;
 
@@ -268,6 +278,7 @@ export function useToolDraft<T extends Record<string, unknown>>(toolId: ToolId, 
     let cancelled = false;
     void readDraft<T>(toolId).then((record) => {
       if (cancelled || !record || touched.current) return;
+      if (storeEpoch !== epoch.current) return;
       if (record.storage !== 'indexeddb') return; // the sync path already handled it
       setSnapshot({ data: { ...initial, ...record.data }, savedAt: record.savedAt, restored: true });
       setState({ savedAt: record.savedAt, storage: 'indexeddb', restored: true, error: null });
@@ -280,7 +291,7 @@ export function useToolDraft<T extends Record<string, unknown>>(toolId: ToolId, 
   }, [toolId]);
 
   const flush = useCallback(() => {
-    if (!touched.current) return;
+    if (!touched.current || storeEpoch !== epoch.current) return;
     writeDraftNow(toolId, latest.current);
   }, [toolId]);
 
@@ -307,8 +318,10 @@ export function useToolDraft<T extends Record<string, unknown>>(toolId: ToolId, 
   // Debounced persistence; the sync mirror keeps a reload safe in between.
   useEffect(() => {
     if (!touched.current) return;
+    if (storeEpoch !== epoch.current) return;
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
+      if (storeEpoch !== epoch.current) return;
       void writeDraft(toolId, snapshot.data).then((result) => {
         setState({ savedAt: result.savedAt, storage: result.storage, restored: false, error: result.error });
       });

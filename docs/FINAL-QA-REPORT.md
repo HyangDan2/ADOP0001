@@ -27,12 +27,13 @@
 `localhost`가 해석되지 않는 컨테이너에서는 `server.host: 127.0.0.1`로 한 번만
 재시도한 뒤 그 사실을 결과에 적는다(조용히 넘기지 않음).
 
-### A-2. QA 매트릭스가 실제로 재현한 결함 2건 (수정 완료)
+### A-2. QA가 실제로 재현한 결함 3건 (수정 완료)
 
 | 결함 | 재현 | 원인 | 수정 |
 | --- | --- | --- | --- |
 | Pytest 산출물이 Python 문법 오류 | `pytest/account_service` → `IndentationError: expected an indented block` (첫 `@pytest.mark.skip` 케이스) | 비활성 케이스의 함수 본문이 `# TODO` 주석뿐 — Python에서 주석은 문장이 아니다 | `src/tools/haruhi/emit.ts` `emitPytest`: 본문에 `pytest.skip("사유")`를 출력 |
 | `Account()` 생성 시 TypeError | `pytest/async_repository` → `TypeError: Account.__init__() missing 1 required positional argument: 'email'` | `@dataclass`가 `__init__`을 생성하므로 파서는 생성자를 보지 못했고, 클래스를 인자 없이 생성 가능하다고 판단 | `emit.ts`에 `dataclassRequiredFields()` 추가: 필수 필드가 있으면 비생성 가능으로 분류하고 사유에 `construct Account(email: str)`를 남김 |
+| 초기화 후에도 열린 문서가 남음 | REG-09: 초기화 직후 Kotoha가 샘플 문서를 그대로 보여 주고 `kotoha-sample` 버튼이 없음(라이브·로컬 공통) | `resetAllDrafts()`가 저장소만 지우고, 마운트된 도구는 메모리의 문서를 디바운스/`pagehide` flush로 다시 저장해 초안을 되살림 | `resetAllDrafts()`가 store epoch를 올리고 이전 epoch의 쓰기를 버림, 앱이 리로드되어 모든 도구가 빈 저장소에서 시작(`src/App.tsx`, `src/lib/drafts.ts`). REG-09가 회귀를 고정 |
 
 두 결함 모두 `npm run qa:generated`로 먼저 재현 → 수정 → 재실행 순서로 처리했고,
 `tests/generated-matrix.test.ts`가 회귀를 고정한다. Phase 1 신뢰성 fixture의
@@ -56,6 +57,7 @@
 | 파일 | 변경 |
 | --- | --- |
 | `src/tools/haruhi/emit.ts` | Pytest skip 본문, dataclass 필수 필드 판정 |
+| `src/App.tsx`, `src/lib/drafts.ts` | 초기화가 저장소와 메모리 상태를 함께 끊도록(epoch + 리로드) |
 | `tests/qa/artifacts.test.ts` | 7×5 매트릭스 + fixture 4개 + `manifest.json` |
 | `tools/qa/check-generated.mjs` | 매니페스트 기반 실행, Vitest localhost 재시도, Jest 타입 검사, 리포트 JSON |
 | `tests/generated-matrix.test.ts` | QA-001 구조 불변식(영문 산출물, 중복 테스트명, 더미 assertion, skip 본문, dataclass) |
@@ -71,7 +73,9 @@
   이후: `pytest.skip("사유")`를 출력 → 해당 케이스만 skip되고 나머지 케이스가 실행.
 - 이전: `@dataclass` 클래스의 메서드 케이스가 `Account()`를 호출 → 실행 시 TypeError.
   이후: 필수 필드를 사유에 적은 skip 케이스로 출력.
-- UI 동작과 저장 데이터 형식은 바뀌지 않았다.
+- 이전: 메뉴의 초기화가 저장된 초안만 지우고, 열려 있던 문서는 디바운스/언로드 저장으로
+  되살아남 → 이후: 초기화가 저장소와 메모리 상태를 함께 끊고 모든 도구가 빈 상태로 시작.
+- UI 문구와 저장 데이터 형식은 바뀌지 않았다.
 
 ---
 

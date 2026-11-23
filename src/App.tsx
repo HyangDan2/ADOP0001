@@ -147,6 +147,10 @@ export default function App() {
     await resetAllDrafts(TOOLS.map((item) => item.id));
     setDraftEpoch((value) => value + 1);
     setMenuOpen(false);
+    // Remounting is not enough: a tool that still holds its document in memory
+    // re-saves it on unmount, so "init" could keep showing the old file. A hard
+    // reload starts every tool from the cleared store; the hash keeps the tool.
+    window.location.reload();
   };
 
   const openFromWorkspace = (targetTool: ToolId, payload: OpenedFile) => {
