@@ -110,17 +110,36 @@ the contracts a server-backed hybrid engine must satisfy.
   OOXML): package-part survival, preserved blocks, header-row and merge handling, picture extents,
   per-list numbering, the bundle export/import SSoT and every read limit. `tests/drafts.test.ts`
   covers the per-tool draft store (version, migration, size policy, explicit clear).
-- `npm run qa:generated` writes every scaffold to `.qa-out/` and verifies it independently:
-  `ast.parse` + import for Python, `pytest`, `gcc`/`clang`/`zig cc -std=c11` and `-std=c++17`,
-  a real Vitest project for the generated TypeScript, `go test`, and `javac` + JUnit 5 when a JDK
-  and the standalone jar are available. Missing toolchains are reported as SKIP with the reason.
+  `tests/generated-matrix.test.ts` pins the QA-001 matrix (7 built-in samples × 5 frameworks):
+  English-only artifacts, unique test names, no dummy assertions, and the two generator defects the
+  Phase 4 matrix reproduced (a Pytest skip body that was only a comment, a dataclass constructed
+  without its required fields). `tests/reg-matrix.test.ts` keeps REG-01~18 attached to a named test
+  and to the table in `docs/QA.md`.
+- `npm run qa:generated` writes the whole generated matrix to `.qa-out/` (`.qa-out/manifest.json`
+  names the 35 sample × framework pairs plus the four reliability fixtures) and verifies it
+  independently: `ast.parse` + import for Python, `pytest`, `gcc`/`clang`/`zig cc -std=c11` and
+  `-std=c++17`, real Vitest projects for the generated TypeScript/JavaScript, a typecheck for the
+  Jest files, `go test`, and `javac` + JUnit 5 when a JDK and the standalone jar are available.
+  Missing toolchains are reported as SKIP with the reason; a pair whose source language does not
+  match the framework is marked `generated-only`, never counted as a pass. See `docs/QA.md`.
 - Playwright end-to-end tests against the deployed site: all six tools, 貴音 generating and
   exporting Python/C/C++/MCU, the export dialog, the few-shot upload/persistence flow, the PC
   workspace rail, the 3-column layout, theme switch, kebab menu, help modal and a 390px mobile pass.
   `tests/e2e/phase2.spec.ts` adds the data-integrity matrix: REG-01 (tool switch keeps input),
   REG-02 (reload restores the draft), REG-07 (JPEG aspect ratio), REG-08 (merged table confirmed and
   preserved), REG-09 (inspector edit → JSON → reimport → rebuild), REG-13 (oversized upload refused,
-  open document kept) and per-list numbering.
+  open document kept) and per-list numbering. `tests/e2e/phase3.spec.ts` covers REG-03~06 and
+  REG-10~17. `tests/e2e/phase4.spec.ts` closes the gate: REG-18 (every generated artifact is English
+  while the UI stays Japanese) and QA-002 (320/390/1440px in both themes, no console or page error,
+  and the deploy gate definition).
+
+## Quality gate
+
+`.github/workflows/deploy.yml` blocks deployment on `tsc --noEmit`, `npm test` and `npm run build`,
+with `deploy` needing `build`. The full eight-step gate from the work order (adding
+`npm run qa:generated` and Playwright) is in `docs/ci-workflow.yml`; a GitHub App token without the
+`workflows` permission cannot push a change to `.github/workflows/`, so the file is kept for the
+repository owner to copy over the workflow. The refusal is not worked around.
 
 ## Limitations
 
