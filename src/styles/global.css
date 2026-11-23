@@ -47,6 +47,14 @@
 
 * { box-sizing: border-box; }
 
+/* Theme swaps must not animate. The palette is swapped in one go, but
+   `.btn` / `.icon-btn` fade `background` over 120ms, so for those frames the
+   new light-on-dark ink sits on the old near-white fill and the label
+   disappears. App.tsx marks the swap so no transition can run through it. */
+:root[data-theme-switch='instant'] *,
+:root[data-theme-switch='instant'] *::before,
+:root[data-theme-switch='instant'] *::after { transition: none !important; }
+
 html, body, #root { height: 100%; }
 
 body {

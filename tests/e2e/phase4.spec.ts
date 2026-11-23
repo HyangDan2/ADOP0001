@@ -182,10 +182,64 @@ test.describe('Phase 4 — final QA gate', () => {
     await page.goto('./#/shiori');
     const theme = await page.locator('html').getAttribute('data-theme');
     if (theme !== 'dark') await page.getByTestId('theme-toggle').click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    // Let the swap settle: a capture taken in the same tick as the toggle
+    // recorded the mid-transition frame instead of the real palette.
+    await page.waitForTimeout(400);
     await page.screenshot({ path: path.join(OUT, 'final-pc.png') });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('./#/shiori');
     await page.waitForTimeout(400);
     await page.screenshot({ path: path.join(OUT, 'final-mobile.png') });
+  });
+
+  test('QA-002: a theme switch never paints a light fill under the dark ink', async ({ page }) => {
+    watch(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('./#/shiori');
+    if ((await page.locator('html').getAttribute('data-theme')) !== 'light') {
+      await page.getByTestId('theme-toggle').click();
+      await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+      await page.waitForTimeout(300);
+    }
+
+    // Watch every frame across the switch. In the dark palette no button or
+    // chip may be filled with a light surface: that is exactly the frame the
+    // 2026-11-23 reference capture froze (white labels on white chips).
+    await page.evaluate(() => {
+      const state = { worst: 0 };
+      (window as unknown as { __themeProbe: typeof state }).__themeProbe = state;
+      const linear = (value: number) => {
+        const channel = value / 255;
+        return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      };
+      const read = () => {
+        if (document.documentElement.dataset.theme !== 'dark') return;
+        for (const element of document.querySelectorAll<HTMLElement>(
+          '.btn:not(.btn-primary):not(.btn-danger), .icon-btn, .chip-btn',
+        )) {
+          const parts = getComputedStyle(element).backgroundColor.match(/[\d.]+/g)?.map(Number) ?? [];
+          if (parts.length < 3) continue;
+          if (parts.length > 3 && parts[3] < 0.5) continue;
+          const luminance = 0.2126 * linear(parts[0]) + 0.7152 * linear(parts[1]) + 0.0722 * linear(parts[2]);
+          state.worst = Math.max(state.worst, luminance);
+        }
+      };
+      const deadline = performance.now() + 600;
+      const tick = () => {
+        read();
+        if (performance.now() < deadline) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+
+    await page.getByTestId('theme-toggle').click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await page.waitForTimeout(500);
+
+    const worst = await page.evaluate(
+      () => (window as unknown as { __themeProbe: { worst: number } }).__themeProbe.worst,
+    );
+    expect(worst).toBeLessThan(0.2);
   });
 });

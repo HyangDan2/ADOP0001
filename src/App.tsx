@@ -68,12 +68,28 @@ export default function App() {
   }, [refreshCounts]);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    const root = document.documentElement;
+    let release = 0;
+    if (root.dataset.theme !== theme) {
+      // Swap the palette in one paint. Left to the CSS transitions, the button
+      // and icon fills would still be the light theme's near-white for one to
+      // two frames while their ink is already the dark theme's near-white, so
+      // the labels vanish (QA-002 dark-mode capture, 2026-11-23).
+      root.dataset.themeSwitch = 'instant';
+      root.dataset.theme = theme;
+      release = window.setTimeout(() => {
+        delete root.dataset.themeSwitch;
+      }, 60);
+    }
     try {
       localStorage.setItem(THEME_KEY, theme);
     } catch {
       /* storage unavailable */
     }
+    return () => {
+      window.clearTimeout(release);
+      delete root.dataset.themeSwitch;
+    };
   }, [theme]);
 
   useEffect(() => {
