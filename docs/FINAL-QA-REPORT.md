@@ -130,8 +130,8 @@
 
 ## E. 증빙 자료
 
-- PR: `phase4/qa-gate` → `main` (squash merge). PR 본문에 게이트 순서와 결과 표를 첨부.
-- 커밋: 본 문서와 같은 커밋(§A-4 파일 목록).
+- PR: #5 `phase4/qa-gate` → `main` (squash merge). PR 본문에 게이트 순서와 결과 표를 첨부.
+- 커밋: 이 PR의 squash merge 커밋과 아래 파일 목록(§A-4).
 - 테스트 로그: `npm test` 191/191, `npm run qa:generated` PASS 61·FAIL 0·SKIP 3,
   Playwright 36/36 (spec별: app 11, phase2 7, phase3 15, phase4 3).
 - 기계 판독 결과: `.qa-out/qa-report.json`, `.qa-out/manifest.json` (CI 업로드 대상).
