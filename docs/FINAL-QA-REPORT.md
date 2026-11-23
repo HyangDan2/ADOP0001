@@ -134,8 +134,15 @@
 
 ## E. 증빙 자료
 
-- PR: #5 `phase4/qa-gate` → `main` (squash merge). PR 본문에 게이트 순서와 결과 표를 첨부.
-- 커밋: 이 PR의 squash merge 커밋과 아래 파일 목록(§A-4).
+- PR: #5 `phase4/qa-gate` → `main` (squash `e8fec2c`, 최초 Phase 4).
+  후속 수정: #6 `phase4/reset-fix`(squash `4bf40b2`, 초기화 결함),
+  #7 `phase4/reg11-include`(squash `a370e3b`, 헤더 이름),
+  #8 `phase4/reg11-zig`(squash `d46aa55`, zig `-c`).
+- 커밋: 위 squash 커밋들과 §A-4 파일 목록.
+- CI 실행(모두 success): `45088867316`(e8fec2c), `45089779829`(4bf40b2),
+  `45090254396`(a370e3b), `45090768768`(d46aa55).
+- 라이브(`https://hyangdan2.github.io/ADOP0001/`, `index-BLYep3gd.js`) 최종 검증:
+  Playwright 36/36 — app 11, phase2 7(REG-09 포함), phase3 15(REG-11 포함), phase4 3.
 - 테스트 로그: `npm test` 191/191, `npm run qa:generated` PASS 61·FAIL 0·SKIP 3,
   Playwright 36/36 (spec별: app 11, phase2 7, phase3 15, phase4 3).
 - 기계 판독 결과: `.qa-out/qa-report.json`, `.qa-out/manifest.json` (CI 업로드 대상).
