@@ -374,14 +374,14 @@ test.describe('Phase 3 — analysis, UI and data hardening', () => {
       : hasCompiler('cc')
         ? { command: 'cc', args: ['-std=c11', '-fsyntax-only', '-I', OUT, cPath], label: 'cc' }
         : zig
-          ? { command: zig, args: ['cc', '-target', 'x86_64-linux-musl', '-std=c11', '-fsyntax-only', '-I', OUT, cPath], label: 'zig cc' }
+          ? { command: zig, args: ['cc', '-target', 'x86_64-linux-musl', '-std=c11', '-c', cPath, '-o', path.join(OUT, '.qa-c.o'), '-I', OUT], label: 'zig cc' }
           : null;
     const cppCompiler: Compiler | null = hasCompiler('g++')
       ? { command: 'g++', args: ['-std=c++17', '-fsyntax-only', '-I', OUT, cppPath], label: 'g++' }
       : hasCompiler('c++')
         ? { command: 'c++', args: ['-std=c++17', '-fsyntax-only', '-I', OUT, cppPath], label: 'c++' }
         : zig
-          ? { command: zig, args: ['c++', '-target', 'x86_64-linux-musl', '-std=c++17', '-fsyntax-only', '-I', OUT, cppPath], label: 'zig c++' }
+          ? { command: zig, args: ['c++', '-target', 'x86_64-linux-musl', '-std=c++17', '-c', cppPath, '-o', path.join(OUT, '.qa-cpp.o'), '-I', OUT], label: 'zig c++' }
           : null;
     for (const [label, compiler] of [
       ['C11', cCompiler],
