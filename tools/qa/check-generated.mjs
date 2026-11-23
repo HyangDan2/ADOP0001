@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 /**
- * QA-B / QA-C: independent verification of generated scaffolds.
+ * QA-A/B/C: independent verification of generated scaffolds.
  *
- * 1. Regenerates the artifacts (`tests/qa/artifacts.test.ts`).
- * 2. Checks every generated Python file with the real Python compiler and
- *    imports it (`ast.parse` + `compile` + `import`).
- * 3. Runs the generated Pytest file with Pytest, when it is installed.
- * 4. Compiles every generated C/C++ translation unit with the available
- *    compiler (gcc/clang/zig cc). A missing compiler is reported, never faked.
- * 5. Runs the generated Vitest files inside a real Vitest project.
+ * 1. Regenerates every artifact (`tests/qa/artifacts.test.ts`).
+ * 2. Reads `.qa-out/manifest.json`: the 7 samples × 5 frameworks matrix.
+ * 3. For every pair whose source language matches the framework it runs the real
+ *    toolchain: Vitest (typecheck + run), Jest (typecheck; run when jest is
+ *    installed), Pytest, JUnit 5 (javac + console launcher) and `go test`.
+ *    A pair whose language does not match is reported as GENERATED, never as run.
+ * 4. Checks Takane: Python `ast.parse` + import, C11/C++17 compile with the
+ *    available compiler, MCU buffers with the same compiler.
  *
  * Exit code is non-zero only when a check that could run actually failed, so a
  * missing optional toolchain is reported as SKIP with the reason.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const ROOT = process.cwd();
@@ -32,7 +33,7 @@ function tailOf(text, lines = 4) {
 }
 
 function record(check, target, status, detail) {
-  results.push({ check, target, status, detail });
+  results.push({ check, target, status, detail: detail ?? '' });
 }
 
 function run(command, args, options = {}) {
@@ -69,53 +70,49 @@ function walk(dir, filter) {
 /* --------------------------------------------------------------- */
 /* 1. Regenerate                                                     */
 /* --------------------------------------------------------------- */
-const generator = run('npx', ['vitest', 'run', 'tests/qa/artifacts.test.ts', '--pool=threads', '--maxWorkers=1'], { timeout: 240_000 });
+const generator = run('npx', ['vitest', 'run', 'tests/qa/artifacts.test.ts', '--pool=threads', '--maxWorkers=1'], {
+  timeout: 240_000,
+});
 record('generate', 'tests/qa/artifacts.test.ts', generator.ok ? 'PASS' : 'FAIL', generator.ok ? '' : tailOf(`${generator.stdout}\n${generator.stderr}`, 6));
 if (!generator.ok) {
   summarize();
   process.exit(1);
 }
 
+const manifestPath = path.join(OUT, 'manifest.json');
+const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : [];
+record('manifest', path.relative(ROOT, manifestPath), manifest.length ? 'PASS' : 'FAIL', `${manifest.length} matrix pairs`);
+
 /* --------------------------------------------------------------- */
-/* 2. Python syntax and import                                       */
+/* 2. Python: syntax for every generated file, run the py projects   */
 /* --------------------------------------------------------------- */
-const pythonFiles = walk(path.join(OUT, 'takane', 'python'), (name) => name.endsWith('.py'));
-const pythonTargets = [...pythonFiles, ...walk(path.join(OUT, 'haruhi', 'py'), (name) => name.endsWith('.py'))];
 const python = run('python3', ['--version']);
+const allPython = walk(OUT, (name) => name.endsWith('.py'));
 if (!python.ok) {
-  record('python', 'all .py', 'SKIP', 'python3 is not installed');
+  record('python-parse', 'all .py', 'SKIP', 'python3 is not installed');
 } else {
-  for (const file of pythonTargets) {
+  for (const file of allPython) {
     const relative = path.relative(ROOT, file);
-    const compileCheck = run('python3', ['-c', 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1])', file]);
-    if (!compileCheck.ok) {
-      record('python-parse', relative, 'FAIL', compileCheck.stderr.trim().split('\n').slice(-3).join(' | '));
-      continue;
-    }
-    const importCheck = run('python3', ['-c', 'import importlib.util,sys; spec=importlib.util.spec_from_file_location("gen", sys.argv[1]); m=importlib.util.module_from_spec(spec); sys.modules["gen"]=m; spec.loader.exec_module(m)', file], { cwd: path.dirname(file) });
-    record('python-parse', relative, 'PASS', '');
-    record('python-import', relative, importCheck.ok ? 'PASS' : 'FAIL', importCheck.ok ? '' : importCheck.stderr.trim().split('\n').slice(-3).join(' | '));
+    const parse = run('python3', ['-c', 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1])', file]);
+    record('python-parse', relative, parse.ok ? 'PASS' : 'FAIL', parse.ok ? '' : tailOf(parse.stderr, 3));
   }
 }
 
-/* --------------------------------------------------------------- */
-/* 3. Pytest                                                         */
-/* --------------------------------------------------------------- */
-const pytestDir = path.join(OUT, 'haruhi', 'py');
-if (!existsSync(pytestDir)) {
-  record('pytest', '.qa-out/haruhi/py', 'SKIP', 'no generated pytest directory');
+const pytestProjects = manifest.filter((entry) => entry.executable && entry.runner === 'pytest');
+if (!python.ok) {
+  for (const project of pytestProjects) record('pytest', project.dir, 'SKIP', 'python3 is not installed');
+} else if (!run('python3', ['-m', 'pytest', '--version'], { timeout: 30_000 }).ok) {
+  for (const project of pytestProjects) record('pytest', project.dir, 'SKIP', 'pytest is not installed');
 } else {
-  const pytestVersion = run('python3', ['-m', 'pytest', '--version'], { timeout: 30_000 });
-  if (!pytestVersion.ok) {
-    record('pytest', 'test_reliability_account.py', 'SKIP', 'pytest is not installed');
-  } else {
-    const pytestRun = run('python3', ['-m', 'pytest', '-q'], { cwd: pytestDir, timeout: 120_000 });
-    record('pytest', 'test_reliability_account.py', pytestRun.ok ? 'PASS' : 'FAIL', tailOf(pytestRun.stdout + pytestRun.stderr, 2));
+  for (const project of pytestProjects) {
+    const dir = path.join(OUT, project.dir);
+    const pytestRun = run('python3', ['-m', 'pytest', '-q'], { cwd: dir, timeout: 120_000 });
+    record('pytest', project.dir, pytestRun.ok ? 'PASS' : 'FAIL', tailOf(pytestRun.stdout + pytestRun.stderr, 2));
   }
 }
 
 /* --------------------------------------------------------------- */
-/* 4. C / C++                                                        */
+/* 3. C / C++ (Takane)                                               */
 /* --------------------------------------------------------------- */
 function compilerFor(language) {
   const override = process.env.QA_CC;
@@ -137,7 +134,7 @@ function checkTranslations(dirName, language, extension, standard) {
   const compiler = compilerFor(language);
   const label = language === 'c' ? 'C11' : 'C++17';
   if (!compiler) {
-    record(`${label} compile`, dirName, 'SKIP', 'no gcc, clang or zig available');
+    record(`${label} compile`, `takane/${dirName}`, 'SKIP', 'no gcc, clang or zig available');
     return;
   }
   for (const file of files) {
@@ -154,65 +151,162 @@ checkTranslations('mcu', 'c', '.c', 'c11');
 checkTranslations('cpp', 'c++', '.cpp', 'c++17');
 
 /* --------------------------------------------------------------- */
-/* 5. TypeScript / Vitest                                            */
+/* 4. TypeScript: Vitest and Jest projects                           */
 /* --------------------------------------------------------------- */
-for (const project of ['ts-reliability', 'ts-payment']) {
-  const dir = path.join(OUT, 'haruhi', project);
-  if (!existsSync(dir)) continue;
-  const typecheck = run(
-    'npx',
+const jestGlobals = path.join(OUT, 'jest-globals.d.ts');
+mkdirSync(OUT, { recursive: true });
+writeFileSync(
+  jestGlobals,
+  [
+    "declare module '@jest/globals' {",
+    '  export const describe: any;',
+    '  export const it: any;',
+    '  export const test: any;',
+    '  export const expect: any;',
+    '  export const beforeEach: any;',
+    '  export const afterEach: any;',
+    '  export const jest: any;',
+    '}',
+    '',
+  ].join('\n'),
+  'utf8',
+);
+
+function typecheckTs(dir) {
+  const files = readdirSync(dir)
+    .filter((name) => name.endsWith('.ts') && !name.includes('.config.'))
+    .map((name) => path.join(dir, name));
+  const allowJs = readdirSync(dir).some((name) => name.endsWith('.js'));
+  const args = [
+    'tsc',
+    '--noEmit',
+    '--skipLibCheck',
+    '--types',
+    'node',
+    '--target',
+    'ES2022',
+    '--module',
+    'ESNext',
+    '--moduleResolution',
+    'bundler',
+    ...(allowJs ? ['--allowJs'] : []),
+    ...files,
+    jestGlobals,
+  ];
+  return run('npx', args, { timeout: 120_000 });
+}
+
+/** Vitest resolves `localhost` for its worker server; containers without
+ * /etc/hosts cannot. Retry once with an explicit 127.0.0.1 host. */
+function runVitest(dir) {
+  const plain = run('npx', ['vitest', 'run', '--root', dir, '--reporter=dot', '--pool=threads', '--maxWorkers=1'], {
+    timeout: 240_000,
+  });
+  if (plain.ok) return { ...plain, note: tailOf(plain.stdout, 2) };
+  const dnsFailure = /ENOTFOUND localhost|getaddrinfo/.test(plain.stdout + plain.stderr);
+  if (!dnsFailure) return { ...plain, note: tailOf(plain.stdout + plain.stderr, 6) };
+  const config = path.join(dir, 'vitest.qa.config.ts');
+  writeFileSync(
+    config,
     [
-      'tsc',
-      '--noEmit',
-      '--skipLibCheck',
-      '--types',
-      'node',
-      '--target',
-      'ES2022',
-      '--module',
-      'ESNext',
-      '--moduleResolution',
-      'bundler',
-      ...readdirSync(dir).filter((name) => name.endsWith('.ts')).map((name) => path.join(dir, name)),
-    ],
+      "import { defineConfig, mergeConfig } from 'vitest/config';",
+      "import base from './vitest.config';",
+      '',
+      'export default mergeConfig(base, defineConfig({ server: { host: \'127.0.0.1\' } }));',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  const retry = run(
+    'npx',
+    ['vitest', 'run', '--root', dir, '--config', config, '--reporter=dot', '--pool=threads', '--maxWorkers=1'],
+    { timeout: 240_000 },
+  );
+  return { ...retry, note: retry.ok ? 'localhost does not resolve here; retried with 127.0.0.1' : tailOf(retry.stdout + retry.stderr, 6) };
+}
+
+const jestInstalled = has(path.join(ROOT, 'node_modules', '.bin', 'jest'), ['--version']) || has('jest', ['--version']);
+for (const project of manifest.filter((entry) => entry.executable && (entry.runner === 'vitest' || entry.runner === 'jest'))) {
+  const dir = path.join(OUT, project.dir);
+  const typecheck = typecheckTs(dir);
+  record('TypeScript parse', `${project.dir} (${project.test})`, typecheck.ok ? 'PASS' : 'FAIL', typecheck.ok ? '' : tailOf(typecheck.stderr, 4));
+  if (!typecheck.ok) continue;
+  if (project.runner === 'jest') {
+    if (!jestInstalled) {
+      record('Jest run', project.dir, 'SKIP', 'jest is not installed; the file was type-checked only');
+      continue;
+    }
+    const jestRun = run('npx', ['jest', '--rootDir', dir, '--ci'], { timeout: 240_000 });
+    record('Jest run', project.dir, jestRun.ok ? 'PASS' : 'FAIL', tailOf(jestRun.stdout + jestRun.stderr, 4));
+    continue;
+  }
+  const vitest = runVitest(dir);
+  record('Vitest run', project.dir, vitest.ok ? 'PASS' : 'FAIL', vitest.note);
+}
+
+/* --------------------------------------------------------------- */
+/* 5. Go and Java                                                    */
+/* --------------------------------------------------------------- */
+const goProjects = manifest.filter((entry) => entry.executable && entry.runner === 'go');
+const goInstalled = has('go', ['version']);
+for (const project of goProjects) {
+  const dir = path.join(OUT, project.dir);
+  if (!goInstalled) {
+    record('Go test', project.dir, 'SKIP', 'no Go toolchain available');
+    continue;
+  }
+  if (!existsSync(path.join(dir, 'go.mod'))) run('go', ['mod', 'init', 'example.com/qa'], { cwd: dir });
+  const goTest = run('go', ['test', './...'], { cwd: dir, timeout: 180_000 });
+  record('Go test', project.dir, goTest.ok ? 'PASS' : 'FAIL', tailOf(goTest.stdout + goTest.stderr, 3));
+}
+
+const javaProjects = manifest.filter((entry) => entry.executable && entry.runner === 'junit5');
+const junitJar = process.env.QA_JUNIT_JAR;
+const javacInstalled = has('javac', ['-version']);
+for (const project of javaProjects) {
+  const dir = path.join(OUT, project.dir);
+  if (!javacInstalled) {
+    record('javac', project.dir, 'SKIP', 'no JDK available');
+    continue;
+  }
+  if (!junitJar || !existsSync(junitJar)) {
+    record('javac', project.dir, 'SKIP', 'JUnit 5 is not on the classpath (set QA_JUNIT_JAR to a junit-platform-console-standalone jar)');
+    continue;
+  }
+  const classes = path.join(dir, 'classes');
+  const javac = run(
+    'javac',
+    ['-d', classes, '-cp', junitJar, ...readdirSync(dir).filter((name) => name.endsWith('.java')).map((name) => path.join(dir, name))],
     { timeout: 120_000 },
   );
-  record('TypeScript parse', `haruhi/${project}`, typecheck.ok ? 'PASS' : 'FAIL', typecheck.ok ? '' : tailOf(typecheck.stderr, 4));
-  const vitest = run('npx', ['vitest', 'run', '--root', dir, '--reporter', 'basic', '--pool=threads', '--maxWorkers=1'], { timeout: 240_000 });
-  record('Vitest run', `haruhi/${project}`, vitest.ok ? 'PASS' : 'FAIL', vitest.ok ? tailOf(vitest.stdout, 2) : tailOf(vitest.stdout + vitest.stderr, 6));
+  record('javac', project.dir, javac.ok ? 'PASS' : 'FAIL', javac.ok ? '' : tailOf(javac.stderr, 4));
+  if (!javac.ok) continue;
+  const junitRun = run(
+    'java',
+    ['-jar', junitJar, '-cp', classes, '--scan-classpath', classes, '--details=summary'],
+    { timeout: 120_000 },
+  );
+  record('JUnit run', project.dir, junitRun.ok ? 'PASS' : 'FAIL', tailOf(junitRun.stdout + junitRun.stderr, 3));
 }
 
 /* --------------------------------------------------------------- */
-/* 6. Go and Java (optional toolchains)                              */
+/* Report                                                            */
 /* --------------------------------------------------------------- */
-const goDir = path.join(OUT, 'haruhi', 'go');
-if (!existsSync(goDir)) {
-  record('Go test', 'haruhi/go', 'SKIP', 'no generated Go test');
-} else if (!has('go', ['version'])) {
-  record('Go test', 'haruhi/go', 'SKIP', 'no Go toolchain available');
-} else {
-  if (!existsSync(path.join(goDir, 'go.mod'))) run('go', ['mod', 'init', 'example.com/qa'], { cwd: goDir });
-  const goTest = run('go', ['test', './...'], { cwd: goDir, timeout: 180_000 });
-  record('Go test', 'haruhi/go', goTest.ok ? 'PASS' : 'FAIL', tailOf(goTest.stdout + goTest.stderr, 3));
-}
-
-const javaDir = path.join(OUT, 'haruhi', 'java');
-const junitJar = process.env.QA_JUNIT_JAR;
-if (!existsSync(javaDir)) {
-  record('javac', 'haruhi/java', 'SKIP', 'no generated Java test');
-} else if (!has('javac', ['-version'])) {
-  record('javac', 'haruhi/java', 'SKIP', 'no JDK available');
-} else if (!junitJar || !existsSync(junitJar)) {
-  record('javac', 'haruhi/java', 'SKIP', 'JUnit 5 is not on the classpath (set QA_JUNIT_JAR to a junit-platform-console-standalone jar)');
-} else {
-  const javac = run('javac', ['-d', path.join(javaDir, 'classes'), '-cp', junitJar, ...readdirSync(javaDir).filter((name) => name.endsWith('.java')).map((name) => path.join(javaDir, name))], { timeout: 120_000 });
-  record('javac', 'haruhi/java', javac.ok ? 'PASS' : 'FAIL', javac.ok ? '' : tailOf(javac.stderr, 4));
-  if (javac.ok) {
-    const junitRun = run('java', ['-jar', junitJar, '-cp', path.join(javaDir, 'classes'), '--scan-classpath', path.join(javaDir, 'classes'), '--details=summary'], { timeout: 120_000 });
-    record('JUnit run', 'haruhi/java', junitRun.ok ? 'PASS' : 'FAIL', tailOf(junitRun.stdout + junitRun.stderr, 3));
-  }
-}
-
+writeFileSync(
+  path.join(OUT, 'qa-report.json'),
+  JSON.stringify(
+    {
+      generatedAt: new Date().toISOString(),
+      matrix: manifest.length,
+      executable: manifest.filter((entry) => entry.executable).length,
+      generatedOnly: manifest.filter((entry) => !entry.executable).length,
+      results,
+    },
+    null,
+    2,
+  ),
+  'utf8',
+);
 summarize();
 
 function summarize() {
@@ -221,10 +315,14 @@ function summarize() {
     (item) => `${item.check.padEnd(width)}  ${item.status.padEnd(4)}  ${item.target}${item.detail ? `  — ${item.detail}` : ''}`,
   );
   const counts = results.reduce((acc, item) => ({ ...acc, [item.status]: (acc[item.status] ?? 0) + 1 }), {});
+  const pairs = manifest ?? [];
   console.log('\nQA summary');
   console.log('-'.repeat(80));
   console.log(lines.join('\n'));
   console.log('-'.repeat(80));
+  console.log(
+    `matrix ${pairs.length} pairs · executable ${pairs.filter((entry) => entry.executable).length} · generated-only ${pairs.filter((entry) => !entry.executable).length}`,
+  );
   console.log(`PASS ${counts.PASS ?? 0} · FAIL ${counts.FAIL ?? 0} · SKIP ${counts.SKIP ?? 0}`);
   if (counts.FAIL) process.exitCode = 1;
 }

@@ -1,0 +1,119 @@
+# Full deploy gate for ADOP0001 (QA-002, work order §6).
+#
+# WHY THIS FILE IS HERE AND NOT IN .github/workflows/
+# The GitHub App installation that works on this repository may write code, but
+# it does not hold the `workflows` permission. Pushing a change to
+# .github/workflows/deploy.yml is refused by GitHub:
+#
+#   ! [remote rejected] ... (refusing to allow a GitHub App to create or update
+#     workflow `.github/workflows/deploy.yml` without `workflows` permission)
+#
+# The refusal is not worked around. This file is the exact definition the
+# repository owner can copy over .github/workflows/deploy.yml (or paste into the
+# GitHub web editor) to enable the full gate. Until then the live workflow in
+# .github/workflows/deploy.yml keeps its existing, still-blocking gate:
+# npm ci → tsc --noEmit → npm test → vite build → Pages.
+#
+# Gate order (work order §6, QA-002):
+#   1 dependency installation      2 TypeScript typecheck
+#   3 Vitest unit/integration      4 generated-code compile & syntax QA
+#   5 Vite production build        6 Playwright E2E
+#   7 result artifacts upload      8 GitHub Pages deploy
+#
+# A failure in any step stops the job; there is no continue-on-error anywhere,
+# and `deploy` needs `build`, so a red gate cannot publish.
+
+name: Deploy ADOP0001 to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  # The E2E specs keep their fixtures next to the run instead of the sandbox path.
+  E2E_DOWNLOADS: ${{ github.workspace }}/qa-artifacts
+  JUNIT_VERSION: 1.11.3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # 1. Dependency installation
+      - name: Install dependencies
+        run: npm ci
+
+      # 2. TypeScript typecheck
+      - name: TypeScript typecheck
+        run: npx tsc --noEmit
+
+      # 3. Vitest unit/integration tests
+      - name: Vitest
+        run: npm test
+
+      # 4. Generated-code QA (QA-001: QA-B syntax + QA-C execution)
+      - name: Toolchains for generated-code QA
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc g++ default-jdk-headless
+          python3 -m pip install --upgrade pytest
+          curl -fsSL -o "$RUNNER_TEMP/junit-platform-console-standalone.jar" \
+            "https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/${JUNIT_VERSION}/junit-platform-console-standalone-${JUNIT_VERSION}.jar"
+      - name: Generated-code QA
+        env:
+          QA_JUNIT_JAR: ${{ runner.temp }}/junit-platform-console-standalone.jar
+        run: npm run qa:generated
+
+      # 5. Production build
+      - name: Build
+        run: npm run build
+
+      # 6. Playwright E2E against the production build
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Playwright E2E
+        run: npm run test:e2e
+
+      # 7. Result artifacts (kept even when the gate fails)
+      - name: Upload QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-artifacts
+          path: |
+            .qa-out/qa-report.json
+            .playwright-artifacts
+            qa-artifacts
+          if-no-files-found: ignore
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  # 8. GitHub Pages deploy (only after the whole gate is green)
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

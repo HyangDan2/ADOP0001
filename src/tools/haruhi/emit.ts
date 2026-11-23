@@ -178,16 +178,52 @@ function constructorOf(module: ParsedModule, className: string | undefined) {
   );
 }
 
+/**
+ * Required fields of a Python dataclass.
+ *
+ * `@dataclass` generates `__init__` from the field list, so a class may have no
+ * `__init__` in the source and still refuse a bare `Account()` call. The parser
+ * does not model decorators, but the source lines are kept, so the field list is
+ * read from the class body.
+ */
+function dataclassRequiredFields(module: ParsedModule, className: string | undefined): string[] {
+  if (!className || module.language !== 'python') return [];
+  const lines = module.lines;
+  const header = new RegExp(`^\\s*class\\s+${className}\\b`);
+  const start = lines.findIndex((line) => header.test(line));
+  if (start < 0) return [];
+  let decorated = false;
+  for (let i = start - 1; i >= 0; i -= 1) {
+    const text = lines[i].trim();
+    if (!text) continue;
+    decorated = /^@dataclass\b/.test(text);
+    break;
+  }
+  if (!decorated) return [];
+  const fields: string[] = [];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    if (!/^\s+\S/.test(line)) break;
+    if (/^\s+(?:def|@|class)\b/.test(line)) break;
+    const field = line.match(/^\s+([A-Za-z_]\w*)\s*:\s*([^=]+?)\s*$/);
+    if (field) fields.push(`${field[1]}: ${field[2]}`);
+  }
+  return fields;
+}
+
 /** True when the class can be created with no arguments. */
 function constructable(module: ParsedModule, testCase: TestCase): boolean {
   const ctor = constructorOf(module, testCase.fn.className);
-  if (!ctor) return true;
+  if (!ctor) return dataclassRequiredFields(module, testCase.fn.className).length === 0;
   return ctor.params.every((param) => param.optional);
 }
 
 function notConstructableReason(testCase: TestCase, module: ParsedModule): string {
   const ctor = constructorOf(module, testCase.fn.className);
-  const params = ctor?.params.map((param) => `${param.name}: ${param.type ?? 'value'}`).join(', ') ?? '';
+  const params = ctor
+    ? ctor.params.map((param) => `${param.name}: ${param.type ?? 'value'}`).join(', ')
+    : dataclassRequiredFields(module, testCase.fn.className).join(', ');
   return `construct ${testCase.fn.className}(${params}) with its real dependencies before calling ${testCase.fn.name}`;
 }
 
@@ -394,7 +430,9 @@ export function emitPytest(module: ParsedModule, cases: TestCase[]): string {
       if (reason) {
         lines.push(`    @pytest.mark.skip(reason="${escapeDouble(reason)}")`);
         lines.push(`    def ${methodName}(self):`);
-        lines.push(`        # TODO: ${reason}`);
+        // A comment is not a statement in Python: the body must still call
+        // pytest.skip (or pass) or the whole module fails to compile.
+        lines.push(`        pytest.skip("${escapeDouble(reason)}")`);
         lines.push('');
         continue;
       }

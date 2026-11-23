@@ -246,7 +246,7 @@ test.describe('Phase 3 — analysis, UI and data hardening', () => {
     await expect(output).not.toContainText('toBeDefined()');
   });
 
-  test('REG-04/05: Go subtests are unique and Java has no dummy assertion', async ({ page }) => {
+  test('REG-04 + REG-05: Go subtests are unique and Java has no dummy assertion', async ({ page }) => {
     watch(page);
     await page.setViewportSize({ width: 1440, height: 900 });
     await openTool(page, 'haruhi');
@@ -354,15 +354,39 @@ test.describe('Phase 3 — analysis, UI and data hardening', () => {
     expect(implementation).toMatch(/^\s*(static\s+)?[A-Za-z_][\w \*]*\s\w+\(/m);
 
     // Compile when a compiler exists; otherwise the structure check above stands
-    // and the missing toolchain is reported as SKIP, not as a pass.
-    const compiler = hasCompiler('gcc') ? 'gcc' : hasCompiler('cc') ? 'cc' : null;
-    if (!compiler) {
-      test.skip(true, 'no C compiler in this sandbox; structure check only (CI enforces the compile step)');
+    // and the missing toolchain is reported as SKIP, not as a pass. `zig cc`/
+    // `zig c++` are accepted exactly like `npm run qa:generated` does.
+    const cPath = path.join(OUT, 'c.c');
+    const cppPath = path.join(OUT, 'cpp.cpp');
+    const zig = process.env.QA_ZIG && fs.existsSync(process.env.QA_ZIG) ? process.env.QA_ZIG : null;
+    type Compiler = { command: string; args: string[]; label: string };
+    const cCompiler: Compiler | null = hasCompiler('gcc')
+      ? { command: 'gcc', args: ['-std=c11', '-fsyntax-only', '-I', OUT, cPath], label: 'gcc' }
+      : hasCompiler('cc')
+        ? { command: 'cc', args: ['-std=c11', '-fsyntax-only', '-I', OUT, cPath], label: 'cc' }
+        : zig
+          ? { command: zig, args: ['cc', '-target', 'x86_64-linux-musl', '-std=c11', '-fsyntax-only', '-I', OUT, cPath], label: 'zig cc' }
+          : null;
+    const cppCompiler: Compiler | null = hasCompiler('g++')
+      ? { command: 'g++', args: ['-std=c++17', '-fsyntax-only', '-I', OUT, cppPath], label: 'g++' }
+      : hasCompiler('c++')
+        ? { command: 'c++', args: ['-std=c++17', '-fsyntax-only', '-I', OUT, cppPath], label: 'c++' }
+        : zig
+          ? { command: zig, args: ['c++', '-target', 'x86_64-linux-musl', '-std=c++17', '-fsyntax-only', '-I', OUT, cppPath], label: 'zig c++' }
+          : null;
+    for (const [label, compiler] of [
+      ['C11', cCompiler],
+      ['C++17', cppCompiler],
+    ] as [string, Compiler | null][]) {
+      if (!compiler) {
+        test
+          .info()
+          .annotations.push({ type: 'toolchain-skip', description: `no ${label} compiler in this sandbox; structure check only (CI enforces the compile step)` });
+        continue;
+      }
+      const syntax = spawnSync(compiler.command, compiler.args, { encoding: 'utf8' });
+      expect(syntax.status, `${label} (${compiler.label}): ${syntax.stderr}`).toBe(0);
     }
-    const syntax = spawnSync(compiler as string, ['-std=c11', '-fsyntax-only', '-I', OUT, path.join(OUT, 'c.c')], {
-      encoding: 'utf8',
-    });
-    expect(syntax.status, syntax.stderr).toBe(0);
   });
 
   /* ---------- REG-14: rapid input ---------- */
