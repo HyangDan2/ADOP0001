@@ -20,7 +20,20 @@ import path from 'node:path';
 
 const ROOT = process.cwd();
 const OUT = path.join(ROOT, '.qa-out');
+const LOG_DIR = path.join(OUT, 'logs');
 const results = [];
+/** Filled after the toolchain probes; an early failure reports an empty set. */
+let toolchains = {};
+mkdirSync(LOG_DIR, { recursive: true });
+
+/** Writes a full command log under .qa-out/logs so CI keeps the evidence. */
+function writeLog(name, text) {
+  mkdirSync(LOG_DIR, { recursive: true });
+  const safe = name.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120);
+  const file = path.join(LOG_DIR, `${safe}.log`);
+  writeFileSync(file, text, 'utf8');
+  return path.relative(ROOT, file);
+}
 
 /** Last meaningful lines of a command's output, without npm's version notice. */
 function tailOf(text, lines = 4) {
@@ -225,7 +238,59 @@ function runVitest(dir) {
   return { ...retry, note: retry.ok ? 'localhost does not resolve here; retried with 127.0.0.1' : tailOf(retry.stdout + retry.stderr, 6) };
 }
 
-const jestInstalled = has(path.join(ROOT, 'node_modules', '.bin', 'jest'), ['--version']) || has('jest', ['--version']);
+const jestBin = path.join(ROOT, 'node_modules', '.bin', 'jest');
+const jestInstalled = existsSync(jestBin) || has('jest', ['--version']);
+const jestVersion = jestInstalled ? tailOf(run(jestInstalled && existsSync(jestBin) ? jestBin : 'jest', ['--version']).stdout, 1) : '';
+
+/**
+ * The generated Jest project is TypeScript with `@jest/globals`. ts-jest
+ * compiles it; the QA typecheck already ran separately with the project's
+ * stricter flags, so the runtime transform only needs to emit CommonJS.
+ */
+function writeJestConfig(dir) {
+  const config = path.join(dir, 'jest.qa.config.cjs');
+  writeFileSync(
+    config,
+    [
+      'module.exports = {',
+      '  rootDir: __dirname,',
+      "  testEnvironment: 'node',",
+      "  testMatch: ['**/*.test.ts'],",
+      '  transform: {',
+      "    '^.+\\\\.tsx?$': ['ts-jest', {",
+      '      diagnostics: false,',
+      "      tsconfig: { module: 'CommonJS', target: 'ES2022', esModuleInterop: true, allowJs: true },",
+      '    }],',
+      '  },',
+      '};',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return config;
+}
+
+function runJest(dir, project) {
+  const config = writeJestConfig(dir);
+  const resultPath = path.join(dir, 'jest.qa-result.json');
+  const jestRun = run(
+    existsSync(jestBin) ? jestBin : 'npx',
+    existsSync(jestBin)
+      ? ['--config', config, '--ci', '--json', '--outputFile', resultPath]
+      : ['jest', '--config', config, '--ci', '--json', '--outputFile', resultPath],
+    { timeout: 240_000 },
+  );
+  const log = writeLog(`jest-${project.dir.replace(/[\\/]/g, '-')}`, `${jestRun.stdout}\n${jestRun.stderr}`);
+  let detail = tailOf(jestRun.stdout + jestRun.stderr, 4);
+  try {
+    const report = JSON.parse(readFileSync(resultPath, 'utf8'));
+    detail = `${report.numPassedTests ?? 0} passed · ${report.numFailedTests ?? 0} failed · ${report.numPendingTests ?? 0} skipped (${report.numTotalTests ?? 0} tests) · ${log}`;
+  } catch {
+    detail = `${detail} · ${log}`;
+  }
+  return { ok: jestRun.ok, detail };
+}
+
 for (const project of manifest.filter((entry) => entry.executable && (entry.runner === 'vitest' || entry.runner === 'jest'))) {
   const dir = path.join(OUT, project.dir);
   const typecheck = typecheckTs(dir);
@@ -236,8 +301,8 @@ for (const project of manifest.filter((entry) => entry.executable && (entry.runn
       record('Jest run', project.dir, 'SKIP', 'jest is not installed; the file was type-checked only');
       continue;
     }
-    const jestRun = run('npx', ['jest', '--rootDir', dir, '--ci'], { timeout: 240_000 });
-    record('Jest run', project.dir, jestRun.ok ? 'PASS' : 'FAIL', tailOf(jestRun.stdout + jestRun.stderr, 4));
+    const jestRun = runJest(dir, project);
+    record('Jest run', project.dir, jestRun.ok ? 'PASS' : 'FAIL', jestRun.detail);
     continue;
   }
   const vitest = runVitest(dir);
@@ -290,6 +355,30 @@ for (const project of javaProjects) {
 }
 
 /* --------------------------------------------------------------- */
+/* Toolchains: present or absent, and why a check was skipped        */
+/* --------------------------------------------------------------- */
+function versionOf(command, args = ['--version']) {
+  const result = run(command, args, { timeout: 20_000 });
+  if (result.code === null) return null;
+  const text = `${result.stdout}\n${result.stderr}`.trim();
+  return text ? tailOf(text, 1) : 'present';
+}
+
+toolchains = {
+  node: versionOf('node', ['--version']),
+  python: versionOf('python3', ['--version']),
+  pytest: versionOf('python3', ['-m', 'pytest', '--version']),
+  gcc: versionOf('gcc', ['--version']),
+  gplusplus: versionOf('g++', ['--version']),
+  go: versionOf('go', ['version']),
+  javac: versionOf('javac', ['-version']),
+  junitJar: junitJar && existsSync(junitJar) ? junitJar : null,
+  jest: jestVersion || null,
+};
+
+writeLog('generator', `${generator.stdout}\n${generator.stderr}`);
+
+/* --------------------------------------------------------------- */
 /* Report                                                            */
 /* --------------------------------------------------------------- */
 writeFileSync(
@@ -300,6 +389,7 @@ writeFileSync(
       matrix: manifest.length,
       executable: manifest.filter((entry) => entry.executable).length,
       generatedOnly: manifest.filter((entry) => !entry.executable).length,
+      toolchains,
       results,
     },
     null,
@@ -324,5 +414,12 @@ function summarize() {
     `matrix ${pairs.length} pairs · executable ${pairs.filter((entry) => entry.executable).length} · generated-only ${pairs.filter((entry) => !entry.executable).length}`,
   );
   console.log(`PASS ${counts.PASS ?? 0} · FAIL ${counts.FAIL ?? 0} · SKIP ${counts.SKIP ?? 0}`);
+  const skipped = results.filter((item) => item.status === 'SKIP');
+  for (const item of skipped) console.log(`SKIP reason  ${item.check} ${item.target} — ${item.detail}`);
+  console.log(
+    `toolchains  python=${toolchains.python ? 'yes' : 'no'} pytest=${toolchains.pytest ? 'yes' : 'no'} ` +
+      `gcc=${toolchains.gcc ? 'yes' : 'no'} g++=${toolchains.gplusplus ? 'yes' : 'no'} go=${toolchains.go ? 'yes' : 'no'} ` +
+      `javac=${toolchains.javac ? 'yes' : 'no'} junit=${toolchains.junitJar ? 'yes' : 'no'} jest=${toolchains.jest ? 'yes' : 'no'}`,
+  );
   if (counts.FAIL) process.exitCode = 1;
 }

@@ -1,33 +1,27 @@
-# Full deploy gate for ADOP0001 (QA-002, work order §6).
+# Reference copy of the enforced CI/CD gate.
 #
-# WHY THIS FILE IS HERE AND NOT IN .github/workflows/
-# The GitHub App installation that works on this repository may write code, but
-# it does not hold the `workflows` permission. Pushing a change to
-# .github/workflows/deploy.yml is refused by GitHub:
+# Phase 5A (FIX-001) moved this file's definition into
+# .github/workflows/deploy.yml. The workflow now runs on every pull request and
+# on every push to main; Pages deploy is limited to a push to main after the
+# gate is green. This copy is kept for review and for the QA tests that read the
+# full gate from docs/.
 #
-#   ! [remote rejected] ... (refusing to allow a GitHub App to create or update
-#     workflow `.github/workflows/deploy.yml` without `workflows` permission)
-#
-# The refusal is not worked around. This file is the exact definition the
-# repository owner can copy over .github/workflows/deploy.yml (or paste into the
-# GitHub web editor) to enable the full gate. Until then the live workflow in
-# .github/workflows/deploy.yml keeps its existing, still-blocking gate:
-# npm ci → tsc --noEmit → npm test → vite build → Pages.
-#
-# Gate order (work order §6, QA-002):
+# Gate order:
 #   1 dependency installation      2 TypeScript typecheck
-#   3 Vitest unit/integration      4 generated-code compile & syntax QA
+#   3 Vitest unit/integration      4 generated-code compile, run and Jest execution
 #   5 Vite production build        6 Playwright E2E
-#   7 result artifacts upload      8 GitHub Pages deploy
+#   7 result artifacts upload      8 GitHub Pages build + deploy (main only)
 #
-# A failure in any step stops the job; there is no continue-on-error anywhere,
-# and `deploy` needs `build`, so a red gate cannot publish.
+# A missing optional toolchain is reported as SKIP with its reason by the QA
+# runner; a check that could run and failed fails the job. There is no
+# continue-on-error anywhere, and `deploy` needs `build`.
 
-name: Deploy ADOP0001 to GitHub Pages
+name: ADOP0001 quality gate
 
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -36,13 +30,13 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 env:
-  # The E2E specs keep their fixtures next to the run instead of the sandbox path.
   E2E_DOWNLOADS: ${{ github.workspace }}/qa-artifacts
   JUNIT_VERSION: 1.11.3
+  QA_JUNIT_JAR: ${{ github.workspace }}/.qa-tools/junit-platform-console-standalone.jar
 
 jobs:
   build:
@@ -55,60 +49,70 @@ jobs:
           node-version: 22
           cache: npm
 
-      # 1. Dependency installation
       - name: Install dependencies
         run: npm ci
 
-      # 2. TypeScript typecheck
       - name: TypeScript typecheck
         run: npx tsc --noEmit
 
-      # 3. Vitest unit/integration tests
       - name: Vitest
         run: npm test
 
-      # 4. Generated-code QA (QA-001: QA-B syntax + QA-C execution)
-      - name: Toolchains for generated-code QA
+      - name: Install generated-code QA toolchains
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc g++ default-jdk-headless
           python3 -m pip install --upgrade pytest
-          curl -fsSL -o "$RUNNER_TEMP/junit-platform-console-standalone.jar" \
+          mkdir -p "$(dirname "$QA_JUNIT_JAR")"
+          curl -fsSL -o "$QA_JUNIT_JAR" \
             "https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/${JUNIT_VERSION}/junit-platform-console-standalone-${JUNIT_VERSION}.jar"
+
+      - name: Toolchain report
+        run: |
+          set -eu
+          node --version
+          npm --version
+          gcc --version | head -n 1
+          g++ --version | head -n 1
+          python3 --version
+          python3 -m pytest --version
+          npx jest --version
+          javac -version
+          echo "Optional toolchains that are absent are reported as SKIP by npm run qa:generated."
+
       - name: Generated-code QA
-        env:
-          QA_JUNIT_JAR: ${{ runner.temp }}/junit-platform-console-standalone.jar
         run: npm run qa:generated
 
-      # 5. Production build
       - name: Build
         run: npm run build
 
-      # 6. Playwright E2E against the production build
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Playwright E2E
         run: npm run test:e2e
 
-      # 7. Result artifacts (kept even when the gate fails)
-      - name: Upload QA artifacts
+      - name: Upload QA evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: qa-artifacts
+          name: qa-evidence
           path: |
-            .qa-out/qa-report.json
+            .qa-out
             .playwright-artifacts
             qa-artifacts
           if-no-files-found: ignore
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - name: Configure Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
-  # 8. GitHub Pages deploy (only after the whole gate is green)
   deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     environment:

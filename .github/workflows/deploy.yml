@@ -1,8 +1,15 @@
-name: Deploy ADOP0001 to GitHub Pages
+# ADOP0001 quality gate and Pages deploy.
+#
+# The whole gate runs on every pull request and on every push to main; Pages
+# deploy only runs for a push to main, after the gate is green. A missing
+# optional toolchain is reported as SKIP with its reason by the QA runner and
+# never as a pass; a failure in a check that could run fails the job.
+name: ADOP0001 quality gate
 
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -11,28 +18,101 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+env:
+  # The E2E specs keep their fixtures next to the run instead of the sandbox path.
+  E2E_DOWNLOADS: ${{ github.workspace }}/qa-artifacts
+  JUNIT_VERSION: 1.11.3
+  QA_JUNIT_JAR: ${{ github.workspace }}/.qa-tools/junit-platform-console-standalone.jar
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npx tsc --noEmit
-      - run: npm test
-      - run: npm run build
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+
+      # 1. Dependency installation
+      - name: Install dependencies
+        run: npm ci
+
+      # 2. TypeScript typecheck
+      - name: TypeScript typecheck
+        run: npx tsc --noEmit
+
+      # 3. Vitest unit/integration tests
+      - name: Vitest
+        run: npm test
+
+      # 4. Generated-code QA toolchains (QA-001: QA-B syntax + QA-C execution)
+      - name: Install generated-code QA toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc g++ default-jdk-headless
+          python3 -m pip install --upgrade pytest
+          mkdir -p "$(dirname "$QA_JUNIT_JAR")"
+          curl -fsSL -o "$QA_JUNIT_JAR" \
+            "https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/${JUNIT_VERSION}/junit-platform-console-standalone-${JUNIT_VERSION}.jar"
+
+      - name: Toolchain report
+        run: |
+          set -eu
+          node --version
+          npm --version
+          gcc --version | head -n 1
+          g++ --version | head -n 1
+          python3 --version
+          python3 -m pytest --version
+          npx jest --version
+          javac -version
+          echo "Optional toolchains that are absent are reported as SKIP by npm run qa:generated."
+
+      # 5. Generated-code QA: typecheck, Vitest, Jest execution, Pytest, JUnit,
+      #    Go, and C/C++/MCU compile. A missing toolchain is SKIP, never PASS.
+      - name: Generated-code QA
+        run: npm run qa:generated
+
+      # 6. Production build
+      - name: Build
+        run: npm run build
+
+      # 7. Playwright E2E against the production build
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Playwright E2E
+        run: npm run test:e2e
+
+      # 8. Result artifacts (kept even when the gate fails)
+      - name: Upload QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-evidence
+          path: |
+            .qa-out
+            .playwright-artifacts
+            qa-artifacts
+          if-no-files-found: ignore
+
+      # Pages is built from the same verified dist; nothing is published from a PR.
+      - name: Configure Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
+  # 9. GitHub Pages deploy (only after the whole gate is green on main)
   deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     environment:
