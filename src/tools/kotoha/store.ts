@@ -298,9 +298,11 @@ export async function clearKotohaDocument(): Promise<void> {
   await enqueue(async () => {
     const db = await openDb();
     if (!db) return;
+    // `clear()` rather than deleting the well-known keys: `saveBundle` also
+    // writes a source-hash alias per document, and a reset that leaves those
+    // behind keeps the old styles/media in storage forever (FIX-016).
     await writeTransaction(db, (store) => {
-      store.delete(LATEST_KEY);
-      store.delete(DRAFT_KEY);
+      store.clear();
     });
     db.close();
   });

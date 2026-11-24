@@ -179,4 +179,23 @@ describe('Kotoha persistence integrity (FIX-008)', () => {
     expect(fake.store.size).toBe(0);
     expect(await loadLatestBundle()).toBeNull();
   });
+
+  it('drops the source-hash alias a saved bundle left behind (FIX-016)', async () => {
+    fake = installFakeIndexedDb();
+    const bundle = await sampleBundle();
+    await saveDocumentSnapshot({ markdown: '# saved', attributes: bundle.attributes, bundle });
+    expect(fake.store.get('latest')).toBeDefined();
+    expect(fake.store.get('draft')).toBeDefined();
+    expect(fake.store.get(bundle.sourceHash)).toBeDefined();
+
+    await clearKotohaDocument();
+    expect(fake.store.size).toBe(0);
+    expect(await loadLatestBundle()).toBeNull();
+    expect(await loadDocumentDraft()).toBeNull();
+
+    // A save after the reset works again and only re-creates the current keys.
+    const again = await saveDocumentSnapshot({ markdown: '# after clear', attributes: bundle.attributes, bundle });
+    expect(again.storage).toBe('indexeddb');
+    expect([...fake.store.keys()].sort()).toEqual(['draft', 'latest', bundle.sourceHash].sort());
+  });
 });
