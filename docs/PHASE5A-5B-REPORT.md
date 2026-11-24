@@ -229,9 +229,10 @@ match byte-for-byte**, so the parser split and the runner did not change any sam
 
 ## 6. Unresolved defects and limits
 
-1. Go and JUnit generated projects are SKIP on this machine because the toolchains are absent. CI
-   installs them; this was not verified by an actual GitHub Actions run here (no push/deploy was
-   performed).
+1. Go and JUnit generated projects are SKIP on this machine because the toolchains are absent. The
+   pull request's Actions run (`45418204947`) completed the whole build job, including generated-code
+   QA and Playwright, and its deploy job was correctly skipped for a pull request. The local SKIPs
+   therefore remain an environment fact, not a product failure.
 2. The parser remains heuristic. Decorators, macros, templates with unbalanced braces and similar
    constructs can still be missed; diagnostics report partial support rather than claiming AST
    accuracy.
@@ -258,8 +259,10 @@ Branch: `feature/phase5-engine-foundation`
 | `6542672` | `docs: align metadata with the six tools and the enforced gate` |
 | `e10a1db` | `refactor(engine): add a typed runner, split the parser and prepare hybrid AI` |
 
-The review PR is opened from this branch to `main`; it is **not merged** and **not deployed** by this
-work.
+Review PR: **https://github.com/HyangDan2/ADOP0001/pull/11**. The Actions build job passed
+(typecheck, Vitest, generated-code QA, build, Playwright, QA artifact upload); the deploy job was
+skipped because the event was a pull request. The PR is **not merged** and **nothing was deployed** by
+this work.
 
 ---
 
