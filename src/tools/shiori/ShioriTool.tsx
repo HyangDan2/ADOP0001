@@ -3,6 +3,7 @@ import { EmptyHint, LineEditor, ToolPane, useDropFile } from '../../components/u
 import { ExportModal } from '../../components/ExportModal';
 import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
+import { readSourceFile, takeFileInput } from '../../lib/fileInput';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
@@ -107,8 +108,12 @@ export function ShioriTool() {
   };
 
   const loadFile = async (file: File) => {
-    const text = await file.text();
-    setSource(text);
+    const read = await readSourceFile(file);
+    if (read.text === null) {
+      showToast(read.error);
+      return;
+    }
+    setSource(read.text);
     setFileName(file.name);
   };
 
@@ -162,7 +167,7 @@ export function ShioriTool() {
                   accept={CODE_FILE_ACCEPT}
                   style={{ display: 'none' }}
                   onChange={(event) => {
-                    const file = event.target.files?.[0];
+                    const file = takeFileInput(event);
                     if (file) void loadFile(file);
                   }}
                 />

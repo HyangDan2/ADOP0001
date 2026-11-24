@@ -5,6 +5,8 @@
  *          pull requests as well as main.
  * FIX-002: a refused prompt write is reported, and the text stays on screen.
  * FIX-003: clearing the input invalidates the request; no stale output returns.
+ * FIX-015: an inspector edit makes the rebuilt .docx stale until the next rebuild.
+ * FIX-020: a picked file is consumed, so the same file can be picked again.
  */
 import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
@@ -202,5 +204,65 @@ test.describe('Phase 5A — stabilization', () => {
     await page.waitForTimeout(1_200);
     await expect(page.getByTestId('pane-shiori-output')).toContainText('まだ仕様書がありません');
     await expect(page.getByTestId('pane-shiori-output').getByTestId('shiori-preview')).toHaveCount(0);
+  });
+
+  test('FIX-015: an inspector edit invalidates the rebuilt .docx until the next rebuild', async ({ page }) => {
+    watch(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('#/kotoha');
+    await page.getByTestId('kotoha-sample').click();
+    await expect(page.getByTestId('source-editor')).toHaveValue(/# Kotoha Round-Trip Sample/, { timeout: 20_000 });
+
+    const [built] = await Promise.all([page.waitForEvent('download'), page.getByTestId('kotoha-rebuild').click()]);
+    await built.cancel().catch(() => undefined);
+    await expect(page.getByTestId('kotoha-roundtrip')).toBeVisible({ timeout: 20_000 });
+
+    // The fresh build is exportable.
+    await page.getByTestId('kotoha-export').click();
+    const [exported] = await Promise.all([page.waitForEvent('download'), page.getByTestId('export-docx').click()]);
+    expect(exported.suggestedFilename()).toMatch(/\.docx$/);
+    await expect(page.getByTestId('export-feedback')).toHaveAttribute('data-kind', 'ok');
+    await page.keyboard.press('Escape');
+
+    // Changing only an inspector attribute makes the downloaded .docx stale.
+    await page.getByTestId('attr-font').fill('Yu Mincho');
+    await page.getByTestId('kotoha-export').click();
+    await page.getByTestId('export-docx').click();
+    const feedback = page.getByTestId('export-feedback');
+    await expect(feedback).toHaveAttribute('data-kind', 'error');
+    await expect(feedback).toContainText('再構築');
+    await page.keyboard.press('Escape');
+
+    // Rebuilding with the new attributes makes it exportable again.
+    const [rebuilt] = await Promise.all([page.waitForEvent('download'), page.getByTestId('kotoha-rebuild').click()]);
+    await rebuilt.cancel().catch(() => undefined);
+    await page.getByTestId('kotoha-export').click();
+    const [fresh] = await Promise.all([page.waitForEvent('download'), page.getByTestId('export-docx').click()]);
+    expect(fresh.suggestedFilename()).toMatch(/\.docx$/);
+    await expect(page.getByTestId('export-feedback')).toHaveAttribute('data-kind', 'ok');
+  });
+
+  test('FIX-020: a picked file is consumed so the same file can be picked again', async ({ page }) => {
+    watch(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('#/shiori');
+    const input = page.getByTestId('shiori-open').locator('input[type="file"]');
+    const editor = page.getByTestId('source-editor');
+
+    await input.setInputFiles({
+      name: 'retry.ts',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('export function first(): number {\n  return 1;\n}\n'),
+    });
+    await expect(editor).toHaveValue(/export function first/);
+    await expect(input).toHaveValue('');
+
+    await input.setInputFiles({
+      name: 'retry.ts',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('export function second(): string {\n  return "two";\n}\n'),
+    });
+    await expect(editor).toHaveValue(/export function second/);
+    await expect(input).toHaveValue('');
   });
 });

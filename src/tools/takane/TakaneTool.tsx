@@ -3,6 +3,7 @@ import { EmptyHint, LineEditor, Segmented, ToolPane, useDropFile } from '../../c
 import { ExportModal } from '../../components/ExportModal';
 import { SPEC_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
+import { readSourceFile, takeFileInput } from '../../lib/fileInput';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { useRequestGate } from '../../lib/requestGate';
@@ -127,21 +128,28 @@ export function TakaneTool() {
     };
   }, [source, fileName, language]);
 
-  const drop = useDropFile(async (file) => {
-    setSource(await file.text());
+  const showToast = (message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 1900);
+  };
+
+  const loadFile = async (file: File) => {
+    const read = await readSourceFile(file);
+    if (read.text === null) {
+      showToast(read.error);
+      return;
+    }
+    setSource(read.text);
     setFileName(file.name);
-  });
+  };
+
+  const drop = useDropFile((file) => void loadFile(file));
 
   useOpenedFile('takane', (opened) => {
     setSource(opened.text);
     setFileName(opened.name);
     showToast(`${opened.path} を開きました`);
   });
-
-  const showToast = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(null), 1900);
-  };
 
   const loadShiori = () => {
     const record = readShioriRecord();
@@ -211,11 +219,9 @@ export function TakaneTool() {
                   type="file"
                   accept={SPEC_FILE_ACCEPT}
                   style={{ display: 'none' }}
-                  onChange={async (event) => {
-                    const file = event.target.files?.[0];
-                    if (!file) return;
-                    setSource(await file.text());
-                    setFileName(file.name);
+                  onChange={(event) => {
+                    const file = takeFileInput(event);
+                    if (file) void loadFile(file);
                   }}
                 />
               </label>

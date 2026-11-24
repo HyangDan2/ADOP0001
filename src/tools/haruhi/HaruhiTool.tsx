@@ -3,6 +3,7 @@ import { EmptyHint, LineEditor, ToolPane, useDropFile } from '../../components/u
 import { ExportModal } from '../../components/ExportModal';
 import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
+import { readSourceFile, takeFileInput } from '../../lib/fileInput';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
@@ -95,21 +96,28 @@ export function HaruhiTool() {
     };
   }, [source, fileName, framework]);
 
-  const drop = useDropFile(async (file) => {
-    setSource(await file.text());
+  const showToast = (message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 1800);
+  };
+
+  const loadFile = async (file: File) => {
+    const read = await readSourceFile(file);
+    if (read.text === null) {
+      showToast(read.error);
+      return;
+    }
+    setSource(read.text);
     setFileName(file.name);
-  });
+  };
+
+  const drop = useDropFile((file) => void loadFile(file));
 
   useOpenedFile('haruhi', (opened) => {
     setSource(opened.text);
     setFileName(opened.name);
     showToast(`${opened.path} を開きました`);
   });
-
-  const showToast = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(null), 1800);
-  };
 
   return (
     <>
@@ -125,11 +133,9 @@ export function HaruhiTool() {
                   type="file"
                   accept={CODE_FILE_ACCEPT}
                   style={{ display: 'none' }}
-                  onChange={async (event) => {
-                    const file = event.target.files?.[0];
-                    if (!file) return;
-                    setSource(await file.text());
-                    setFileName(file.name);
+                  onChange={(event) => {
+                    const file = takeFileInput(event);
+                    if (file) void loadFile(file);
                   }}
                 />
               </label>
