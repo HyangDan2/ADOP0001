@@ -458,7 +458,7 @@ test.describe('Phase 3 — analysis, UI and data hardening', () => {
     expect(workflow).toContain('npm test');
     expect(workflow).toContain('npm run build');
     expect(workflow).not.toContain('continue-on-error');
-    expect(workflow).toMatch(/deploy:\s*\n\s*needs:\s*build/);
+    expect(workflow).toMatch(/deploy:\s*\n(?:\s*if:[^\n]*\n)?\s*needs:\s*build/);
     // The page itself is reachable while the gate is verified.
     await page.goto('./');
     await expect(page.locator('.topbar')).toBeVisible();

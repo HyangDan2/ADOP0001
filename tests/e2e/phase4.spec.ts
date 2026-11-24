@@ -141,7 +141,7 @@ test.describe('Phase 4 — final QA gate', () => {
     expect(workflow).toContain('npm test');
     expect(workflow).toContain('npm run build');
     expect(workflow).not.toContain('continue-on-error');
-    expect(workflow).toMatch(/deploy:\s*\n\s*needs:\s*build/);
+    expect(workflow).toMatch(/deploy:\s*\n(?:\s*if:[^\n]*\n)?\s*needs:\s*build/);
 
     // The full gate (generated-code QA + Playwright) cannot be pushed to
     // .github/workflows with this installation's permissions, so its definition

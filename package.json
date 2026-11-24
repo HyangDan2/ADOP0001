@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "HD2Lab Aomatsukan - 5-in-1 Code & Document Suite (Shiori, Yayoi, Kozue, Haruhi, Kotoha), 100% in-browser",
+  "description": "HD2Lab Aomatsukan (\u9752\u677e\u9928) \u2014 6-in-1 code and document suite: specification, pseudocode, UML, tests, Docx round trip and spec-to-code. 100% in-browser.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

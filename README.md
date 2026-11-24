@@ -58,19 +58,35 @@ between **Deep Cedar** (dark, default) and **Mist Pine** (light) and remembers t
 npm install
 npm run dev        # http://localhost:5173/ADOP0001/
 npm run build      # tsc --noEmit && vite build
-npm test           # 88 Vitest unit/integration tests
+npm test           # Vitest unit/integration suite (see the run summary for the count)
+npm run qa:generated   # compile and execute every generated artifact (Vitest, Jest, Pytest, JUnit, Go, C/C++)
 npm run test:e2e   # Playwright against a preview server
 npm run brand      # regenerate favicon/OG assets into public/
 ```
 
 `PW_CHROMIUM=/path/to/chrome npm run test:e2e` points Playwright at a preinstalled browser.
 
+## Supported input and limits
+
+- Code tools (枝織, 弥生, 梢絵, 春日) read `.ts`/`.tsx`/`.js`/`.jsx`/`.mjs`/`.cjs`, `.py`, `.c`/`.cpp`/`.h`/`.hpp`/`.ino`,
+  `.java`, `.go` and plain text. The analyser is heuristic (not a compiler AST); unusual syntax such as
+  decorators, macros or unbalanced template braces can be missed.
+- 貴音 reads structured Markdown (`.md`/`.markdown`/`.txt`); 琴葉 reads `.docx` up to 25 MB, 2,000 zip
+  entries, 20 MB per entry and 80 MB uncompressed.
+- Workspace drafts stay in `localStorage` for small input and IndexedDB for large input.
+- Prompt attachments and one few-shot example are capped at 128 KB each; a few-shot bundle import is
+  capped at 512 KB and 100 examples. A refused prompt write is shown as an error and the text stays
+  on screen.
+
 ## How it is built
 
 - **React 19 + Vite 6 + TypeScript (strict)**, no UI framework.
-- A shared static analysis core (`src/lib/source.ts`) builds one language-neutral model — types,
-  signatures, parameters with defaults, guards, error paths, call edges — that four of the five
-  tools consume. No compiler, no worker, no network.
+- A shared static analysis core (`src/lib/source.ts`, re-exported from `src/engine/parser/`) builds one
+  language-neutral model — types, signatures, parameters with defaults, guards, error paths, call
+  edges — that four of the six tools consume. No compiler, no worker, no network.
+- Every tool runs through one engine runner: typed ToolId → options/output contracts, a shared
+  execution context, a request lifecycle (`idle → pending → running → success/error/cancelled`),
+  AbortSignal cancellation and an analysis cache for identical input.
 - Kotoha implements its own dependency-free XML reader plus a JSZip-based OOXML writer, so a
   `.docx` round trip never leaves the tab.
 - Mermaid is vendored at `public/vendor/mermaid.min.js` and loaded on demand, keeping the main
@@ -118,10 +134,12 @@ the contracts a server-backed hybrid engine must satisfy.
 - `npm run qa:generated` writes the whole generated matrix to `.qa-out/` (`.qa-out/manifest.json`
   names the 35 sample × framework pairs plus the four reliability fixtures) and verifies it
   independently: `ast.parse` + import for Python, `pytest`, `gcc`/`clang`/`zig cc -std=c11` and
-  `-std=c++17`, real Vitest projects for the generated TypeScript/JavaScript, a typecheck for the
-  Jest files, `go test`, and `javac` + JUnit 5 when a JDK and the standalone jar are available.
+  `-std=c++17`, real Vitest projects for the generated TypeScript/JavaScript, real Jest projects run
+  through ts-jest, `go test`, and `javac` + JUnit 5 when a JDK and the standalone jar are available.
   Missing toolchains are reported as SKIP with the reason; a pair whose source language does not
-  match the framework is marked `generated-only`, never counted as a pass. See `docs/QA.md`.
+  match the framework is marked `generated-only`, never counted as a pass. The full toolchain
+  inventory, per-check results and logs land in `.qa-out/qa-report.json` and `.qa-out/logs/` for CI
+  artifact upload. See `docs/QA.md`.
 - Playwright end-to-end tests against the deployed site: all six tools, 貴音 generating and
   exporting Python/C/C++/MCU, the export dialog, the few-shot upload/persistence flow, the PC
   workspace rail, the 3-column layout, theme switch, kebab menu, help modal and a 390px mobile pass.
@@ -135,11 +153,12 @@ the contracts a server-backed hybrid engine must satisfy.
 
 ## Quality gate
 
-`.github/workflows/deploy.yml` blocks deployment on `tsc --noEmit`, `npm test` and `npm run build`,
-with `deploy` needing `build`. The full eight-step gate from the work order (adding
-`npm run qa:generated` and Playwright) is in `docs/ci-workflow.yml`; a GitHub App token without the
-`workflows` permission cannot push a change to `.github/workflows/`, so the file is kept for the
-repository owner to copy over the workflow. The refusal is not worked around.
+`.github/workflows/deploy.yml` runs on every push to `main`, every pull request and on demand, and
+blocks the build on `npx tsc --noEmit`, `npm test`, `npm run qa:generated` (which includes real Jest
+execution), `npm run build` and `npm run test:e2e`. QA evidence (`.qa-out`, `.playwright-artifacts`)
+is uploaded as a CI artifact even when a step fails. Deployment needs the build job, runs only for a
+push to `main`, and publishes through GitHub Pages. `docs/ci-workflow.yml` holds the same gate as a
+reference copy for repository owners.
 
 ## Limitations
 
