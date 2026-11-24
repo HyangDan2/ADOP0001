@@ -3,7 +3,13 @@ import type { FewShotExample } from '../adapters/types';
 import type { ToolMeta } from '../adapters/registry';
 import { FEW_SHOT_FILE_ACCEPT, languageTagFor } from '../lib/fileKinds';
 import { MAX_INSTRUCTION_LENGTH, PROMPT_PLACEHOLDER, readPrompt, savePrompt } from '../lib/promptStore';
-import { deleteExample, listExamples, saveExample, setExampleEnabled } from '../lib/fewShotStore';
+import { FEW_SHOT_LIMITS, deleteExample, listExamples, saveExample, setExampleEnabled } from '../lib/fewShotStore';
+import { errorMessage } from '../lib/requestGate';
+
+/** One attachment may not exceed the per-example text budget. */
+const MAX_ATTACHMENT_BYTES = FEW_SHOT_LIMITS.exampleBytes;
+
+type SaveState = 'saved' | 'unsaved' | 'error';
 
 interface PendingSlot {
   name: string;
@@ -24,6 +30,8 @@ export function PromptPane(props: {
   const toolId = props.tool.id;
   const [instruction, setInstruction] = useState(() => readPrompt(toolId));
   const [savedInstruction, setSavedInstruction] = useState(() => readPrompt(toolId));
+  const [saveState, setSaveState] = useState<SaveState>('saved');
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [examples, setExamples] = useState<FewShotExample[]>([]);
   const [inputSlot, setInputSlot] = useState<PendingSlot | null>(null);
   const [outputSlot, setOutputSlot] = useState<PendingSlot | null>(null);
@@ -42,6 +50,8 @@ export function PromptPane(props: {
   useEffect(() => {
     setInstruction(readPrompt(toolId));
     setSavedInstruction(readPrompt(toolId));
+    setSaveState('saved');
+    setSaveError(null);
     setInputSlot(null);
     setOutputSlot(null);
     void refresh();
@@ -49,9 +59,37 @@ export function PromptPane(props: {
   }, [toolId, props.version]);
 
   const changeInstruction = (value: string) => {
+    // The text stays on screen whatever storage does; only the badge and the
+    // error line change when the write is refused.
     setInstruction(value);
-    savePrompt(toolId, value);
-    setSavedInstruction(value.trim());
+    const result = savePrompt(toolId, value);
+    if (result.ok) {
+      setSavedInstruction(value.trim());
+      setSaveState('saved');
+      setSaveError(null);
+    } else {
+      setSaveState('error');
+      setSaveError(result.message ?? '保存できませんでした。');
+    }
+  };
+
+  /** Reads one attachment and reports an oversized or unreadable file instead of failing silently. */
+  const readAttachment = async (file: File, label: string): Promise<PendingSlot | null> => {
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      announce(`${label}が大きすぎます（上限 ${Math.round(MAX_ATTACHMENT_BYTES / 1024)} KB）`);
+      return null;
+    }
+    try {
+      const text = await file.text();
+      if (new TextEncoder().encode(text).length > MAX_ATTACHMENT_BYTES) {
+        announce(`${label}が大きすぎます（上限 ${Math.round(MAX_ATTACHMENT_BYTES / 1024)} KB）`);
+        return null;
+      }
+      return { name: file.name, text };
+    } catch (cause) {
+      announce(`${label}を読み取れませんでした（${errorMessage(cause, '理由不明')}`.concat('）'));
+      return null;
+    }
   };
 
   const active = examples.filter((example) => example.enabled);
@@ -79,21 +117,35 @@ export function PromptPane(props: {
       await refresh();
       props.onChanged();
       announce('Few-shot 例に追加しました');
+    } catch (cause) {
+      // Keep both slots so the user can retry after freeing space.
+      announce(`Few-shot 例を保存できませんでした（${errorMessage(cause, '理由不明')}）`);
     } finally {
       setBusy(false);
     }
   };
 
   const toggle = async (example: FewShotExample) => {
-    await setExampleEnabled(example.id, !example.enabled);
-    await refresh();
-    props.onChanged();
+    try {
+      await setExampleEnabled(example.id, !example.enabled);
+      await refresh();
+      props.onChanged();
+    } catch (cause) {
+      announce(`状態を保存できませんでした（${errorMessage(cause, '理由不明')}）`);
+      await refresh();
+    }
   };
 
   const remove = async (id: string) => {
-    await deleteExample(id);
-    await refresh();
-    props.onChanged();
+    try {
+      await deleteExample(id);
+      await refresh();
+      props.onChanged();
+      announce('例を削除しました');
+    } catch (cause) {
+      announce(`削除できませんでした（${errorMessage(cause, '理由不明')}）`);
+      await refresh();
+    }
   };
 
   return (
@@ -141,7 +193,9 @@ export function PromptPane(props: {
               onChange={async (event) => {
                 const file = event.target.files?.[0];
                 event.target.value = '';
-                if (file) setInputSlot({ name: file.name, text: await file.text() });
+                if (!file) return;
+                const slot = await readAttachment(file, '入力ファイル');
+                if (slot) setInputSlot(slot);
               }}
             />
           </label>
@@ -155,15 +209,28 @@ export function PromptPane(props: {
               onChange={async (event) => {
                 const file = event.target.files?.[0];
                 event.target.value = '';
-                if (file) setOutputSlot({ name: file.name, text: await file.text() });
+                if (!file) return;
+                const slot = await readAttachment(file, '出力ファイル');
+                if (slot) setOutputSlot(slot);
               }}
             />
           </label>
           <button type="button" className="btn btn-sm btn-primary" onClick={() => void addPair()} disabled={busy || !outputSlot} data-testid="prompt-add-pair">
             ペアとして追加
           </button>
-          <span className="prompt-save">{instruction.trim() === savedInstruction ? '保存済み' : '未保存'}</span>
+          <span
+            className={`prompt-save ${saveState === 'error' ? 'err' : ''}`}
+            data-testid="prompt-save-state"
+            data-state={saveState === 'error' ? 'error' : instruction.trim() === savedInstruction ? 'saved' : 'unsaved'}
+          >
+            {saveState === 'error' ? '保存エラー' : instruction.trim() === savedInstruction ? '保存済み' : '未保存'}
+          </span>
         </div>
+        {saveState === 'error' && saveError ? (
+          <p className="fs-error" role="alert" data-testid="prompt-save-error">
+            {saveError}
+          </p>
+        ) : null}
 
         <div className="fs-pills" data-testid="prompt-pills">
           {active.map((example) => (

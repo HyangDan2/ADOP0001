@@ -100,8 +100,13 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
 
   const saveInstruction = (value: string) => {
     setInstruction(value);
-    savePrompt(toolId, value);
-    setSavedInstruction(value.trim());
+    const result = savePrompt(toolId, value);
+    if (result.ok) {
+      setSavedInstruction(value.trim());
+      setImportError(null);
+    } else {
+      setImportError(`保存できませんでした: ${result.message ?? '理由不明のエラー'}`);
+    }
   };
 
   const activeCount = examples.filter((example) => example.enabled).length;
@@ -109,27 +114,52 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
 
   const draftTokens = draft ? estimateTokens(draft.inputText) + estimateTokens(draft.outputText) : 0;
 
-  const readText = async (file: File): Promise<string> => (isBinaryFile(file.name) ? '' : file.text());
+  const readText = async (file: File): Promise<string> => {
+    if (isBinaryFile(file.name)) return '';
+    if (file.size > FEW_SHOT_LIMITS.exampleBytes) {
+      throw new Error(
+        `${file.name} は ${Math.round(FEW_SHOT_LIMITS.exampleBytes / 1024)} KB を超えています。`,
+      );
+    }
+    try {
+      const text = await file.text();
+      if (new TextEncoder().encode(text).length > FEW_SHOT_LIMITS.exampleBytes) {
+        throw new Error(`${file.name} は ${Math.round(FEW_SHOT_LIMITS.exampleBytes / 1024)} KB を超えています。`);
+      }
+      return text;
+    } catch (cause) {
+      if (cause instanceof Error && /KB を超えています/.test(cause.message)) throw cause;
+      throw new Error(`${file.name} を読み取れませんでした。`);
+    }
+  };
 
   const attachInputFile = async (file: File) => {
-    const text = await readText(file);
-    setDraft((current) => ({
-      ...(current ?? EMPTY_DRAFT),
-      inputFileName: file.name,
-      inputText: text,
-      targetLanguage: current?.targetLanguage || languageTagFor(file.name) || '',
-    }));
+    try {
+      const text = await readText(file);
+      setDraft((current) => ({
+        ...(current ?? EMPTY_DRAFT),
+        inputFileName: file.name,
+        inputText: text,
+        targetLanguage: current?.targetLanguage || languageTagFor(file.name) || '',
+      }));
+    } catch (cause) {
+      setImportError(cause instanceof Error ? cause.message : 'ファイルを読み取れませんでした。');
+    }
   };
 
   const attachOutputFile = async (file: File) => {
-    const text = await readText(file);
-    setDraft((current) => ({
-      ...(current ?? EMPTY_DRAFT),
-      title: current?.title || file.name.replace(/\.[^.]+$/, ''),
-      outputFileName: file.name,
-      outputText: text,
-      targetLanguage: current?.targetLanguage || languageTagFor(file.name) || '',
-    }));
+    try {
+      const text = await readText(file);
+      setDraft((current) => ({
+        ...(current ?? EMPTY_DRAFT),
+        title: current?.title || file.name.replace(/\.[^.]+$/, ''),
+        outputFileName: file.name,
+        outputText: text,
+        targetLanguage: current?.targetLanguage || languageTagFor(file.name) || '',
+      }));
+    } catch (cause) {
+      setImportError(cause instanceof Error ? cause.message : 'ファイルを読み取れませんでした。');
+    }
   };
 
   const attachMany = async (files: File[]) => {
@@ -224,9 +254,14 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
   };
 
   const removeExample = async (id: string) => {
-    await deleteExample(id);
-    await refresh();
-    announce('例を削除しました');
+    try {
+      await deleteExample(id);
+      await refresh();
+      announce('例を削除しました');
+    } catch (cause) {
+      setImportError(`削除できませんでした: ${cause instanceof Error ? cause.message : '理由不明のエラー'}`);
+      await refresh();
+    }
   };
 
   const toggleExample = async (example: FewShotExample) => {
@@ -292,10 +327,16 @@ export function FewShotModal(props: { tool: ToolMeta; onClose: () => void; onCha
       window.setTimeout(() => setConfirmClear(false), 4000);
       return;
     }
-    await clearExamples(toolId);
-    setConfirmClear(false);
-    await refresh();
-    announce('このツールの例をすべて削除しました');
+    try {
+      await clearExamples(toolId);
+      setConfirmClear(false);
+      await refresh();
+      announce('このツールの例をすべて削除しました');
+    } catch (cause) {
+      setConfirmClear(false);
+      setImportError(`削除できませんでした: ${cause instanceof Error ? cause.message : '理由不明のエラー'}`);
+      await refresh();
+    }
   };
 
   const assembly = useMemo(
