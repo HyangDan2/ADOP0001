@@ -8,8 +8,8 @@ runs” are never reported as the same thing.
 | --- | --- | --- |
 | QA-A | Generator unit checks (case inputs, names, IR) | `npm test` — `tests/haruhi*.test.ts`, `tests/takane*.test.ts`, `tests/kotoha*.test.ts`, … |
 | QA-B | Artifact syntax: Python parse, C11/C++17 compile, TypeScript typecheck | `npm run qa:generated` |
-| QA-C | Artifact execution in an isolated project: Pytest, Vitest, Jest, JUnit 5, `go test`, rebuilt DOCX re-read | `npm run qa:generated`, `tests/e2e/phase2.spec.ts` |
-| QA-D | UI integration | `npm run test:e2e` — `tests/e2e/phase1~4` |
+| QA-C | Artifact execution in an isolated project: Pytest, Vitest, Jest (ts-jest, with per-project logs), JUnit 5, `go test`, rebuilt DOCX re-read | `npm run qa:generated`, `tests/e2e/phase2.spec.ts` |
+| QA-D | UI integration | `npm run test:e2e` — `tests/e2e/phase1~5` |
 
 ## Commands
 
@@ -50,6 +50,10 @@ is compiled with gcc/g++ or `zig cc`/`zig c++` (whatever exists), and the report
 names the compiler it used.
 
 ## Toolchain availability in the Phase 4 verification container
+
+> Historical record for that container. The Phase 5 local run used gcc/g++/javac as well; its
+> inventory and per-check logs are in `.qa-out/qa-report.json` and `.qa-out/logs/`, and are
+> summarized in `docs/PHASE5A-5B-REPORT.md`.
 
 The sandbox has no `gcc`/`g++` and no `localhost` entry in `/etc/hosts`; both are
 environment facts, not product defects.

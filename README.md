@@ -118,7 +118,10 @@ the contracts a server-backed hybrid engine must satisfy.
   edit → `.docx` rebuild with style/header/footer/media preservation, specification parsing plus
   code generation for Python, C, C++ and MCU (including the 枝織 → 貴音 round trip), a check that
   every generated artifact stays English while the UI stays Japanese, few-shot store CRUD and token
-  budgeting and `.fewshot.json` round trips, and the workspace tree builder, filter and file routing.
+  budgeting and `.fewshot.json` round trips, the workspace tree builder, filter and file routing, the
+  typed engine registry and execution context (cache hit/miss, abort, diagnostics), prompt save
+  failure classification, the request gate, and the hybrid consent/settings contract with a mock
+  provider that never touches the network.
   `tests/haruhi-reliability.test.ts` and `tests/takane-reliability.test.ts` pin the Phase 1 engine
   matrix (case inputs, framework emitters, static mapping, Python parameter order, C/C++ file split,
   literal escaping, MCU buffer bounds). `tests/kotoha-integrity.test.ts` pins Phase 2 on six DOCX
@@ -174,7 +177,8 @@ reference copy for repository owners.
 - UML auto-selection is a scored heuristic with an explicit confidence badge; every kind can be
   chosen manually.
 - Option B (AI hybrid) is designed and specified, not implemented: the prompt/few-shot pane collects
-  everything it needs, but no request is made.
+  everything it needs, and Phase 5B adds the typed settings/consent gate, structured-output
+  validation, a local-fallback helper and a mock provider under test. No request is made.
 - The PC workspace rail is hidden below 1024px by design; phones and tablets use `ファイルを開く`
   instead of a folder tree.
 
