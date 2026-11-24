@@ -15,6 +15,7 @@ import { YayoiTool } from './tools/yayoi/YayoiTool';
 import { KozueTool } from './tools/kozue/KozueTool';
 import { HaruhiTool } from './tools/haruhi/HaruhiTool';
 import { KotohaTool } from './tools/kotoha/KotohaTool';
+import { clearKotohaDocument } from './tools/kotoha';
 import { TakaneTool } from './tools/takane/TakaneTool';
 
 type Theme = 'dark' | 'light';
@@ -160,7 +161,9 @@ export default function App() {
   };
 
   const resetDrafts = async () => {
-    await resetAllDrafts(TOOLS.map((item) => item.id));
+    // Kotoha keeps its document draft in its own store, so the generic draft
+    // reset alone would let the cleared document return after the reload.
+    await Promise.all([resetAllDrafts(TOOLS.map((item) => item.id)), clearKotohaDocument()]);
     setDraftEpoch((value) => value + 1);
     setMenuOpen(false);
     // Remounting is not enough: a tool that still holds its document in memory

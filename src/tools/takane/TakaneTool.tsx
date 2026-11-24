@@ -10,14 +10,12 @@ import { DraftStateBadge } from '../../components/DraftStateBadge';
 import {
   LANGUAGE_EXTENSION,
   LANGUAGE_LABEL,
-  TakaneAdapter,
   buildTakane,
   type TakaneLanguage,
   type TakaneOutput,
 } from './adapter';
 import { TAKANE_SAMPLES } from './samples';
-
-const adapter = new TakaneAdapter();
+import { runEngine } from '../../engine/core/runner';
 const SHIORI_KEY = 'adop0001.shiori.latest';
 
 const LANGUAGES: { value: TakaneLanguage; label: string }[] = [
@@ -92,15 +90,13 @@ export function TakaneTool() {
       const request = gate.start();
       setBusy(true);
       setError(null);
-      void adapter
-        .run({
-          toolId: 'takane',
-          sourceName: fileName,
-          source,
-          options: { language },
-          mode: 'local-static',
-          signal: request.signal,
-        })
+      void runEngine('takane', {
+        sourceName: fileName,
+        source,
+        options: { language },
+        mode: 'local-static',
+        signal: request.signal,
+      })
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);

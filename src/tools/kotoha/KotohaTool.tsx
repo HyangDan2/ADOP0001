@@ -5,7 +5,7 @@ import { DOCX_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { copyText, downloadBlob } from '../../lib/util';
 import { useRequestGate, type RequestHandle } from '../../lib/requestGate';
-import { KotohaAdapter, type KotohaOutput } from './adapter';
+import { type KotohaOutput } from './adapter';
 import { parseBundleExport, withAttributes, type BundleAttributes, type KotohaBundle, type LossWarning } from './bundle';
 import {
   inchToTwips,
@@ -19,8 +19,7 @@ import {
   twipsToInch,
   KOTOHA_LIMITS,
 } from './index';
-
-const adapter = new KotohaAdapter();
+import { runEngine } from '../../engine/core/runner';
 const PRESET_KEY = 'adop0001.kotoha.presets';
 
 /** The store reports `indexeddb` / `memory`; the UI shows a Japanese label. */
@@ -169,8 +168,7 @@ export function KotohaTool() {
     setBusy(true);
     setError(null);
     try {
-      const result = await adapter.run({
-        toolId: 'kotoha',
+      const result = await runEngine('kotoha', {
         sourceName: 'kotoha-sample.docx',
         source: '',
         options: { action: 'sample' },
@@ -202,8 +200,7 @@ export function KotohaTool() {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       if (!request.isCurrent()) return;
-      const result = await adapter.run({
-        toolId: 'kotoha',
+      const result = await runEngine('kotoha', {
         sourceName: file.name,
         source: '',
         options: { action: 'decompose', bytes, fileName: file.name },
@@ -253,8 +250,7 @@ export function KotohaTool() {
     setBusy(true);
     setError(null);
     try {
-      const result = await adapter.run({
-        toolId: 'kotoha',
+      const result = await runEngine('kotoha', {
         sourceName: document.bundle.fileName,
         source: markdown,
         options: {

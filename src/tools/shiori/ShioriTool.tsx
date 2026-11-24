@@ -8,9 +8,8 @@ import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
-import { ALL_SECTIONS, ShioriAdapter, type ShioriOutput, type SpecSection } from './adapter';
-
-const adapter = new ShioriAdapter();
+import { ALL_SECTIONS, type ShioriOutput, type SpecSection } from './adapter';
+import { runEngine } from '../../engine/core/runner';
 
 const SECTION_LABEL: Record<SpecSection, string> = {
   overview: '概要',
@@ -53,8 +52,7 @@ export function ShioriTool() {
     setBusy(true);
     setError(null);
     try {
-      const result = await adapter.run({
-        toolId: 'shiori',
+      const result = await runEngine('shiori', {
         sourceName: name,
         source: text,
         options: { sections: activeSections, includePrivate: true },

@@ -8,9 +8,8 @@ import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
-import { YayoiAdapter, type PseudoDepth, type PseudoLine, type PseudoStyle, type YayoiOutput } from './adapter';
-
-const adapter = new YayoiAdapter();
+import { type PseudoDepth, type PseudoLine, type PseudoStyle, type YayoiOutput } from './adapter';
+import { runEngine } from '../../engine/core/runner';
 
 const STYLES: { value: PseudoStyle; label: string }[] = [
   { value: 'standard', label: '標準構造化' },
@@ -53,15 +52,13 @@ export function YayoiTool() {
       const request = gate.start();
       setBusy(true);
       setError(null);
-      void adapter
-        .run({
-          toolId: 'yayoi',
-          sourceName: fileName,
-          source,
-          options: { style, depth },
-          mode: 'local-static',
-          signal: request.signal,
-        })
+      void runEngine('yayoi', {
+        sourceName: fileName,
+        source,
+        options: { style, depth },
+        mode: 'local-static',
+        signal: request.signal,
+      })
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);

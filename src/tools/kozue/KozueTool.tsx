@@ -8,10 +8,10 @@ import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
-import { KozueAdapter, kindLabel, type Direction, type KozueOutput, type UmlKind } from './adapter';
+import { kindLabel, type Direction, type KozueOutput, type UmlKind } from './adapter';
+import { runEngine } from '../../engine/core/runner';
 import { loadMermaid, type MermaidTheme } from './mermaid';
 
-const adapter = new KozueAdapter();
 const KINDS: UmlKind[] = ['sequence', 'class', 'state', 'activity', 'component'];
 
 /** Japanese switcher labels for the diagram-kind tabs and the confidence badge. */
@@ -65,15 +65,13 @@ export function KozueTool() {
       const request = gate.start();
       setBusy(true);
       setAnalysisError(null);
-      void adapter
-        .run({
-          toolId: 'kozue',
-          sourceName: fileName,
-          source,
-          options: { kind, direction },
-          mode: 'local-static',
-          signal: request.signal,
-        })
+      void runEngine('kozue', {
+        sourceName: fileName,
+        source,
+        options: { kind, direction },
+        mode: 'local-static',
+        signal: request.signal,
+      })
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);

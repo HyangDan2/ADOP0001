@@ -1,0 +1,126 @@
+/**
+ * Hybrid provider contracts (Option B preparation, Phase 5B).
+ *
+ * These are *contracts and local mocks only*. No module here opens a network
+ * request; Phase 5C supplies a real provider behind `HybridProvider`. Keeping
+ * the shape fixed now means the UI, consent gate, budget and validation can be
+ * reviewed before any code is allowed to transmit a source file.
+ */
+
+import type { ContextBudget, PromptStrategy } from '../../adapters/types';
+
+export interface HybridSettings {
+  /** OpenAI-compatible base URL, e.g. `https://example.invalid/v1`. */
+  baseUrl: string;
+  model: string;
+  /** Read from the user at call time; never persisted with the project. */
+  apiKey: string | null;
+  /** Explicit opt-in. False means every run stays local. */
+  consent: boolean;
+  promptStrategy?: PromptStrategy;
+}
+
+export type HybridFailure =
+  | 'no-consent'
+  | 'no-key'
+  | 'invalid-settings'
+  | 'timeout'
+  | 'offline'
+  | 'schema'
+  | 'provider';
+
+export type SettingsCheck = { ok: true } | { ok: false; failure: HybridFailure; message: string };
+
+export function validateHybridSettings(settings: HybridSettings): SettingsCheck {
+  let url: URL;
+  try {
+    url = new URL(settings.baseUrl);
+  } catch {
+    return { ok: false, failure: 'invalid-settings', message: 'Base URL が正しくありません。' };
+  }
+  const localhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  if (url.protocol !== 'https:' && !(localhost && url.protocol === 'http:')) {
+    return { ok: false, failure: 'invalid-settings', message: 'Base URL は https で指定してください（localhost を除く）。' };
+  }
+  if (!settings.model.trim()) {
+    return { ok: false, failure: 'invalid-settings', message: 'モデル名を指定してください。' };
+  }
+  if (!settings.consent) {
+    return { ok: false, failure: 'no-consent', message: '送信に同意するまで外部モデルは使いません。' };
+  }
+  if (!settings.apiKey?.trim()) {
+    return { ok: false, failure: 'no-key', message: 'API キーが設定されていません。' };
+  }
+  return { ok: true };
+}
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface HybridProviderRequest {
+  settings: HybridSettings;
+  messages: ChatMessage[];
+  budget: ContextBudget;
+  signal?: AbortSignal;
+}
+
+export interface HybridProviderResponse {
+  text: string;
+  usage?: { inputTokens: number; outputTokens: number };
+}
+
+export interface HybridProvider {
+  readonly id: string;
+  /** Receives the already redacted, already budgeted prompt; never the raw file. */
+  complete(request: HybridProviderRequest): Promise<HybridProviderResponse>;
+  /** Optional streaming transport; a provider without it is still valid. */
+  completeStream?(
+    request: HybridProviderRequest,
+    onDelta: (chunk: string) => void,
+  ): Promise<HybridProviderResponse>;
+}
+
+export class HybridResponseError extends Error {
+  readonly failure: HybridFailure;
+  constructor(failure: HybridFailure, message: string) {
+    super(message);
+    this.name = 'HybridResponseError';
+    this.failure = failure;
+  }
+}
+
+/**
+ * The only way a remote answer becomes an artifact: it must parse and pass the
+ * caller's structural guard, or the local result is used instead.
+ */
+export function validateStructuredOutput<T>(text: string, guard: (value: unknown) => value is T): T {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new HybridResponseError('schema', 'The provider response was not valid JSON.');
+  }
+  if (!guard(value)) throw new HybridResponseError('schema', 'The provider response did not match the expected shape.');
+  return value;
+}
+
+export interface LocalFallback<T> {
+  output: T;
+  failure: HybridFailure;
+  message: string;
+}
+
+/** Never throw a remote failure into the UI: fall back and say why. */
+export async function withLocalFallback<T>(
+  local: () => Promise<T>,
+  remote: () => Promise<T>,
+): Promise<{ value: T; fallback: LocalFallback<T>['failure'] | null }> {
+  try {
+    return { value: await remote(), fallback: null };
+  } catch (cause) {
+    const failure = cause instanceof HybridResponseError ? cause.failure : 'provider';
+    return { value: await local(), fallback: failure };
+  }
+}

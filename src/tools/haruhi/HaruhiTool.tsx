@@ -8,9 +8,8 @@ import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { SAMPLE_BY_EXT } from '../samples';
-import { FRAMEWORK_LABEL, HaruhiAdapter, outputFileName, type Framework, type HaruhiOutput } from './adapter';
-
-const adapter = new HaruhiAdapter();
+import { FRAMEWORK_LABEL, outputFileName, type Framework, type HaruhiOutput } from './adapter';
+import { runEngine } from '../../engine/core/runner';
 
 /** Japanese explanation for a branch that no running test reaches. */
 function branchReasonLabel(item: { reasonCode?: string; reason?: string }): string {
@@ -59,15 +58,13 @@ export function HaruhiTool() {
       const request = gate.start();
       setBusy(true);
       setError(null);
-      void adapter
-        .run({
-          toolId: 'haruhi',
-          sourceName: fileName,
-          source,
-          options: { framework },
-          mode: 'local-static',
-          signal: request.signal,
-        })
+      void runEngine('haruhi', {
+        sourceName: fileName,
+        source,
+        options: { framework },
+        mode: 'local-static',
+        signal: request.signal,
+      })
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
