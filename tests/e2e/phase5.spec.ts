@@ -375,28 +375,36 @@ test.describe('Phase 5A — stabilization', () => {
 
   test('PATCH-006: an export modal opened before an edit refuses the older artifact', async ({ page }) => {
     watch(page);
+    // The fake clock keeps the debounce from regenerating during the assertions,
+    // so the stale state is held deterministically instead of for ~260 ms.
+    await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('#/shiori');
+    await page.clock.runFor(2_000);
     const editor = page.getByTestId('source-editor');
     await editor.fill(`export function before(value: number): number {
   if (value < 0) throw new RangeError('negative');
   return value;
 }`);
+    await page.clock.runFor(2_000);
     await expect(page.getByTestId('shiori-preview')).toBeVisible({ timeout: 20_000 });
     await page.getByTestId('shiori-export').click();
     await expect(page.getByTestId('export-modal')).toBeVisible();
 
     // The modal is already open; the edit makes the visible artifact stale.
     await editor.fill('export function after(): string {\n  return "after";\n}\n');
-    await page.getByTestId('export-markdown').click();
     const feedback = page.getByTestId('export-feedback');
-    await expect(feedback).toHaveAttribute('data-kind', 'error');
-    await expect(feedback).toContainText('入力が変更されています');
-
-    // The stale copy path refuses too.
     await page.getByTestId('export-copy-markdown').click();
     await expect(feedback).toHaveAttribute('data-kind', 'error');
     await expect(feedback).toContainText('コピーできませんでした');
+    await page.getByTestId('export-markdown').click();
+    await expect(feedback).toHaveAttribute('data-kind', 'error');
+    await expect(feedback).toContainText('入力が変更されています');
+
+    // After the debounce regenerates the artifact, the same modal exports it.
+    await page.clock.runFor(3_000);
+    await page.getByTestId('export-markdown').click();
+    await expect(feedback).toHaveAttribute('data-kind', 'ok', { timeout: 20_000 });
   });
 
   test('PATCH-006: the last picked file wins over a slower earlier read', async ({ page }) => {
