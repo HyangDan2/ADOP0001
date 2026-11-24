@@ -109,6 +109,62 @@ describe('mock provider contract (ENG-005)', () => {
   });
 });
 
+describe('abort contract (FIX-017)', () => {
+  it('does not call the provider when the request is already cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const remote = vi.fn(async () => 'remote');
+    const local = vi.fn(async () => 'local');
+    await expect(withLocalFallback(local, remote, { signal: controller.signal })).rejects.toMatchObject({
+      failure: 'aborted',
+    });
+    expect(remote).not.toHaveBeenCalled();
+    expect(local).not.toHaveBeenCalled();
+  });
+
+  it('discards a provider value that resolves only after the cancel', async () => {
+    const controller = new AbortController();
+    const result = withLocalFallback(
+      async () => 'local',
+      async () => {
+        controller.abort();
+        return 'remote';
+      },
+      { signal: controller.signal },
+    );
+    await expect(result).rejects.toMatchObject({ failure: 'aborted' });
+  });
+
+  it('discards a local fallback value computed after the cancel', async () => {
+    const controller = new AbortController();
+    const remote = vi.fn(async () => {
+      throw new Error('network down');
+    });
+    await expect(
+      withLocalFallback(
+        async () => {
+          controller.abort();
+          return 'local';
+        },
+        remote,
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ failure: 'aborted' });
+    expect(remote).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the ordinary fallback when the signal is present but not aborted', async () => {
+    const result = await withLocalFallback(
+      async () => 'local',
+      async () => {
+        throw new HybridResponseError('schema', 'bad shape');
+      },
+      { signal: new AbortController().signal },
+    );
+    expect(result).toEqual({ value: 'local', fallback: 'schema' });
+  });
+});
+
 describe('structured output and local fallback (ENG-005)', () => {
   const guard = (value: unknown): value is { answer: string } =>
     typeof value === 'object' && value !== null && typeof (value as { answer?: unknown }).answer === 'string';
