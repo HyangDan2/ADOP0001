@@ -14,6 +14,7 @@ import { adapterFor } from '../src/adapters/registry';
 import type { TypedEngineAdapter } from '../src/engine/core/contracts';
 import {
   clearEngineCache,
+  engineCacheBytes,
   engineCacheSize,
   ENGINE_VERSION,
   executeEngine,
@@ -220,6 +221,70 @@ describe('input limits (FIX-009)', () => {
     );
     expect(calls()).toBe(0);
     expect(engineCacheSize()).toBe(0);
+  });
+});
+
+describe('cache memory budget (FIX-018)', () => {
+  beforeEach(() => clearEngineCache());
+
+  /** A Shiori adapter whose output carries a payload of the requested size. */
+  function bulkyShiori(payload: () => string) {
+    const inner = adapterFor('shiori');
+    let calls = 0;
+    const adapter: TypedEngineAdapter<'shiori'> = {
+      ...inner,
+      async run(request) {
+        calls += 1;
+        const result = await inner.run(request);
+        return { ...result, output: { ...result.output, markdown: payload() } };
+      },
+    };
+    return { adapter, calls: () => calls };
+  }
+
+  it('does not retain a result that alone exceeds the budget', async () => {
+    // UTF-16 doubles a string, so this markdown is larger than the whole budget.
+    const huge = 'x'.repeat(ENGINE_LIMITS.cacheBytes / 2 + 1024);
+    const { adapter, calls } = bulkyShiori(() => huge);
+    const first = await executeEngine<'shiori'>(adapter, SHIORI_INPUT);
+    expect(first.output.markdown).toHaveLength(huge.length);
+    expect(first.context.cacheHit).toBe(false);
+    expect(engineCacheSize()).toBe(0);
+    expect(engineCacheBytes()).toBe(0);
+
+    const second = await executeEngine<'shiori'>(adapter, SHIORI_INPUT);
+    expect(second.context.cacheHit).toBe(false);
+    expect(calls()).toBe(2);
+  });
+
+  it('evicts the oldest entries when the byte budget, not the entry count, is exceeded', async () => {
+    // ~3.2 MB per result: only one fits in a 4 MB budget.
+    const payload = 'y'.repeat(Math.floor(ENGINE_LIMITS.cacheBytes / 2.5));
+    const { adapter, calls } = bulkyShiori(() => payload);
+    for (const sourceName of ['a.ts', 'b.ts', 'c.ts']) {
+      await executeEngine<'shiori'>(adapter, { ...SHIORI_INPUT, sourceName });
+      expect(engineCacheBytes()).toBeLessThanOrEqual(ENGINE_LIMITS.cacheBytes);
+    }
+    expect(engineCacheSize()).toBe(1);
+    expect(engineCacheBytes()).toBeGreaterThan(0);
+
+    const newest = await executeEngine<'shiori'>(adapter, { ...SHIORI_INPUT, sourceName: 'c.ts' });
+    expect(newest.context.cacheHit).toBe(true);
+    const oldest = await executeEngine<'shiori'>(adapter, { ...SHIORI_INPUT, sourceName: 'a.ts' });
+    expect(oldest.context.cacheHit).toBe(false);
+    expect(calls()).toBe(4);
+  });
+
+  it('accounts and releases bytes alongside the entry count', async () => {
+    const { adapter } = countingShiori();
+    const result = await executeEngine<'shiori'>(adapter, SHIORI_INPUT);
+    expect(result.context.cacheHit).toBe(false);
+    expect(engineCacheSize()).toBe(1);
+    expect(engineCacheBytes()).toBeGreaterThan(0);
+
+    clearEngineCache();
+    expect(engineCacheSize()).toBe(0);
+    expect(engineCacheBytes()).toBe(0);
   });
 });
 

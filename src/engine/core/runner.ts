@@ -115,9 +115,47 @@ function serializeOption(value: unknown, depth: number): string | null {
 
 interface CacheEntry {
   result: EngineResult<unknown>;
+  /** Approximate retained size in UTF-16 bytes, used for the memory budget. */
+  bytes: number;
 }
 
 const completed = new Map<string, CacheEntry>();
+let cachedBytes = 0;
+
+/**
+ * Approximate retained size of a cached value. Strings count two bytes per code
+ * unit, typed arrays count their buffer, and containers add a small overhead.
+ * The walk stops once the budget is exceeded, so one huge result cannot make
+ * sizing itself expensive.
+ */
+function estimateBytes(value: unknown, budget: number, depth = 0): number {
+  if (depth > 8) return 1024;
+  if (value === null || value === undefined) return 0;
+  const type = typeof value;
+  if (type === 'string') return (value as string).length * 2;
+  if (type === 'number') return 8;
+  if (type === 'boolean') return 4;
+  if (typeof ArrayBuffer !== 'undefined' && (value instanceof ArrayBuffer || ArrayBuffer.isView(value))) {
+    return (value as ArrayBufferView | ArrayBuffer).byteLength;
+  }
+  if (Array.isArray(value)) {
+    let total = 64;
+    for (const item of value) {
+      total += estimateBytes(item, budget - total, depth + 1);
+      if (total > budget) return total;
+    }
+    return total;
+  }
+  if (type === 'object') {
+    let total = 64;
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      total += key.length * 2 + estimateBytes(item, budget - total, depth + 1);
+      if (total > budget) return total;
+    }
+    return total;
+  }
+  return 16;
+}
 
 function touch(cacheKey: string): void {
   if (!completed.has(cacheKey)) return;
@@ -126,23 +164,40 @@ function touch(cacheKey: string): void {
   completed.set(cacheKey, entry);
 }
 
-function store(cacheKey: string, result: EngineResult<unknown>): void {
-  if (completed.has(cacheKey)) completed.delete(cacheKey);
-  completed.set(cacheKey, { result: cloneResult(result) });
-  while (completed.size > ENGINE_LIMITS.cacheEntries) {
+function evict(cacheKey: string): void {
+  const entry = completed.get(cacheKey);
+  if (!entry) return;
+  cachedBytes -= entry.bytes;
+  completed.delete(cacheKey);
+}
+
+/** Returns false when the result is too large to retain at all. */
+function store(cacheKey: string, result: EngineResult<unknown>): boolean {
+  const bytes = estimateBytes(result, ENGINE_LIMITS.cacheBytes);
+  if (bytes > ENGINE_LIMITS.cacheBytes) return false;
+  if (completed.has(cacheKey)) evict(cacheKey);
+  completed.set(cacheKey, { result: cloneResult(result), bytes });
+  cachedBytes += bytes;
+  while (completed.size > ENGINE_LIMITS.cacheEntries || cachedBytes > ENGINE_LIMITS.cacheBytes) {
     const oldest = completed.keys().next().value;
     if (oldest === undefined) break;
-    completed.delete(oldest);
+    evict(oldest);
   }
+  return true;
 }
 
 /** Exposed for tests and for the "clear analysis cache" affordance. */
 export function clearEngineCache(): void {
   completed.clear();
+  cachedBytes = 0;
 }
 
 export function engineCacheSize(): number {
   return completed.size;
+}
+
+export function engineCacheBytes(): number {
+  return cachedBytes;
 }
 
 export async function runEngine<K extends ToolId>(

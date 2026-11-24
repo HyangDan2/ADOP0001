@@ -8,6 +8,12 @@ export const ENGINE_LIMITS = {
   hardSourceBytes: 8 * 1024 * 1024,
   /** Completed results kept for identical input. */
   cacheEntries: 16,
+  /**
+   * Approximate byte budget for cached results. The entry count alone is not a
+   * memory bound: sixteen results carrying large generated text can pin tens of
+   * megabytes. A result larger than the whole budget is not cached at all.
+   */
+  cacheBytes: 4 * 1024 * 1024,
 } as const;
 
 const SEVERITY_ORDER: Record<EngineDiagnostic['severity'], number> = { error: 0, warn: 1, info: 2 };
