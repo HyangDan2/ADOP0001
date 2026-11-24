@@ -36,6 +36,13 @@ The 8 local SKIPs are the same split as the previous pass: 4 `environment`
 4 `artifact` (2 Vitest and 2 Jest projects whose every case is skipped). No SKIP
 is counted as a pass.
 
+GitHub Actions run [45498856180](https://github.com/HyangDan2/ADOP0001/actions/runs/45498856180)
+for `f1abba2` completed successfully: all seven required toolchains present
+(`python3 pytest gcc g++ go javac junit jest`), Vitest 29 files / 266 tests,
+QA `PASS 59 · FAIL 0 · SKIP 5` (5 artifact-only, 0 environment) with 35 cases
+executed and passed, the Playwright job ran the same 46 tests and passed, and
+`deploy` was skipped because the run was a pull request.
+
 ## FIX-015 — Kotoha edit invalidation
 
 Interpretation: the "this `.docx` is current" guard must compare *values* against
