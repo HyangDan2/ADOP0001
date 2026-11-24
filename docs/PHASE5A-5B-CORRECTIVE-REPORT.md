@@ -15,9 +15,16 @@ defects found in review. No external AI API is called; Phase 5C is out of scope.
 | E2E | `npm run test:e2e` | 44 tests pass (41 baseline + 3 new) |
 | Artifacts | checksum diff vs baseline | 127 generated source files byte-identical; only `manifest.json` (run metadata) differs |
 
-The 8 SKIPs split into 4 `environment` (Go ×2, JUnit ×2 — no toolchain in this
-container; CI installs both) and 4 `artifact` (2 Vitest and 2 Jest projects whose
-every case is `it.skip`/`describe.skip`). No SKIP is counted as a pass.
+The 8 local SKIPs split into 4 `environment` (Go ×2, JUnit ×2 — no toolchain in
+this container) and 4 `artifact` (2 Vitest and 2 Jest projects whose every case is
+`it.skip`/`describe.skip`). No SKIP is counted as a pass.
+
+GitHub Actions run [45424041697](https://github.com/HyangDan2/ADOP0001/actions/runs/45424041697)
+for `6fd89ca` completed successfully: all seven required toolchains present
+(`python3 pytest gcc g++ go javac junit jest`), QA `PASS 59 · FAIL 0 · SKIP 5`
+(5 artifact-only, 0 environment), 35 cases executed and passed, and the
+Playwright job ran the same 44 tests and passed. `deploy` was skipped because the
+run was a pull request.
 
 ## FIX-005 — Kotoha request consistency
 
@@ -178,6 +185,7 @@ Test: `tests/hybrid-contract.test.ts` (5 new cases) and the
 
 ## Commits
 
-Correction work is committed on `feature/phase5-engine-foundation`; the final SHA is
-recorded in the PR #11 timeline. No merge to `main` and no automatic deployment was
-performed.
+Correction work is committed on `feature/phase5-engine-foundation` above
+`d613974`. The corrective content is `6fd89ca` (with `616833d` QA accounting and
+`abac60a` engine fixes, `c204159` prompt fix); the CI evidence above is for that
+SHA. No merge to `main` and no automatic deployment was performed.
