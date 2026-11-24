@@ -230,14 +230,18 @@ async function writeThrough(examples: FewShotExample[]): Promise<FewShotStorage>
   return 'memory';
 }
 
-/** Which backend the last write reached. */
+/** Which backend the last write reached. Accessing `localStorage` can throw. */
 export async function fewShotStorage(): Promise<FewShotStorage> {
   const db = await openDb();
   if (db) {
     db.close();
     return 'indexeddb';
   }
-  return typeof localStorage === 'undefined' ? 'memory' : 'localstorage';
+  try {
+    return typeof localStorage === 'undefined' ? 'memory' : 'localstorage';
+  } catch {
+    return 'memory';
+  }
 }
 
 /* ------------------------------------------------------------------ */

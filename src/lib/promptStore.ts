@@ -49,10 +49,20 @@ function classify(cause: unknown): PromptSaveFailure {
   return 'unknown';
 }
 
-export function readPrompt(toolId: ToolId): string {
+/** The one guarded storage accessor: reading `localStorage` itself can throw. */
+function openStorage(): { storage: Storage | null } | { failure: PromptSaveFailure } {
   try {
-    if (typeof localStorage === 'undefined') return '';
-    return localStorage.getItem(`${KEY_PREFIX}${toolId}`) ?? '';
+    return { storage: typeof localStorage === 'undefined' ? null : localStorage };
+  } catch (cause) {
+    return { failure: classify(cause) };
+  }
+}
+
+export function readPrompt(toolId: ToolId): string {
+  const opened = openStorage();
+  if (!('storage' in opened) || !opened.storage) return '';
+  try {
+    return opened.storage.getItem(`${KEY_PREFIX}${toolId}`) ?? '';
   } catch {
     return '';
   }
@@ -60,19 +70,24 @@ export function readPrompt(toolId: ToolId): string {
 
 export function savePrompt(toolId: ToolId, text: string): PromptSaveResult {
   const key = `${KEY_PREFIX}${toolId}`;
-  if (typeof localStorage === 'undefined') {
-    return { ok: false, failure: 'unavailable', message: FAILURE_MESSAGE.unavailable };
+  const opened = openStorage();
+  // A blocked or opaque origin throws on the `localStorage` getter itself; that
+  // must become a save failure, never an exception out of every keystroke.
+  if (!('storage' in opened)) {
+    return { ok: false, failure: opened.failure, message: FAILURE_MESSAGE[opened.failure] };
   }
+  const storage = opened.storage;
+  if (!storage) return { ok: false, failure: 'unavailable', message: FAILURE_MESSAGE.unavailable };
   try {
     if (!text.trim()) {
-      localStorage.removeItem(key);
+      storage.removeItem(key);
       return { ok: true };
     }
     const stored = text.slice(0, MAX_INSTRUCTION_LENGTH);
-    localStorage.setItem(key, stored);
+    storage.setItem(key, stored);
     // Some browsers drop a write at the quota without throwing. Read back to
     // prove it persisted instead of reporting a save that did not happen.
-    if (localStorage.getItem(key) !== stored) {
+    if (storage.getItem(key) !== stored) {
       return { ok: false, failure: 'quota', message: FAILURE_MESSAGE.quota };
     }
     return { ok: true };
