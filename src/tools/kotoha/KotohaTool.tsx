@@ -3,11 +3,12 @@ import { EmptyHint, LineEditor, ToolPane } from '../../components/ui';
 import { ExportModal } from '../../components/ExportModal';
 import { EngineDiagnostics } from '../../components/EngineDiagnostics';
 import { DOCX_FILE_ACCEPT } from '../../lib/fileKinds';
+import { takeFileInput } from '../../lib/fileInput';
 import { useOpenedFile } from '../../lib/fileBus';
 import { copyText, downloadBlob } from '../../lib/util';
 import { useRequestGate, type RequestHandle } from '../../lib/requestGate';
 import { type KotohaOutput } from './adapter';
-import { parseBundleExport, withAttributes, type BundleAttributes, type KotohaBundle, type LossWarning } from './bundle';
+import { attributeSignature, parseBundleExport, withAttributes, type BundleAttributes, type KotohaBundle, type LossWarning } from './bundle';
 import {
   inchToTwips,
   kotohaErrorCode,
@@ -153,7 +154,7 @@ export function KotohaTool() {
     setElapsed(0);
     setDocxSource(
       outputValue.docx
-        ? { markdown: outputValue.markdown, attributes: JSON.stringify(outputValue.bundle.attributes) }
+        ? { markdown: outputValue.markdown, attributes: attributeSignature(outputValue.bundle.attributes) }
         : null,
     );
     setPending(null);
@@ -314,9 +315,12 @@ export function KotohaTool() {
       setOutput(result.output);
       setElapsed(result.elapsedMs);
       setDiagnostics(result.diagnostics);
-      // The rebuilt bundle carries the same attributes that were applied (KOT-003).
+      // The rebuilt bundle carries the same attributes that were applied
+      // (KOT-003). The inspector follows the built artifact, so it can never
+      // show values the .docx was not built with (FIX-015).
+      setAttributes(result.output.bundle.attributes);
       setDocument({ bundle: result.output.bundle, markdown: runMarkdown });
-      setDocxSource({ markdown: runMarkdown, attributes: JSON.stringify(result.output.bundle.attributes) });
+      setDocxSource({ markdown: runMarkdown, attributes: attributeSignature(result.output.bundle.attributes) });
       const saved = await saveDocumentSnapshot({
         markdown: runMarkdown,
         attributes: result.output.bundle.attributes,
@@ -441,10 +445,10 @@ export function KotohaTool() {
                   style={{ display: 'none' }}
                   data-testid="kotoha-file"
                   onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    // Reset first so choosing the same file again (e.g. after cancelling
-                    // the loss confirmation) still fires a change event.
-                    event.target.value = '';
+                    // The picker is cleared before reading so choosing the same
+                    // file again (e.g. after cancelling the loss confirmation)
+                    // still fires a change event.
+                    const file = takeFileInput(event);
                     if (file) void loadDocx(file);
                   }}
                 />
@@ -457,8 +461,7 @@ export function KotohaTool() {
                   style={{ display: 'none' }}
                   data-testid="kotoha-bundle-file"
                   onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    event.target.value = '';
+                    const file = takeFileInput(event);
                     if (file) void loadBundleFile(file);
                   }}
                 />
@@ -493,8 +496,9 @@ export function KotohaTool() {
                     type="file"
                     accept={DOCX_FILE_ACCEPT}
                     style={{ display: 'none' }}
+                    data-testid="kotoha-file-empty"
                     onChange={(event) => {
-                      const file = event.target.files?.[0];
+                      const file = takeFileInput(event);
                       if (file) void loadDocx(file);
                     }}
                   />
@@ -863,7 +867,7 @@ export function KotohaTool() {
                   !docxSource ||
                   docxSource.markdown !== markdown ||
                   !attributes ||
-                  docxSource.attributes !== JSON.stringify(attributes)
+                  docxSource.attributes !== attributeSignature(attributes)
                 ) {
                   throw new Error('編集内容はまだ .docx に反映されていません。先に「.docx を再構築」を実行してください。');
                 }
