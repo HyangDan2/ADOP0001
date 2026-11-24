@@ -108,15 +108,27 @@ export function ExportModal(props: {
                     type="button"
                     className="btn btn-sm"
                     data-testid={`export-copy-${format.id}`}
-                    onClick={() =>
-                      void copyText(format.copy?.(cleanBase) ?? '').then((ok) =>
+                    onClick={() => {
+                      // A stale artifact refuses to copy the same way it refuses
+                      // to download (PATCH-006).
+                      let text: string;
+                      try {
+                        text = format.copy?.(cleanBase) ?? '';
+                      } catch (cause) {
+                        announce({
+                          kind: 'error',
+                          message: `コピーできませんでした: ${cause instanceof Error ? cause.message : '不明な理由'}`,
+                        });
+                        return;
+                      }
+                      void copyText(text).then((ok) =>
                         announce(
                           ok
                             ? { kind: 'ok', message: `${format.label} をコピーしました` }
                             : { kind: 'error', message: 'コピーに失敗しました' },
                         ),
-                      )
-                    }
+                      );
+                    }}
                   >
                     コピー
                   </button>

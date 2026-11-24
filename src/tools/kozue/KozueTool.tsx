@@ -13,6 +13,7 @@ import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
 import { kindLabel, type Direction, type KozueOutput, type UmlKind } from './adapter';
 import { runEngine } from '../../engine/core/runner';
+import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { loadMermaid, type MermaidTheme } from './mermaid';
 
 const KINDS: UmlKind[] = ['sequence', 'class', 'state', 'activity', 'component'];
@@ -57,18 +58,25 @@ export function KozueTool() {
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
   const timer = useRef<number | null>(null);
   const gate = useRequestGate();
+  // PATCH-006: input/output revisions so a stale result can never be exported.
+  const inputRevision = useRef(0);
+  const outputRevision = useRef<number | null>(null);
+  const readSeq = useRef(0);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
+    inputRevision.current += 1;
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
         gate.invalidate();
         setBusy(false);
         setOutput(null);
+        outputRevision.current = null;
         setDiagnostics([]);
         setAnalysisError(null);
         return;
       }
+      const revision = inputRevision.current;
       const request = gate.start();
       setBusy(true);
       setAnalysisError(null);
@@ -82,12 +90,14 @@ export function KozueTool() {
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
+          outputRevision.current = revision;
           setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
           setOutput(null);
+          outputRevision.current = null;
           setSvg('');
           setDiagnostics([]);
           setAnalysisError(errorMessage(cause, '図を解析できませんでした。'));
@@ -122,6 +132,10 @@ export function KozueTool() {
     }
     let cancelled = false;
     setRenderError(null);
+    // The previous diagram belongs to an older analysis; hide it until the new
+    // one finishes rendering so it can never be exported in its place
+    // (PATCH-006).
+    setSvg('');
     void (async () => {
       try {
         const mermaid = await loadMermaid(theme);
@@ -150,7 +164,9 @@ export function KozueTool() {
   };
 
   const loadFile = async (file: File) => {
+    const readId = ++readSeq.current;
     const read = await readSourceFile(file);
+    if (readId !== readSeq.current) return;
     if (read.text === null) {
       showToast(read.error);
       return;
@@ -168,11 +184,13 @@ export function KozueTool() {
   });
 
   const exportSvg = (base: string) => {
+    assertArtifactRevision(inputRevision.current, outputRevision.current);
     if (!svg) return;
     downloadBlob(`${base}-${activeKind}.svg`, svg, 'image/svg+xml;charset=utf-8');
   };
 
   const exportPng = async (base: string) => {
+    assertArtifactRevision(inputRevision.current, outputRevision.current);
     const element = diagramRef.current?.querySelector('svg');
     if (!element) return;
     const clone = element.cloneNode(true) as SVGSVGElement;
@@ -350,6 +368,7 @@ export function KozueTool() {
               className="diagram-inner"
               ref={diagramRef}
               data-testid="kozue-diagram"
+              data-diagram-kind={activeKind}
               style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`, cursor: 'grab' }}
               dangerouslySetInnerHTML={{ __html: svg }}
             />
@@ -411,8 +430,14 @@ export function KozueTool() {
               label: '.mmd',
               description: 'Mermaid ソース（テキスト）',
               fileName: (base) => `${base}-${activeKind}.mmd`,
-              run: (base) => downloadBlob(`${base}-${activeKind}.mmd`, mermaidCode, 'text/plain;charset=utf-8'),
-              copy: () => mermaidCode,
+              run: (base) => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                downloadBlob(`${base}-${activeKind}.mmd`, mermaidCode, 'text/plain;charset=utf-8');
+              },
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return mermaidCode;
+              },
             },
           ]}
         />

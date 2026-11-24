@@ -19,6 +19,7 @@ import {
 } from './adapter';
 import { TAKANE_SAMPLES } from './samples';
 import { runEngine } from '../../engine/core/runner';
+import { assertArtifactRevision } from '../../lib/artifactRevision';
 const SHIORI_KEY = 'adop0001.shiori.latest';
 
 const LANGUAGES: { value: TakaneLanguage; label: string }[] = [
@@ -82,18 +83,25 @@ export function TakaneTool() {
   const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
   const gate = useRequestGate();
+  // PATCH-006: input/output revisions so a stale result can never be exported.
+  const inputRevision = useRef(0);
+  const outputRevision = useRef<number | null>(null);
+  const readSeq = useRef(0);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
+    inputRevision.current += 1;
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
         gate.invalidate();
         setBusy(false);
         setOutput(null);
+        outputRevision.current = null;
         setDiagnostics([]);
         setError(null);
         return;
       }
+      const revision = inputRevision.current;
       const request = gate.start();
       setBusy(true);
       setError(null);
@@ -107,12 +115,14 @@ export function TakaneTool() {
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
+          outputRevision.current = revision;
           setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
           setOutput(null);
+          outputRevision.current = null;
           setDiagnostics([]);
           setError(cause instanceof Error ? cause.message : 'コードを生成できませんでした。');
         })
@@ -134,7 +144,9 @@ export function TakaneTool() {
   };
 
   const loadFile = async (file: File) => {
+    const readId = ++readSeq.current;
     const read = await readSourceFile(file);
+    if (readId !== readSeq.current) return;
     if (read.text === null) {
       showToast(read.error);
       return;
@@ -177,6 +189,7 @@ export function TakaneTool() {
 
   /** Downloads one artifact of the freshly generated scaffold. */
   const download = (target: TakaneLanguage, base: string, role: 'header' | 'implementation') => {
+    assertArtifactRevision(inputRevision.current, outputRevision.current);
     const built = buildTakane(fileName, source, target);
     const file = built.files.find((item) => item.role === role) ?? built.files[built.files.length - 1];
     downloadBlob(artifactName(target, base, role), file.code, 'text/plain;charset=utf-8');
@@ -444,7 +457,10 @@ export function TakaneTool() {
               description: 'Python スキャフォールド（dataclass・型ヒント・docstring）',
               fileName: (base) => takaneFileName('python', base),
               run: (base) => download('python', base, 'implementation'),
-              copy: () => output.code,
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.code;
+              },
             },
             {
               id: 'c',
@@ -494,6 +510,7 @@ export function TakaneTool() {
               description: 'いま選んでいる言語のファイルをすべて書き出す',
               fileName: (base) => takaneFileName(language, base),
               run: (base) => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
                 const target = language;
                 const built = buildTakane(fileName, source, target);
                 for (const file of built.files) {

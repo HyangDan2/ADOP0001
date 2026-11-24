@@ -13,6 +13,7 @@ import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
 import { FRAMEWORK_LABEL, outputFileName, type Framework, type HaruhiOutput } from './adapter';
 import { runEngine } from '../../engine/core/runner';
+import { assertArtifactRevision } from '../../lib/artifactRevision';
 
 /** Japanese explanation for a branch that no running test reaches. */
 function branchReasonLabel(item: { reasonCode?: string; reason?: string }): string {
@@ -50,18 +51,25 @@ export function HaruhiTool() {
   const [elapsed, setElapsed] = useState(0);
   const timer = useRef<number | null>(null);
   const gate = useRequestGate();
+  // PATCH-006: input/output revisions so a stale result can never be exported.
+  const inputRevision = useRef(0);
+  const outputRevision = useRef<number | null>(null);
+  const readSeq = useRef(0);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
+    inputRevision.current += 1;
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
         gate.invalidate();
         setBusy(false);
         setOutput(null);
+        outputRevision.current = null;
         setDiagnostics([]);
         setError(null);
         return;
       }
+      const revision = inputRevision.current;
       const request = gate.start();
       setBusy(true);
       setError(null);
@@ -75,12 +83,14 @@ export function HaruhiTool() {
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
+          outputRevision.current = revision;
           setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
           setOutput(null);
+          outputRevision.current = null;
           setDiagnostics([]);
           setError(errorMessage(cause, 'テストを生成できませんでした。'));
         })
@@ -102,7 +112,9 @@ export function HaruhiTool() {
   };
 
   const loadFile = async (file: File) => {
+    const readId = ++readSeq.current;
     const read = await readSourceFile(file);
+    if (readId !== readSeq.current) return;
     if (read.text === null) {
       showToast(read.error);
       return;
@@ -275,8 +287,14 @@ export function HaruhiTool() {
               label: `.${output.fileName.split('.').slice(1).join('.')}`,
               description: `${FRAMEWORK_LABEL[framework]} 向けのテストファイル`,
               fileName: (base) => outputFileName(framework, base),
-              run: (base) => downloadBlob(outputFileName(framework, base), output.code, 'text/plain;charset=utf-8'),
-              copy: () => output.code,
+              run: (base) => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                downloadBlob(outputFileName(framework, base), output.code, 'text/plain;charset=utf-8');
+              },
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.code;
+              },
             },
           ]}
         />

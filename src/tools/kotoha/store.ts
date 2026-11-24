@@ -127,6 +127,16 @@ export interface KotohaSaveResult {
   superseded?: boolean;
 }
 
+/**
+ * A reset only reports success when IndexedDB confirmed it. `ok: false` means
+ * the transaction was refused or aborted, so the caller must not claim the
+ * document was discarded (PATCH-002).
+ */
+export interface KotohaClearResult {
+  ok: boolean;
+  storage: KotohaStorage;
+}
+
 function mirrorBundle(record: { bundle: KotohaBundle; savedAt: string }): void {
   memory.set(LATEST_KEY, record);
   memory.set(record.bundle.sourceHash, record);
@@ -282,29 +292,31 @@ function resetInMemory(): void {
   draftMemory.clear();
 }
 
-export async function clearBundles(): Promise<void> {
+export async function clearBundles(): Promise<KotohaClearResult> {
   resetInMemory();
-  await enqueue(async () => {
+  return enqueue(async () => {
     const db = await openDb();
-    if (!db) return;
-    await writeTransaction(db, (store) => store.clear());
+    if (!db) return { ok: true, storage: 'memory' as const };
+    const committed = await writeTransaction(db, (store) => store.clear());
     db.close();
+    return { ok: committed, storage: 'indexeddb' as const };
   });
 }
 
 /** Explicit "start over" for one browser: bundle, draft and dedupe keys. */
-export async function clearKotohaDocument(): Promise<void> {
+export async function clearKotohaDocument(): Promise<KotohaClearResult> {
   resetInMemory();
-  await enqueue(async () => {
+  return enqueue(async () => {
     const db = await openDb();
-    if (!db) return;
+    if (!db) return { ok: true, storage: 'memory' as const };
     // `clear()` rather than deleting the well-known keys: `saveBundle` also
     // writes a source-hash alias per document, and a reset that leaves those
     // behind keeps the old styles/media in storage forever (FIX-016).
-    await writeTransaction(db, (store) => {
+    const committed = await writeTransaction(db, (store) => {
       store.clear();
     });
     db.close();
+    return { ok: committed, storage: 'indexeddb' as const };
   });
 }
 

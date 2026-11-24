@@ -81,6 +81,11 @@ export function savePrompt(toolId: ToolId, text: string): PromptSaveResult {
   try {
     if (!text.trim()) {
       storage.removeItem(key);
+      // A browser can drop the deletion without throwing; read back so a
+      // prompt that is still stored is never reported as removed (PATCH-005).
+      if (storage.getItem(key) !== null) {
+        return { ok: false, failure: 'unknown', message: FAILURE_MESSAGE.unknown };
+      }
       return { ok: true };
     }
     const stored = text.slice(0, MAX_INSTRUCTION_LENGTH);

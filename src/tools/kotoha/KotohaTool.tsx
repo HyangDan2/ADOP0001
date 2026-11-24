@@ -20,6 +20,7 @@ import {
   storageLabel,
   twipsToInch,
   KOTOHA_LIMITS,
+  type KotohaSaveResult,
 } from './index';
 import { runEngine } from '../../engine/core/runner';
 import type { EngineDiagnostic } from '../../adapters/types';
@@ -144,8 +145,8 @@ export function KotohaTool() {
     window.setTimeout(() => setToast(null), 2200);
   };
 
-  const adopt = async (outputValue: KotohaOutput, request?: RequestHandle) => {
-    if (request && !request.isCurrent()) return;
+  const adopt = async (outputValue: KotohaOutput, request?: RequestHandle): Promise<KotohaSaveResult | null> => {
+    if (request && !request.isCurrent()) return null;
     documentEpoch.current += 1;
     setDocument({ bundle: outputValue.bundle, markdown: outputValue.markdown });
     setMarkdown(outputValue.markdown);
@@ -166,13 +167,14 @@ export function KotohaTool() {
       attributes: outputValue.bundle.attributes,
       bundle: outputValue.bundle,
     });
-    if (request && !request.isCurrent()) return;
-    if (saved.superseded) return;
+    if (request && !request.isCurrent()) return null;
+    if (saved.superseded) return null;
     setStorage(
       saved.storage === 'indexeddb'
         ? `スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString('ja-JP')}`
         : '下書きを保存できませんでした（メモリのみ）',
     );
+    return saved;
   };
 
   /** A document with structural limits is shown to the user *before* it replaces the current work. */
@@ -263,15 +265,22 @@ export function KotohaTool() {
     try {
       const parsed = parseBundleExport(await file.text());
       if (!request.isCurrent()) return;
-      await adopt({
+      const saved = await adopt({
         action: 'decompose',
         fileName: parsed.bundle.fileName,
         markdown: parsed.markdown,
         bundle: parsed.bundle,
         warnings: parsed.bundle.warnings ?? [],
       }, request);
-      if (!request.isCurrent()) return;
-      setStorage(`スタイルバンドルを読み込み、${storageLabel()} に保存しました`);
+      if (!request.isCurrent() || !saved) return;
+      // A failed IndexedDB write stays a failure message: the import succeeded,
+      // the persistence did not, and the success text must not overwrite that
+      // (PATCH-002).
+      setStorage(
+        saved.storage === 'indexeddb'
+          ? `スタイルバンドルを読み込み、${storageName(saved.storage)} に保存しました`
+          : '下書きを保存できませんでした（メモリのみ）',
+      );
       showToast('スタイルバンドルを読み込みました');
     } catch (cause) {
       if (!request.isCurrent()) return;
@@ -369,8 +378,18 @@ export function KotohaTool() {
   };
 
   const resetDocument = async () => {
-    documentEpoch.current += 1;
     gate.invalidate();
+    // The document on screen is only discarded once storage confirmed the
+    // reset; a refused transaction must not look like a successful reset
+    // (PATCH-002).
+    const cleared = await clearKotohaDocument();
+    if (!cleared.ok) {
+      setBusy(false);
+      setError('このブラウザの保存領域を初期化できませんでした。文書と下書きは破棄していません。');
+      showToast('初期化に失敗しました');
+      return;
+    }
+    documentEpoch.current += 1;
     setBusy(false);
     setDocument(null);
     setMarkdown('');
@@ -382,16 +401,22 @@ export function KotohaTool() {
     setError(null);
     setDiagnostics([]);
     setStorage('未保存');
-    await clearKotohaDocument();
     showToast('この文書と下書きを破棄しました');
   };
 
   /** Any human edit supersedes an in-flight rebuild; adoption writes bypass this. */
   const beginEdit = () => {
+    // The edit starts a new document epoch so an autosave scheduled for the
+    // previous text cannot land, and it drops every artifact of the old
+    // document: result, rebuilt bytes, diagnostics and a pending approval
+    // (PATCH-001).
+    documentEpoch.current += 1;
     gate.invalidate();
     setBusy(false);
     setOutput(null);
     setDocxSource(null);
+    setDiagnostics([]);
+    setPending(null);
   };
 
   const changeMarkdown = (value: string) => {

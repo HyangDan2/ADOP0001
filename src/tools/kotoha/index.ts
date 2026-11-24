@@ -9,7 +9,7 @@ export {
   storageLabel,
   KOTOHA_DRAFT_VERSION,
 } from './store';
-export type { KotohaDraft, KotohaSaveResult, KotohaStorage } from './store';
+export type { KotohaClearResult, KotohaDraft, KotohaSaveResult, KotohaStorage } from './store';
 export {
   inchToTwips,
   twipsToInch,

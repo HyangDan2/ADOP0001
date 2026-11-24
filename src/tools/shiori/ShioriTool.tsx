@@ -6,6 +6,7 @@ import { useOpenedFile } from '../../lib/fileBus';
 import { readSourceFile, takeFileInput } from '../../lib/fileInput';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
+import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { EngineDiagnostics } from '../../components/EngineDiagnostics';
@@ -45,8 +46,14 @@ export function ShioriTool() {
   const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
   const gate = useRequestGate();
+  /** PATCH-006: the input an output belongs to, and the input it was built from. */
+  const inputRevision = useRef(0);
+  const outputRevision = useRef<number | null>(null);
+  /** PATCH-006: identity of the newest file pick; older reads are dropped. */
+  const readSeq = useRef(0);
 
   const run = async (text: string, name: string, activeSections: SpecSection[]) => {
+    const revision = inputRevision.current;
     if (!text.trim()) {
       // The debounce may replace a run that was still busy; the empty input is
       // the newest state, so it owns the release of the busy flag (FIX-006).
@@ -55,6 +62,7 @@ export function ShioriTool() {
       setOutput(null);
       setDiagnostics([]);
       setError(null);
+      outputRevision.current = null;
       return;
     }
     const request = gate.start();
@@ -72,6 +80,7 @@ export function ShioriTool() {
       setOutput(result.output);
       setDiagnostics(result.diagnostics);
       setElapsed(result.elapsedMs);
+      outputRevision.current = revision;
       try {
         localStorage.setItem(
           'adop0001.shiori.latest',
@@ -85,12 +94,14 @@ export function ShioriTool() {
       setOutput(null);
       setDiagnostics([]);
       setError(errorMessage(cause, '仕様書を生成できませんでした。'));
+      outputRevision.current = null;
     } finally {
       if (request.isCurrent()) setBusy(false);
     }
   };
 
   useEffect(() => {
+    inputRevision.current += 1;
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => void run(source, fileName, sections), 260);
     return () => {
@@ -108,7 +119,11 @@ export function ShioriTool() {
   };
 
   const loadFile = async (file: File) => {
+    // PATCH-006: only the latest pick may land; a slower earlier read must not
+    // overwrite the file the user chose afterwards.
+    const readId = ++readSeq.current;
     const read = await readSourceFile(file);
+    if (readId !== readSeq.current) return;
     if (read.text === null) {
       showToast(read.error);
       return;
@@ -128,6 +143,8 @@ export function ShioriTool() {
   const baseName = fileName.replace(/\.[^.]+$/, '') || 'specification';
 
   const download = (kind: 'md' | 'html', base: string) => {
+    // PATCH-006: the download is only allowed for the artifact of the current input.
+    assertArtifactRevision(inputRevision.current, output ? outputRevision.current : null);
     if (!output) return;
     if (kind === 'md') downloadBlob(`${base}.spec.md`, output.markdown, 'text/markdown;charset=utf-8');
     else downloadBlob(`${base}.spec.html`, output.html, 'text/html;charset=utf-8');
@@ -399,7 +416,10 @@ export function ShioriTool() {
               description: '契約表・振る舞い・エラー経路を含む Markdown 仕様書',
               fileName: (base) => `${base}.spec.md`,
               run: (base) => download('md', base),
-              copy: () => output.markdown,
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.markdown;
+              },
             },
             {
               id: 'html',
@@ -407,7 +427,10 @@ export function ShioriTool() {
               description: 'そのまま配布できるスタンドアロン HTML 仕様書',
               fileName: (base) => `${base}.spec.html`,
               run: (base) => download('html', base),
-              copy: () => output.html,
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.html;
+              },
             },
           ]}
         />

@@ -133,6 +133,11 @@ function isAbortLike(cause: unknown): boolean {
   );
 }
 
+/** A cancel is a cancel whether the signal aborted or the provider said so. */
+function isAbortFailure(cause: unknown): boolean {
+  return isAbortLike(cause) || (cause instanceof HybridResponseError && cause.failure === 'aborted');
+}
+
 /**
  * Fall back to the local result for provider/schema failures. A user cancel is
  * different: no local computation is started and the abort is surfaced with
@@ -141,6 +146,11 @@ function isAbortLike(cause: unknown): boolean {
  * The signal is checked before the remote call, after it resolves (a provider
  * that ignores the signal can still resolve late) and after the fallback runs,
  * so a cancelled request never reports a value — remote or local (FIX-017).
+ *
+ * A provider that reports `HybridResponseError('aborted')` ends the request
+ * without running the local fallback, and a cancellation raised by the local
+ * fallback itself is reported the same way instead of escaping raw
+ * (PATCH-003).
  */
 export async function withLocalFallback<T>(
   local: () => Promise<T>,
@@ -154,11 +164,19 @@ export async function withLocalFallback<T>(
   try {
     remoteValue = await remote();
   } catch (cause) {
-    if (options.signal?.aborted || isAbortLike(cause)) {
+    if (options.signal?.aborted || isAbortFailure(cause)) {
       throw new HybridResponseError('aborted', 'The hybrid request was cancelled by the user.');
     }
     const failure = cause instanceof HybridResponseError ? cause.failure : 'provider';
-    const value = await local();
+    let value: T;
+    try {
+      value = await local();
+    } catch (localCause) {
+      if (options.signal?.aborted || isAbortFailure(localCause)) {
+        throw new HybridResponseError('aborted', 'The hybrid request was cancelled by the user.');
+      }
+      throw localCause;
+    }
     if (options.signal?.aborted) {
       throw new HybridResponseError('aborted', 'The hybrid request was cancelled by the user.');
     }

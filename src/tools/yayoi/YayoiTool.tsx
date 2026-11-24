@@ -13,6 +13,7 @@ import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
 import { type PseudoDepth, type PseudoLine, type PseudoStyle, type YayoiOutput } from './adapter';
 import { runEngine } from '../../engine/core/runner';
+import { assertArtifactRevision } from '../../lib/artifactRevision';
 
 const STYLES: { value: PseudoStyle; label: string }[] = [
   { value: 'standard', label: '標準構造化' },
@@ -44,18 +45,25 @@ export function YayoiTool() {
   const pseudoRefs = useRef(new Map<number, HTMLDivElement>());
   const timer = useRef<number | null>(null);
   const gate = useRequestGate();
+  // PATCH-006: input/output revisions so a stale result can never be exported.
+  const inputRevision = useRef(0);
+  const outputRevision = useRef<number | null>(null);
+  const readSeq = useRef(0);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
+    inputRevision.current += 1;
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
         gate.invalidate();
         setBusy(false);
         setOutput(null);
+        outputRevision.current = null;
         setDiagnostics([]);
         setError(null);
         return;
       }
+      const revision = inputRevision.current;
       const request = gate.start();
       setBusy(true);
       setError(null);
@@ -69,12 +77,14 @@ export function YayoiTool() {
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
+          outputRevision.current = revision;
           setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
           setOutput(null);
+          outputRevision.current = null;
           setDiagnostics([]);
           setError(errorMessage(cause, '擬似コードを生成できませんでした。'));
         })
@@ -107,7 +117,9 @@ export function YayoiTool() {
   };
 
   const loadFile = async (file: File) => {
+    const readId = ++readSeq.current;
     const read = await readSourceFile(file);
+    if (readId !== readSeq.current) return;
     if (read.text === null) {
       showToast(read.error);
       return;
@@ -127,6 +139,7 @@ export function YayoiTool() {
   const baseName = fileName.replace(/\.[^.]+$/, '') || 'pseudocode';
 
   const download = (kind: 'md' | 'txt', base: string) => {
+    assertArtifactRevision(inputRevision.current, output ? outputRevision.current : null);
     if (!output) return;
     if (kind === 'md') downloadBlob(`${base}.pseudo.md`, output.markdown, 'text/markdown;charset=utf-8');
     else downloadBlob(`${base}.pseudo.txt`, output.plain, 'text/plain;charset=utf-8');
@@ -280,7 +293,10 @@ export function YayoiTool() {
               description: '擬似コードと対応付けの Markdown',
               fileName: (base) => `${base}.pseudo.md`,
               run: (base) => download('md', base),
-              copy: () => output.markdown,
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.markdown;
+              },
             },
             {
               id: 'text',
@@ -288,7 +304,10 @@ export function YayoiTool() {
               description: '擬似コードだけのプレーンテキスト',
               fileName: (base) => `${base}.pseudo.txt`,
               run: (base) => download('txt', base),
-              copy: () => output.plain,
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.plain;
+              },
             },
           ]}
         />

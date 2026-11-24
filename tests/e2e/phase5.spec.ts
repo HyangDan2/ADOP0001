@@ -7,14 +7,21 @@
  * FIX-003: clearing the input invalidates the request; no stale output returns.
  * FIX-015: an inspector edit makes the rebuilt .docx stale until the next rebuild.
  * FIX-020: a picked file is consumed, so the same file can be picked again.
+ *
+ * PATCH-001: an edit drops a pending approval, diagnostics and the old artifact.
+ * PATCH-002: a refused reset is reported and never reloads the page.
+ * PATCH-006: the newest file pick wins, and an export modal opened before an
+ *            edit refuses to write the older artifact.
  */
 import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mergedTableDocx } from '../fixtures/docx-fixtures';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
+const FIXTURES = path.join(ROOT, '.playwright-artifacts', 'phase5-fixtures');
 
 const problems: string[] = [];
 
@@ -26,9 +33,11 @@ function watch(page: Page) {
 }
 
 test.describe('Phase 5A — stabilization', () => {
-  test.beforeAll(() => {
+  test.beforeAll(async () => {
     // The navigation is enough; the phase writes no screenshots of its own.
     fs.mkdirSync(path.join(ROOT, '.playwright-artifacts'), { recursive: true });
+    fs.mkdirSync(FIXTURES, { recursive: true });
+    fs.writeFileSync(path.join(FIXTURES, 'merged.docx'), await mergedTableDocx());
   });
 
   test.afterAll(() => {
@@ -264,5 +273,164 @@ test.describe('Phase 5A — stabilization', () => {
     });
     await expect(editor).toHaveValue(/export function second/);
     await expect(input).toHaveValue('');
+  });
+
+  test('PATCH-001: an edit drops a pending approval and the previous artifact', async ({ page }) => {
+    watch(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('#/kotoha');
+    await page.getByTestId('kotoha-sample').click();
+    await expect(page.getByTestId('source-editor')).toHaveValue(/# Kotoha Round-Trip Sample/, { timeout: 20_000 });
+    await expect(page.getByTestId('kotoha-storage')).toContainText('保存', { timeout: 15_000 });
+
+    const [built] = await Promise.all([page.waitForEvent('download'), page.getByTestId('kotoha-rebuild').click()]);
+    await built.cancel().catch(() => undefined);
+    await expect(page.getByTestId('kotoha-roundtrip')).toBeVisible({ timeout: 20_000 });
+
+    // A document with preserved content asks for approval before replacing this one.
+    await page.getByTestId('kotoha-file').setInputFiles(path.join(FIXTURES, 'merged.docx'));
+    await expect(page.getByTestId('kotoha-loss-dialog')).toBeVisible({ timeout: 20_000 });
+
+    // A human edit starts a new epoch: the approval, the rebuilt .docx and the
+    // diagnostics of the previous document must all go (PATCH-001).
+    await page.getByTestId('source-editor').fill('# Edited while approval was open');
+    await expect(page.getByTestId('kotoha-loss-dialog')).toHaveCount(0);
+    await expect(page.getByTestId('kotoha-roundtrip')).toHaveCount(0);
+    await expect(page.getByTestId('kotoha-download')).toHaveCount(0);
+    await expect(page.getByTestId('engine-diagnostics')).toHaveCount(0);
+
+    // Nothing comes back after the in-flight load settles.
+    await page.waitForTimeout(1_200);
+    await expect(page.getByTestId('kotoha-loss-dialog')).toHaveCount(0);
+    await expect(page.getByTestId('kotoha-roundtrip')).toHaveCount(0);
+    await expect(page.getByTestId('source-editor')).toHaveValue('# Edited while approval was open');
+  });
+
+  test('PATCH-002: a refused reset is reported and the drafts are kept', async ({ page }) => {
+    watch(page);
+    await page.addInitScript(() => {
+      const scope = window as unknown as { __failIdb?: boolean };
+      scope.__failIdb = false;
+      const original = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (this: IDBDatabase, storeNames: string, mode?: IDBTransactionMode) {
+        if (scope.__failIdb) throw new DOMException('forced failure', 'InvalidStateError');
+        return original.call(this, storeNames, mode);
+      };
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('#/kotoha');
+    await page.getByTestId('kotoha-sample').click();
+    await expect(page.getByTestId('source-editor')).toHaveValue(/# Kotoha Round-Trip Sample/, { timeout: 20_000 });
+    await expect(page.getByTestId('kotoha-storage')).toContainText('保存', { timeout: 15_000 });
+
+    await page.evaluate(() => {
+      (window as unknown as { __failIdb?: boolean }).__failIdb = true;
+    });
+    await page.getByTestId('kebab-button').click();
+    await page.getByTestId('reset-drafts').click();
+
+    // A refused IndexedDB clear must not look like a reset and must not reload.
+    const resetError = page.getByTestId('reset-error');
+    await expect(resetError).toBeVisible();
+    await expect(resetError).toContainText('初期化できませんでした');
+    await expect(page.getByTestId('source-editor')).toHaveValue(/# Kotoha Round-Trip Sample/);
+    await expect(page.getByTestId('kebab-menu')).toBeVisible();
+  });
+
+  test('PATCH-002: a failed bundle save keeps the failure message, not a success one', async ({ page }) => {
+    watch(page);
+    await page.addInitScript(() => {
+      const scope = window as unknown as { __failIdb?: boolean };
+      scope.__failIdb = false;
+      const original = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (this: IDBDatabase, storeNames: string, mode?: IDBTransactionMode) {
+        if (scope.__failIdb) throw new DOMException('forced failure', 'InvalidStateError');
+        return original.call(this, storeNames, mode);
+      };
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('#/kotoha');
+    await page.getByTestId('kotoha-sample').click();
+    await expect(page.getByTestId('kotoha-storage')).toContainText('保存', { timeout: 20_000 });
+
+    const [bundle] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByTestId('kotoha-export-bundle').click(),
+    ]);
+    const bundlePath = path.join(FIXTURES, 'exported.kotoha.json');
+    await bundle.saveAs(bundlePath);
+    expect(bundle.suggestedFilename()).toMatch(/\.kotoha\.json$/);
+
+    await page.evaluate(() => {
+      (window as unknown as { __failIdb?: boolean }).__failIdb = true;
+    });
+    await page.getByTestId('kotoha-bundle-file').setInputFiles(bundlePath);
+
+    // The import works from memory, but the failed persistence must survive the
+    // success toast instead of being overwritten (PATCH-002).
+    await expect(page.getByTestId('kotoha-storage')).toContainText('メモリのみ', { timeout: 20_000 });
+    await expect(page.getByTestId('kotoha-storage')).not.toContainText('保存しました');
+    await expect(page.getByTestId('source-editor')).toHaveValue(/# Kotoha Round-Trip Sample/);
+  });
+
+  test('PATCH-006: an export modal opened before an edit refuses the older artifact', async ({ page }) => {
+    watch(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('#/shiori');
+    const editor = page.getByTestId('source-editor');
+    await editor.fill(`export function before(value: number): number {
+  if (value < 0) throw new RangeError('negative');
+  return value;
+}`);
+    await expect(page.getByTestId('shiori-preview')).toBeVisible({ timeout: 20_000 });
+    await page.getByTestId('shiori-export').click();
+    await expect(page.getByTestId('export-modal')).toBeVisible();
+
+    // The modal is already open; the edit makes the visible artifact stale.
+    await editor.fill('export function after(): string {\n  return "after";\n}\n');
+    await page.getByTestId('export-markdown').click();
+    const feedback = page.getByTestId('export-feedback');
+    await expect(feedback).toHaveAttribute('data-kind', 'error');
+    await expect(feedback).toContainText('入力が変更されています');
+
+    // The stale copy path refuses too.
+    await page.getByTestId('export-copy-markdown').click();
+    await expect(feedback).toHaveAttribute('data-kind', 'error');
+    await expect(feedback).toContainText('コピーできませんでした');
+  });
+
+  test('PATCH-006: the last picked file wins over a slower earlier read', async ({ page }) => {
+    watch(page);
+    await page.addInitScript(() => {
+      const original = File.prototype.text;
+      File.prototype.text = function (this: File) {
+        const delay = this.name.startsWith('slow') ? 600 : 0;
+        return new Promise<string>((resolve, reject) => {
+          setTimeout(() => void original.call(this).then(resolve, reject), delay);
+        });
+      };
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('#/shiori');
+    const input = page.getByTestId('shiori-open').locator('input[type="file"]');
+    const editor = page.getByTestId('source-editor');
+
+    await input.setInputFiles({
+      name: 'slow-first.ts',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('export function slowFirst(): string {\n  return "slow";\n}\n'),
+    });
+    await input.setInputFiles({
+      name: 'fast-second.ts',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('export function fastSecond(): string {\n  return "fast";\n}\n'),
+    });
+
+    await expect(editor).toHaveValue(/export function fastSecond/);
+    // The slower first read resolves later and must be dropped.
+    await page.waitForTimeout(1_200);
+    await expect(editor).toHaveValue(/export function fastSecond/);
+    await expect(editor).not.toHaveValue(/slowFirst/);
+    await expect(page.getByTestId('shiori-preview')).toContainText('fastSecond', { timeout: 20_000 });
   });
 });

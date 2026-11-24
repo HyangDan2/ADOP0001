@@ -82,10 +82,46 @@ function cacheIdentityMaterial(
   ]);
 }
 
+/**
+ * Deep copy used when `structuredClone` is unavailable. Unlike a JSON round
+ * trip it keeps `ArrayBuffer`/TypedArray/`DataView` values intact, so a DOCX
+ * result survives a browser without `structuredClone` (PATCH-004).
+ */
+function cloneValue<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Date) return new Date(value.getTime()) as unknown as T;
+  if (typeof ArrayBuffer !== 'undefined') {
+    if (value instanceof ArrayBuffer) return value.slice(0) as unknown as T;
+    if (ArrayBuffer.isView(value)) {
+      const view = value as ArrayBufferView;
+      const buffer = new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice().buffer;
+      if (value instanceof DataView) return new DataView(buffer) as unknown as T;
+      const ctor = (value as { constructor: new (buffer: ArrayBuffer) => unknown }).constructor;
+      return new ctor(buffer) as T;
+    }
+  }
+  if (Array.isArray(value)) return value.map((item) => cloneValue(item)) as unknown as T;
+  const copy: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) copy[key] = cloneValue(item);
+  return copy as T;
+}
+
 /** Cached outputs are returned as copies: a caller mutating one must not poison the next hit. */
 function cloneResult<T>(result: EngineResult<T>): EngineResult<T> {
   if (typeof structuredClone === 'function') return structuredClone(result);
-  return JSON.parse(JSON.stringify(result)) as EngineResult<T>;
+  return cloneValue(result);
+}
+
+/**
+ * True when a value carries binary data (DOCX bytes, a media buffer, …).
+ * Such results are never cached: the cache exists for re-readable analyses,
+ * and a binary payload would be duplicated on every hit (PATCH-004).
+ */
+function containsBinary(value: unknown, depth = 0): boolean {
+  if (depth > 8 || value === null || typeof value !== 'object') return false;
+  if (typeof ArrayBuffer !== 'undefined' && (value instanceof ArrayBuffer || ArrayBuffer.isView(value))) return true;
+  if (Array.isArray(value)) return value.some((item) => containsBinary(item, depth + 1));
+  return Object.values(value as Record<string, unknown>).some((item) => containsBinary(item, depth + 1));
 }
 
 function serializeOption(value: unknown, depth: number): string | null {
@@ -171,8 +207,9 @@ function evict(cacheKey: string): void {
   completed.delete(cacheKey);
 }
 
-/** Returns false when the result is too large to retain at all. */
+/** Returns false when the result must not be retained (binary output or too large). */
 function store(cacheKey: string, result: EngineResult<unknown>): boolean {
+  if (containsBinary(result.output)) return false;
   const bytes = estimateBytes(result, ENGINE_LIMITS.cacheBytes);
   if (bytes > ENGINE_LIMITS.cacheBytes) return false;
   if (completed.has(cacheKey)) evict(cacheKey);

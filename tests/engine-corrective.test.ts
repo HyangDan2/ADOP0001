@@ -288,6 +288,48 @@ describe('cache memory budget (FIX-018)', () => {
   });
 });
 
+describe('binary output cache policy (PATCH-004)', () => {
+  beforeEach(() => clearEngineCache());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('never caches a result whose output carries binary bytes', async () => {
+    const inner = adapterFor('kotoha');
+    let calls = 0;
+    const adapter: TypedEngineAdapter<'kotoha'> = {
+      ...inner,
+      async run(request) {
+        calls += 1;
+        return inner.run(request);
+      },
+    };
+    const input = { sourceName: 'sample', source: '', options: { action: 'sample' as const } };
+    const first = await executeEngine<'kotoha'>(adapter, input);
+    const second = await executeEngine<'kotoha'>(adapter, input);
+
+    // The option signature is cacheable; only the binary output keeps it out.
+    expect(first.output.docx).toBeInstanceOf(Uint8Array);
+    expect(first.context.cacheHit).toBe(false);
+    expect(second.context.cacheHit).toBe(false);
+    expect(calls).toBe(2);
+    expect(engineCacheSize()).toBe(0);
+    expect(engineCacheBytes()).toBe(0);
+  });
+
+  it('preserves a TypedArray result when structuredClone is unavailable', async () => {
+    vi.stubGlobal('structuredClone', undefined);
+    const result = await executeEngine<'kotoha'>(adapterFor('kotoha'), {
+      sourceName: 'sample',
+      source: '',
+      options: { action: 'sample' as const },
+    });
+    expect(result.output.docx).toBeInstanceOf(Uint8Array);
+    expect(result.output.docx!.length).toBeGreaterThan(0);
+    // A JSON round trip would turn this into {0: 80, 1: 75, …}; a real copy keeps the zip magic.
+    expect(result.output.docx![0]).toBe(0x50);
+    expect(result.output.docx![1]).toBe(0x4b);
+  });
+});
+
 describe('unsupported provider mode (FIX-014)', () => {
   it('names the mode instead of silently running the local adapter', async () => {
     const { adapter, calls } = countingShiori();

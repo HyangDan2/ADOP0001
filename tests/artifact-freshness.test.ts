@@ -1,12 +1,15 @@
 /**
- * FIX-015 / FIX-020 — artifact freshness.
+ * FIX-015 / FIX-020 / PATCH-006 — artifact freshness.
  *
  * A rebuilt .docx is current only while the Markdown and the attribute *values*
  * still match. A preset or an imported bundle can introduce a different key
  * order for the same values; that must not be mistaken for an edit, and a real
- * change must still be detected.
+ * change must still be detected. Export also compares the input revision the
+ * artifact was generated from with the current input revision, so a modal left
+ * open across an edit cannot write an older artifact.
  */
 import { describe, expect, it } from 'vitest';
+import { assertArtifactRevision } from '../src/lib/artifactRevision';
 import { attributeSignature, type BundleAttributes } from '../src/tools/kotoha/bundle';
 
 const MARGINS = { top: 1440, right: 1440, bottom: 1440, left: 1440, header: 720, footer: 720, gutter: 0 };
@@ -54,5 +57,19 @@ describe('attributeSignature', () => {
   it('returns the same signature for equal values and an empty one for null', () => {
     expect(attributeSignature({ ...ATTRIBUTES })).toBe(attributeSignature(ATTRIBUTES));
     expect(attributeSignature(null)).toBe('');
+  });
+});
+
+describe('assertArtifactRevision (PATCH-006)', () => {
+  it('allows an artifact generated from the current input', () => {
+    expect(() => assertArtifactRevision(4, 4)).not.toThrow();
+  });
+
+  it('refuses an artifact that belongs to an older input', () => {
+    expect(() => assertArtifactRevision(5, 4)).toThrow('入力が変更されています');
+  });
+
+  it('refuses when nothing has been generated yet', () => {
+    expect(() => assertArtifactRevision(2, null)).toThrow('まだ書き出せる成果物がありません');
   });
 });

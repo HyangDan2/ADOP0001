@@ -58,6 +58,19 @@ describe('promptStore', () => {
     expect(result.failure).toBe('quota');
   });
 
+  it('detects a deletion the browser silently drops (PATCH-005)', () => {
+    localStorage.setItem(KEY, 'still here');
+    vi.spyOn(localStorage, 'removeItem').mockImplementation(() => undefined);
+
+    const result = savePrompt('shiori', '   ');
+    expect(result.ok).toBe(false);
+    expect(result.failure).toBe('unknown');
+    expect(result.message).toContain('保存できませんでした');
+    // The old prompt is still stored; the UI must not claim it was removed.
+    expect(localStorage.getItem(KEY)).toBe('still here');
+    expect(readPrompt('shiori')).toBe('still here');
+  });
+
   it('reports a blocked origin as denied', () => {
     vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
       throw new DOMException('The operation is insecure.', 'SecurityError');

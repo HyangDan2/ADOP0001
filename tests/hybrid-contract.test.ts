@@ -233,3 +233,57 @@ describe('structured output and local fallback (ENG-005)', () => {
     expect(local).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('provider-reported abort and local cancellation (PATCH-003)', () => {
+  it('does not run the local fallback when the provider reports HybridResponseError(aborted)', async () => {
+    const local = vi.fn(async () => 'local');
+    await expect(
+      withLocalFallback(local, async () => {
+        throw new HybridResponseError('aborted', 'The provider cancelled the request.');
+      }),
+    ).rejects.toMatchObject({ name: 'HybridResponseError', failure: 'aborted' });
+    expect(local).not.toHaveBeenCalled();
+  });
+
+  it('treats a cancellation raised by the local fallback as aborted, not as a provider failure', async () => {
+    const abortError = new Error('The operation was aborted.');
+    abortError.name = 'AbortError';
+    await expect(
+      withLocalFallback(
+        async () => {
+          throw abortError;
+        },
+        async () => {
+          throw new HybridResponseError('schema', 'bad shape');
+        },
+      ),
+    ).rejects.toMatchObject({ name: 'HybridResponseError', failure: 'aborted' });
+  });
+
+  it('normalizes a HybridResponseError(aborted) from the local fallback the same way', async () => {
+    await expect(
+      withLocalFallback(
+        async () => {
+          throw new HybridResponseError('aborted', 'The local run was cancelled.');
+        },
+        async () => {
+          throw new Error('network down');
+        },
+      ),
+    ).rejects.toMatchObject({ name: 'HybridResponseError', failure: 'aborted' });
+  });
+
+  it('rethrows a non-cancel local failure instead of returning a partial value', async () => {
+    const boom = new Error('local adapter crashed');
+    await expect(
+      withLocalFallback(
+        async () => {
+          throw boom;
+        },
+        async () => {
+          throw new Error('network down');
+        },
+      ),
+    ).rejects.toBe(boom);
+  });
+});
