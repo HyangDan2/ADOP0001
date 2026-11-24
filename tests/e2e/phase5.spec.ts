@@ -93,6 +93,93 @@ test.describe('Phase 5A — stabilization', () => {
     await expect(page.getByTestId('prompt-instruction')).toHaveValue('Keep the numbering stable.');
   });
 
+  test('FIX-012: a few-shot change keeps an unsaved prompt after a failed save', async ({ page }) => {
+    watch(page);
+    await page.addInitScript(() => {
+      const original = Storage.prototype.setItem;
+      Storage.prototype.setItem = function setItem(this: Storage, key: string, value: string) {
+        if (String(key).startsWith('adop0001.prompt.')) {
+          throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        }
+        return original.call(this, key, value);
+      } as typeof Storage.prototype.setItem;
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('#/shiori');
+
+    const instruction = page.getByTestId('prompt-instruction');
+    await instruction.fill('未保存の指示を保持する。');
+    await expect(page.getByTestId('prompt-save-state')).toHaveAttribute('data-state', 'error');
+
+    // Adding a few-shot example bumps the shell's version; that must refresh the
+    // pills only, never re-read (and blank) the instruction that failed to save.
+    await page.getByTestId('prompt-manage').click();
+    await page.getByTestId('fewshot-add').click();
+    await page.getByTestId('fewshot-title').fill('Example A');
+    await page.getByTestId('fewshot-output-text').fill('export function example(): void {}');
+    await page.getByTestId('fewshot-save').click();
+    await expect(page.getByTestId('fewshot-item')).toHaveCount(1);
+    await page.getByRole('button', { name: 'Few-shot 例の管理を閉じる' }).click();
+    await expect(page.getByTestId('fewshot-modal')).toHaveCount(0);
+
+    await expect(instruction).toHaveValue('未保存の指示を保持する。');
+    await expect(page.getByTestId('prompt-save-state')).toHaveAttribute('data-state', 'error');
+  });
+
+  test('FIX-009: the 2 MB warning is visible and an 8 MB source is refused', async ({ page }) => {
+    watch(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('#/shiori');
+    const input = page.getByTestId('shiori-open').locator('input[type="file"]');
+
+    await input.setInputFiles({
+      name: 'large.ts',
+      mimeType: 'text/plain',
+      buffer: Buffer.from(`// ${'x'.repeat(2 * 1024 * 1024 + 1024)}`),
+    });
+    const diagnostics = page.getByTestId('engine-diagnostics');
+    await expect(diagnostics).toBeVisible({ timeout: 30_000 });
+    await expect(diagnostics).toContainText('警告');
+    await expect(diagnostics).toContainText('MB');
+    await expect(page.getByTestId('status-message')).toHaveAttribute('data-state', 'ok');
+
+    await input.setInputFiles({
+      name: 'huge.ts',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('y'.repeat(8 * 1024 * 1024 + 1)),
+    });
+    await expect(page.getByTestId('pane-shiori-output')).toContainText('大きすぎます', { timeout: 30_000 });
+    await expect(page.getByTestId('status-message')).toHaveAttribute('data-state', 'error');
+  });
+
+  test('FIX-005: a Markdown edit supersedes the previous rebuild and reset drops the draft', async ({ page }) => {
+    watch(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('#/kotoha');
+    await page.getByTestId('kotoha-sample').click();
+    await expect(page.getByTestId('source-editor')).toHaveValue(/# Kotoha Round-Trip Sample/, { timeout: 20_000 });
+    await expect(page.getByTestId('kotoha-storage')).toContainText('保存', { timeout: 15_000 });
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByTestId('kotoha-rebuild').click(),
+    ]);
+    await download.cancel().catch(() => undefined);
+    await expect(page.getByTestId('kotoha-roundtrip')).toBeVisible({ timeout: 20_000 });
+
+    // The newer edit owns the document: the old rebuild result and its download
+    // affordance must not come back, even after the persistence work settles.
+    await page.getByTestId('source-editor').fill('# Edited after rebuild\n\nNew paragraph.');
+    await expect(page.getByTestId('kotoha-roundtrip')).toHaveCount(0);
+    await page.waitForTimeout(800);
+    await expect(page.getByTestId('kotoha-roundtrip')).toHaveCount(0);
+    await expect(page.getByTestId('status-message')).toHaveAttribute('data-state', 'ok');
+
+    await page.getByTestId('kotoha-reset').click();
+    await expect(page.getByTestId('kotoha-panel')).toContainText('テンプレートが読み込まれていません');
+    await expect(page.getByTestId('kotoha-storage')).toContainText('未保存');
+  });
+
   test('FIX-003: clearing the input cancels the pending run and no stale output returns', async ({ page }) => {
     watch(page);
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -108,6 +195,8 @@ test.describe('Phase 5A — stabilization', () => {
     await expect(page.getByTestId('shiori-preview')).toBeVisible({ timeout: 20_000 });
 
     await page.getByTestId('pane-shiori-input').getByRole('button', { name: 'クリア' }).click();
+    // Clearing is the newest state: it releases busy without waiting for the run (FIX-006).
+    await expect(page.getByTestId('status-message')).toHaveAttribute('data-state', 'ok');
     await expect(page.getByTestId('pane-shiori-output')).toContainText('まだ仕様書がありません');
     // Wait past the debounce and any in-flight run: the stale result must not land.
     await page.waitForTimeout(1_200);

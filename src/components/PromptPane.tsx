@@ -47,6 +47,9 @@ export function PromptPane(props: {
     setExamples(await listExamples(toolId));
   };
 
+  // Initialise the prompt only when the tool changes. A few-shot edit bumps
+  // `version`; that must refresh the pills without re-reading (and replacing)
+  // the instruction the user is still typing after a failed save (FIX-012).
   useEffect(() => {
     setInstruction(readPrompt(toolId));
     setSavedInstruction(readPrompt(toolId));
@@ -54,6 +57,9 @@ export function PromptPane(props: {
     setSaveError(null);
     setInputSlot(null);
     setOutputSlot(null);
+  }, [toolId]);
+
+  useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toolId, props.version]);
