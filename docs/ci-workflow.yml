@@ -13,7 +13,9 @@
 #   7 result artifacts upload      8 GitHub Pages build + deploy (main only)
 #
 # A missing optional toolchain is reported as SKIP with its reason by the QA
-# runner; a check that could run and failed fails the job. There is no
+# runner; a check that could run and failed fails the job. Toolchains named in
+# QA_REQUIRED_TOOLCHAINS are installed below and fail the gate when absent;
+# an all-skipped generated project is SKIP/artifact, never PASS. There is no
 # continue-on-error anywhere, and `deploy` needs `build`.
 
 name: ADOP0001 quality gate
@@ -37,6 +39,7 @@ env:
   E2E_DOWNLOADS: ${{ github.workspace }}/qa-artifacts
   JUNIT_VERSION: 1.11.3
   QA_JUNIT_JAR: ${{ github.workspace }}/.qa-tools/junit-platform-console-standalone.jar
+  QA_REQUIRED_TOOLCHAINS: python3,pytest,gcc,g++,go,javac,junit,jest
 
 jobs:
   build:
@@ -61,7 +64,7 @@ jobs:
       - name: Install generated-code QA toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc g++ default-jdk-headless
+          sudo apt-get install -y --no-install-recommends gcc g++ golang-go default-jdk-headless
           python3 -m pip install --upgrade pytest
           mkdir -p "$(dirname "$QA_JUNIT_JAR")"
           curl -fsSL -o "$QA_JUNIT_JAR" \
@@ -78,7 +81,8 @@ jobs:
           python3 -m pytest --version
           npx jest --version
           javac -version
-          echo "Optional toolchains that are absent are reported as SKIP by npm run qa:generated."
+          go version
+          echo "Toolchains in QA_REQUIRED_TOOLCHAINS must be present; the QA runner fails the gate otherwise."
 
       - name: Generated-code QA
         run: npm run qa:generated

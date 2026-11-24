@@ -11,8 +11,10 @@
  * 4. Checks Takane: Python `ast.parse` + import, C11/C++17 compile with the
  *    available compiler, MCU buffers with the same compiler.
  *
- * Exit code is non-zero only when a check that could run actually failed, so a
- * missing optional toolchain is reported as SKIP with the reason.
+ * Exit code is non-zero when a check failed, or when `QA_REQUIRED_TOOLCHAINS`
+ * names a toolchain that is absent. An all-skipped generated project is
+ * SKIP/artifact, never PASS. Environmental SKIPs and artifact SKIPs are
+ * reported separately so a compile-only result is not mistaken for coverage.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -24,6 +26,8 @@ const LOG_DIR = path.join(OUT, 'logs');
 const results = [];
 /** Filled after the toolchain probes; an early failure reports an empty set. */
 let toolchains = {};
+/** Declared early so the failure summary can run before the manifest is read. */
+let manifest = [];
 mkdirSync(LOG_DIR, { recursive: true });
 
 /** Writes a full command log under .qa-out/logs so CI keeps the evidence. */
@@ -45,8 +49,45 @@ function tailOf(text, lines = 4) {
     .join(' | ');
 }
 
-function record(check, target, status, detail) {
-  results.push({ check, target, status, detail: detail ?? '' });
+function record(check, target, status, detail, extra = {}) {
+  results.push({ check, target, status, detail: detail ?? '', ...extra });
+}
+
+const ZERO_COUNTS = { executed: 0, passed: 0, failed: 0, skipped: 0 };
+
+/** Pulls the standard `N passed / N failed / N skipped` summary out of a runner.
+ * Vitest prints `Test Files  N passed` before `Tests  N passed`; when a summary
+ * line starts with `Tests`, only that line is counted so file counts cannot
+ * masquerade as test counts. */
+function testCounts(text) {
+  const summary = text.match(/^Tests\s+.*$/m)?.[0] ?? text;
+  const counts = { ...ZERO_COUNTS };
+  let found = false;
+  for (const [key, pattern] of [
+    ['passed', /(\d+)\s+passed/],
+    ['failed', /(\d+)\s+failed/],
+    ['skipped', /(\d+)\s+skipped/],
+  ]) {
+    const match = summary.match(pattern);
+    if (match) {
+      counts[key] = Number(match[1]);
+      found = true;
+    }
+  }
+  counts.executed = counts.passed + counts.failed;
+  return found ? counts : null;
+}
+
+function countsDetail(counts) {
+  if (!counts) return 'executed tests unknown';
+  return `${counts.executed} executed · ${counts.passed} passed · ${counts.failed} failed · ${counts.skipped} skipped`;
+}
+
+/** A run with zero executed cases is an artifact SKIP, not a pass. */
+function runStatus(ok, counts) {
+  if (!ok) return 'FAIL';
+  if (counts && counts.executed === 0) return 'SKIP';
+  return 'PASS';
 }
 
 function run(command, args, options = {}) {
@@ -93,7 +134,7 @@ if (!generator.ok) {
 }
 
 const manifestPath = path.join(OUT, 'manifest.json');
-const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : [];
+manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, 'utf8')) : [];
 record('manifest', path.relative(ROOT, manifestPath), manifest.length ? 'PASS' : 'FAIL', `${manifest.length} matrix pairs`);
 
 /* --------------------------------------------------------------- */
@@ -102,7 +143,7 @@ record('manifest', path.relative(ROOT, manifestPath), manifest.length ? 'PASS' :
 const python = run('python3', ['--version']);
 const allPython = walk(OUT, (name) => name.endsWith('.py'));
 if (!python.ok) {
-  record('python-parse', 'all .py', 'SKIP', 'python3 is not installed');
+  record('python-parse', 'all .py', 'SKIP', 'python3 is not installed', { skipKind: 'environment' });
 } else {
   for (const file of allPython) {
     const relative = path.relative(ROOT, file);
@@ -113,14 +154,23 @@ if (!python.ok) {
 
 const pytestProjects = manifest.filter((entry) => entry.executable && entry.runner === 'pytest');
 if (!python.ok) {
-  for (const project of pytestProjects) record('pytest', project.dir, 'SKIP', 'python3 is not installed');
+  for (const project of pytestProjects) {
+    record('pytest', project.dir, 'SKIP', 'python3 is not installed', { skipKind: 'environment' });
+  }
 } else if (!run('python3', ['-m', 'pytest', '--version'], { timeout: 30_000 }).ok) {
-  for (const project of pytestProjects) record('pytest', project.dir, 'SKIP', 'pytest is not installed');
+  for (const project of pytestProjects) {
+    record('pytest', project.dir, 'SKIP', 'pytest is not installed', { skipKind: 'environment' });
+  }
 } else {
   for (const project of pytestProjects) {
     const dir = path.join(OUT, project.dir);
     const pytestRun = run('python3', ['-m', 'pytest', '-q'], { cwd: dir, timeout: 120_000 });
-    record('pytest', project.dir, pytestRun.ok ? 'PASS' : 'FAIL', tailOf(pytestRun.stdout + pytestRun.stderr, 2));
+    const counts = testCounts(pytestRun.stdout + pytestRun.stderr);
+    const status = runStatus(pytestRun.ok, counts);
+    record('pytest', project.dir, status, `${countsDetail(counts)} | ${tailOf(pytestRun.stdout + pytestRun.stderr, 2)}`, {
+      testCounts: counts ?? ZERO_COUNTS,
+      ...(status === 'SKIP' ? { skipKind: 'artifact' } : {}),
+    });
   }
 }
 
@@ -147,7 +197,7 @@ function checkTranslations(dirName, language, extension, standard) {
   const compiler = compilerFor(language);
   const label = language === 'c' ? 'C11' : 'C++17';
   if (!compiler) {
-    record(`${label} compile`, `takane/${dirName}`, 'SKIP', 'no gcc, clang or zig available');
+    record(`${label} compile`, `takane/${dirName}`, 'SKIP', 'no gcc, clang or zig available', { skipKind: 'environment' });
     return;
   }
   for (const file of files) {
@@ -281,14 +331,19 @@ function runJest(dir, project) {
     { timeout: 240_000 },
   );
   const log = writeLog(`jest-${project.dir.replace(/[\\/]/g, '-')}`, `${jestRun.stdout}\n${jestRun.stderr}`);
-  let detail = tailOf(jestRun.stdout + jestRun.stderr, 4);
+  let detail = `${countsDetail(testCounts(jestRun.stdout + jestRun.stderr))} · ${log}`;
+  let counts = testCounts(jestRun.stdout + jestRun.stderr);
   try {
     const report = JSON.parse(readFileSync(resultPath, 'utf8'));
-    detail = `${report.numPassedTests ?? 0} passed · ${report.numFailedTests ?? 0} failed · ${report.numPendingTests ?? 0} skipped (${report.numTotalTests ?? 0} tests) · ${log}`;
+    const passed = report.numPassedTests ?? 0;
+    const failed = report.numFailedTests ?? 0;
+    const skipped = report.numPendingTests ?? 0;
+    counts = { executed: passed + failed, passed, failed, skipped };
+    detail = `${countsDetail(counts)} (${report.numTotalTests ?? 0} tests) · ${log}`;
   } catch {
-    detail = `${detail} · ${log}`;
+    /* the textual summary above is the fallback */
   }
-  return { ok: jestRun.ok, detail };
+  return { ok: jestRun.ok, detail, counts };
 }
 
 for (const project of manifest.filter((entry) => entry.executable && (entry.runner === 'vitest' || entry.runner === 'jest'))) {
@@ -298,31 +353,68 @@ for (const project of manifest.filter((entry) => entry.executable && (entry.runn
   if (!typecheck.ok) continue;
   if (project.runner === 'jest') {
     if (!jestInstalled) {
-      record('Jest run', project.dir, 'SKIP', 'jest is not installed; the file was type-checked only');
+      record('Jest run', project.dir, 'SKIP', 'jest is not installed; the file was type-checked only', { skipKind: 'environment' });
       continue;
     }
     const jestRun = runJest(dir, project);
-    record('Jest run', project.dir, jestRun.ok ? 'PASS' : 'FAIL', jestRun.detail);
+    const status = runStatus(jestRun.ok, jestRun.counts);
+    record('Jest run', project.dir, status, jestRun.detail, {
+      testCounts: jestRun.counts ?? ZERO_COUNTS,
+      ...(status === 'SKIP' ? { skipKind: 'artifact' } : {}),
+    });
     continue;
   }
   const vitest = runVitest(dir);
-  record('Vitest run', project.dir, vitest.ok ? 'PASS' : 'FAIL', vitest.note);
+  const vitestCounts = testCounts(vitest.stdout + vitest.stderr);
+  const vitestStatus = runStatus(vitest.ok, vitestCounts);
+  record('Vitest run', project.dir, vitestStatus, `${countsDetail(vitestCounts)} · ${vitest.note}`, {
+    testCounts: vitestCounts ?? ZERO_COUNTS,
+    ...(vitestStatus === 'SKIP' ? { skipKind: 'artifact' } : {}),
+  });
 }
 
 /* --------------------------------------------------------------- */
 /* 5. Go and Java                                                    */
 /* --------------------------------------------------------------- */
+/** Counts `go test -json` events; package-level events carry no Test field. */
+function goCounts(text) {
+  const counts = { ...ZERO_COUNTS };
+  let found = false;
+  for (const line of text.split('\n')) {
+    if (!line.trim().startsWith('{')) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!event.Test || event.Test.includes('/')) continue;
+    if (event.Action === 'pass') counts.passed += 1;
+    else if (event.Action === 'fail') counts.failed += 1;
+    else if (event.Action === 'skip') counts.skipped += 1;
+    else continue;
+    found = true;
+  }
+  counts.executed = counts.passed + counts.failed;
+  return found ? counts : null;
+}
+
 const goProjects = manifest.filter((entry) => entry.executable && entry.runner === 'go');
 const goInstalled = has('go', ['version']);
 for (const project of goProjects) {
   const dir = path.join(OUT, project.dir);
   if (!goInstalled) {
-    record('Go test', project.dir, 'SKIP', 'no Go toolchain available');
+    record('Go test', project.dir, 'SKIP', 'no Go toolchain available', { skipKind: 'environment' });
     continue;
   }
   if (!existsSync(path.join(dir, 'go.mod'))) run('go', ['mod', 'init', 'example.com/qa'], { cwd: dir });
-  const goTest = run('go', ['test', './...'], { cwd: dir, timeout: 180_000 });
-  record('Go test', project.dir, goTest.ok ? 'PASS' : 'FAIL', tailOf(goTest.stdout + goTest.stderr, 3));
+  const goTest = run('go', ['test', '-json', './...'], { cwd: dir, timeout: 180_000 });
+  const counts = goCounts(goTest.stdout);
+  const status = runStatus(goTest.ok, counts);
+  record('Go test', project.dir, status, `${countsDetail(counts)} · ${tailOf(goTest.stderr, 3)}`, {
+    testCounts: counts ?? ZERO_COUNTS,
+    ...(status === 'SKIP' ? { skipKind: 'artifact' } : {}),
+  });
 }
 
 const javaProjects = manifest.filter((entry) => entry.executable && entry.runner === 'junit5');
@@ -331,11 +423,13 @@ const javacInstalled = has('javac', ['-version']);
 for (const project of javaProjects) {
   const dir = path.join(OUT, project.dir);
   if (!javacInstalled) {
-    record('javac', project.dir, 'SKIP', 'no JDK available');
+    record('javac', project.dir, 'SKIP', 'no JDK available', { skipKind: 'environment' });
     continue;
   }
   if (!junitJar || !existsSync(junitJar)) {
-    record('javac', project.dir, 'SKIP', 'JUnit 5 is not on the classpath (set QA_JUNIT_JAR to a junit-platform-console-standalone jar)');
+    record('javac', project.dir, 'SKIP', 'JUnit 5 is not on the classpath (set QA_JUNIT_JAR to a junit-platform-console-standalone jar)', {
+      skipKind: 'environment',
+    });
     continue;
   }
   const classes = path.join(dir, 'classes');
@@ -351,7 +445,17 @@ for (const project of javaProjects) {
     ['-jar', junitJar, '-cp', classes, '--scan-classpath', classes, '--details=summary'],
     { timeout: 120_000 },
   );
-  record('JUnit run', project.dir, junitRun.ok ? 'PASS' : 'FAIL', tailOf(junitRun.stdout + junitRun.stderr, 3));
+  const junitOutput = junitRun.stdout + junitRun.stderr;
+  const found = Number(junitOutput.match(/(\d+)\s+tests found/)?.[1] ?? 0);
+  const skipped = Number(junitOutput.match(/(\d+)\s+tests skipped/)?.[1] ?? 0);
+  const successful = Number(junitOutput.match(/(\d+)\s+tests successful/)?.[1] ?? 0);
+  const failed = Number(junitOutput.match(/(\d+)\s+tests failed/)?.[1] ?? 0);
+  const counts = found > 0 ? { executed: successful + failed, passed: successful, failed, skipped } : null;
+  const status = runStatus(junitRun.ok, counts);
+  record('JUnit run', project.dir, status, `${countsDetail(counts)} · ${tailOf(junitOutput, 3)}`, {
+    testCounts: counts ?? ZERO_COUNTS,
+    ...(status === 'SKIP' ? { skipKind: 'artifact' } : {}),
+  });
 }
 
 /* --------------------------------------------------------------- */
@@ -376,11 +480,50 @@ toolchains = {
   jest: jestVersion || null,
 };
 
+/** A required toolchain that is absent fails the gate instead of shrinking the run. */
+const REQUIRED_ALIASES = { python3: 'python', 'g++': 'gplusplus', junit: 'junitJar', jdk: 'javac' };
+const requiredToolchains = (process.env.QA_REQUIRED_TOOLCHAINS ?? '')
+  .split(',')
+  .map((name) => name.trim())
+  .filter(Boolean);
+const missingToolchains = [];
+for (const name of requiredToolchains) {
+  const key = REQUIRED_ALIASES[name] ?? name;
+  if (!(key in toolchains)) {
+    missingToolchains.push(name);
+    record('required-toolchain', name, 'FAIL', `unknown toolchain name (known: ${Object.keys(toolchains).join(', ')})`);
+  } else if (!toolchains[key]) {
+    missingToolchains.push(name);
+    record('required-toolchain', name, 'FAIL', 'required by QA_REQUIRED_TOOLCHAINS but not installed');
+  }
+}
+
 writeLog('generator', `${generator.stdout}\n${generator.stderr}`);
 
 /* --------------------------------------------------------------- */
 /* Report                                                            */
 /* --------------------------------------------------------------- */
+function executedTotals() {
+  const sums = { ...ZERO_COUNTS };
+  for (const item of results) {
+    if (!item.testCounts) continue;
+    sums.executed += item.testCounts.executed;
+    sums.passed += item.testCounts.passed;
+    sums.failed += item.testCounts.failed;
+    sums.skipped += item.testCounts.skipped;
+  }
+  return sums;
+}
+
+function skipBreakdown() {
+  const breakdown = { environment: 0, artifact: 0, other: 0 };
+  for (const item of results) {
+    if (item.status !== 'SKIP') continue;
+    breakdown[item.skipKind === 'environment' || item.skipKind === 'artifact' ? item.skipKind : 'other'] += 1;
+  }
+  return breakdown;
+}
+
 writeFileSync(
   path.join(OUT, 'qa-report.json'),
   JSON.stringify(
@@ -389,6 +532,10 @@ writeFileSync(
       matrix: manifest.length,
       executable: manifest.filter((entry) => entry.executable).length,
       generatedOnly: manifest.filter((entry) => !entry.executable).length,
+      executedTests: executedTotals(),
+      skipBreakdown: skipBreakdown(),
+      requiredToolchains,
+      missingToolchains,
       toolchains,
       results,
     },
@@ -406,6 +553,8 @@ function summarize() {
   );
   const counts = results.reduce((acc, item) => ({ ...acc, [item.status]: (acc[item.status] ?? 0) + 1 }), {});
   const pairs = manifest ?? [];
+  const totals = executedTotals();
+  const skips = skipBreakdown();
   console.log('\nQA summary');
   console.log('-'.repeat(80));
   console.log(lines.join('\n'));
@@ -414,6 +563,11 @@ function summarize() {
     `matrix ${pairs.length} pairs · executable ${pairs.filter((entry) => entry.executable).length} · generated-only ${pairs.filter((entry) => !entry.executable).length}`,
   );
   console.log(`PASS ${counts.PASS ?? 0} · FAIL ${counts.FAIL ?? 0} · SKIP ${counts.SKIP ?? 0}`);
+  console.log(
+    `executed tests ${totals.executed} · passed ${totals.passed} · failed ${totals.failed} · skipped ${totals.skipped}` +
+      (totals.executed === 0 ? '  (no generated test actually ran)' : ''),
+  );
+  console.log(`SKIP split  environment ${skips.environment} · artifact ${skips.artifact} · other ${skips.other}`);
   const skipped = results.filter((item) => item.status === 'SKIP');
   for (const item of skipped) console.log(`SKIP reason  ${item.check} ${item.target} — ${item.detail}`);
   console.log(
@@ -421,5 +575,8 @@ function summarize() {
       `gcc=${toolchains.gcc ? 'yes' : 'no'} g++=${toolchains.gplusplus ? 'yes' : 'no'} go=${toolchains.go ? 'yes' : 'no'} ` +
       `javac=${toolchains.javac ? 'yes' : 'no'} junit=${toolchains.junitJar ? 'yes' : 'no'} jest=${toolchains.jest ? 'yes' : 'no'}`,
   );
+  if (requiredToolchains.length) {
+    console.log(`required toolchains  ${requiredToolchains.join(', ')} — ${missingToolchains.length ? `MISSING ${missingToolchains.join(', ')}` : 'all present'}`);
+  }
   if (counts.FAIL) process.exitCode = 1;
 }

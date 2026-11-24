@@ -23,9 +23,26 @@ npm run test:e2e         # QA-D against the production build (Playwright starts 
 ```
 
 `qa:generated` regenerates `.qa-out/` itself (`tests/qa/artifacts.test.ts`), so it
-always checks the current generator, not a stale copy. Exit code is non-zero only
-when a check that could run failed; a missing optional toolchain is `SKIP` with
-the reason and the reason is printed.
+always checks the current generator, not a stale copy. Exit code is non-zero when
+a check that could run failed, and also when `QA_REQUIRED_TOOLCHAINS` names a
+toolchain that is not installed. A missing optional toolchain is `SKIP` with the
+reason, and the reason is printed.
+
+### Result accounting (FIX-013)
+
+Every executed artefact records how many cases actually ran, not just that the
+runner exited cleanly. The summary prints a single line for the whole matrix:
+
+- `PASS` — the runner exited 0 **and** at least one case executed.
+- `FAIL` — the runner exited non-zero (a compile error is never a pass).
+- `SKIP` — the toolchain is absent (`environment`) or the project executed zero
+  cases (`artifact`). An all-`it.skip`/`@Disabled` project is never `PASS`.
+
+`.qa-out/qa-report.json` carries the per-check `testCounts`, the matrix-wide
+`executedTests` totals and the `skipBreakdown`. The CI job installs Python,
+pytest, gcc/g++, Go, the JDK, the JUnit console jar and Jest, and sets
+`QA_REQUIRED_TOOLCHAINS`; if one of those is missing the QA run fails the gate
+instead of shrinking silently to a compile-only result.
 
 ## Generated matrix (QA-001)
 
@@ -107,28 +124,24 @@ re-run; the reliability fixtures that passed in Phase 1 still pass.
 
 ## CI gate (QA-002)
 
-`.github/workflows/deploy.yml` already blocks deployment on `tsc --noEmit`,
-`npm test` and `npm run build`, and `deploy` needs `build`. Adding
-`npm run qa:generated` and Playwright there is refused: this installation's
-GitHub App token does not hold the `workflows` permission, so GitHub rejects the
-push of any `.github/workflows/*` change. The refusal was not worked around; the
-complete eight-step definition is kept in `docs/ci-workflow.yml` for the
-repository owner to copy over the workflow. Until it is copied, the live gate
-stays the existing three-step gate — still blocking, just narrower than the work
-order asks for.
+`.github/workflows/deploy.yml` is the enforced gate: `npm ci`,
+`npx tsc --noEmit`, `npm test`, `npm run qa:generated`, `npm run build`,
+Playwright E2E, the QA-evidence upload and Pages deployment. It runs on every
+pull request and on every push to main; `deploy` needs `build` and only runs for
+a push to main. No step uses `continue-on-error`. `docs/ci-workflow.yml` is the
+review copy of the same definition, and both name the toolchains CI installs in
+`QA_REQUIRED_TOOLCHAINS`.
 
 ## Known limits
 
-- Jest is not installed in this container. The three Jest projects are
-  type-checked (with a local `@jest/globals` declaration) but not executed; CI
-  would need a Jest devDependency to run them.
+- Jest is a devDependency and runs in CI; a local run without it type-checks the
+  three Jest projects and reports the run as an `environment` SKIP.
 - 25 cross-language pairs are generated for matrix completeness but are not
   executed: a Pytest file for a TypeScript module, for example, imports a module
   that does not exist in that language. They are marked `generated-only` in the
   manifest and are not counted as passes.
-- JUnit 5 runs for `InvoiceService` execute zero cases: every case is
-  `@Disabled` with an explicit reason (the declared return type cannot be
-  asserted by the current emitter). That is a reported limitation, not a pass
-  of those assertions.
+- Generated projects whose every case is skipped (`result-pipeline`,
+  `job-queue`, and zero-case JUnit runs) are reported as `artifact` SKIP, so an
+  all-`@Disabled` artefact is no longer mistaken for executed coverage.
 - Executed coverage is still not measured; the UI shows the static branch
   mapping rate and `N/A` for executed coverage (HAR-003).

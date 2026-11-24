@@ -4,6 +4,8 @@
 # deploy only runs for a push to main, after the gate is green. A missing
 # optional toolchain is reported as SKIP with its reason by the QA runner and
 # never as a pass; a failure in a check that could run fails the job.
+# QA_REQUIRED_TOOLCHAINS names the toolchains CI installs below: if one is
+# missing the QA runner fails the gate instead of quietly skipping its checks.
 name: ADOP0001 quality gate
 
 on:
@@ -26,6 +28,7 @@ env:
   E2E_DOWNLOADS: ${{ github.workspace }}/qa-artifacts
   JUNIT_VERSION: 1.11.3
   QA_JUNIT_JAR: ${{ github.workspace }}/.qa-tools/junit-platform-console-standalone.jar
+  QA_REQUIRED_TOOLCHAINS: python3,pytest,gcc,g++,go,javac,junit,jest
 
 jobs:
   build:
@@ -54,7 +57,7 @@ jobs:
       - name: Install generated-code QA toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc g++ default-jdk-headless
+          sudo apt-get install -y --no-install-recommends gcc g++ golang-go default-jdk-headless
           python3 -m pip install --upgrade pytest
           mkdir -p "$(dirname "$QA_JUNIT_JAR")"
           curl -fsSL -o "$QA_JUNIT_JAR" \
@@ -71,7 +74,8 @@ jobs:
           python3 -m pytest --version
           npx jest --version
           javac -version
-          echo "Optional toolchains that are absent are reported as SKIP by npm run qa:generated."
+          go version
+          echo "Toolchains in QA_REQUIRED_TOOLCHAINS must be present; the QA runner fails the gate otherwise."
 
       # 5. Generated-code QA: typecheck, Vitest, Jest execution, Pytest, JUnit,
       #    Go, and C/C++/MCU compile. A missing toolchain is SKIP, never PASS.
