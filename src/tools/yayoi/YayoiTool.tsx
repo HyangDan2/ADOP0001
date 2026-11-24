@@ -40,7 +40,7 @@ export function YayoiTool() {
   const [elapsed, setElapsed] = useState(0);
   const pseudoRefs = useRef(new Map<number, HTMLDivElement>());
   const timer = useRef<number | null>(null);
-  const nextRequest = useRequestGate();
+  const gate = useRequestGate();
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -50,7 +50,7 @@ export function YayoiTool() {
         setError(null);
         return;
       }
-      const request = nextRequest();
+      const request = gate.start();
       setBusy(true);
       setError(null);
       void adapter
@@ -60,6 +60,7 @@ export function YayoiTool() {
           source,
           options: { style, depth },
           mode: 'local-static',
+          signal: request.signal,
         })
         .then((result) => {
           if (!request.isCurrent()) return;
@@ -77,6 +78,9 @@ export function YayoiTool() {
     }, 220);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
+      // A source/option change, reset or unmount supersedes the run immediately;
+      // the debounce alone would leave the previous request current for ~250 ms.
+      gate.invalidate();
     };
   }, [source, fileName, style, depth]);
 

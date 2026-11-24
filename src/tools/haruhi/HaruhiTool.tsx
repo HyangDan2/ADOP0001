@@ -46,7 +46,7 @@ export function HaruhiTool() {
   const [exportOpen, setExportOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const timer = useRef<number | null>(null);
-  const nextRequest = useRequestGate();
+  const gate = useRequestGate();
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -56,7 +56,7 @@ export function HaruhiTool() {
         setError(null);
         return;
       }
-      const request = nextRequest();
+      const request = gate.start();
       setBusy(true);
       setError(null);
       void adapter
@@ -66,6 +66,7 @@ export function HaruhiTool() {
           source,
           options: { framework },
           mode: 'local-static',
+          signal: request.signal,
         })
         .then((result) => {
           if (!request.isCurrent()) return;
@@ -83,6 +84,9 @@ export function HaruhiTool() {
     }, 230);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
+      // A source/option change, reset or unmount supersedes the run immediately;
+      // the debounce alone would leave the previous request current for ~250 ms.
+      gate.invalidate();
     };
   }, [source, fileName, framework]);
 

@@ -4,6 +4,7 @@ import { ExportModal } from '../../components/ExportModal';
 import { DOCX_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { copyText, downloadBlob } from '../../lib/util';
+import { useRequestGate, type RequestHandle } from '../../lib/requestGate';
 import { KotohaAdapter, type KotohaOutput } from './adapter';
 import { parseBundleExport, withAttributes, type BundleAttributes, type KotohaBundle, type LossWarning } from './bundle';
 import {
@@ -92,6 +93,8 @@ export function KotohaTool() {
   const [docxSource, setDocxSource] = useState<{ markdown: string; attributes: string } | null>(null);
   /** Guards the async draft restore: a user action always wins over a late load. */
   const userTouched = useRef(false);
+  /** FIX-003: a newer file/render/reset supersedes the run in flight. */
+  const gate = useRequestGate();
 
   useEffect(() => {
     void loadLatestBundle().then((record) => {
@@ -127,7 +130,7 @@ export function KotohaTool() {
     window.setTimeout(() => setToast(null), 2200);
   };
 
-  const adopt = async (outputValue: KotohaOutput) => {
+  const adopt = async (outputValue: KotohaOutput, request?: RequestHandle) => {
     setDocument({ bundle: outputValue.bundle, markdown: outputValue.markdown });
     setMarkdown(outputValue.markdown);
     setAttributes(outputValue.bundle.attributes);
@@ -141,24 +144,27 @@ export function KotohaTool() {
     setPending(null);
     setRestored(null);
     const saved = await saveBundle(outputValue.bundle);
+    if (request && !request.isCurrent()) return;
     await saveDocumentDraft({
       markdown: outputValue.markdown,
       attributes: outputValue.bundle.attributes,
       bundle: outputValue.bundle,
     });
+    if (request && !request.isCurrent()) return;
     setStorage(`スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString('ja-JP')}`);
   };
 
   /** A document with structural limits is shown to the user *before* it replaces the current work. */
-  const offer = async (outputValue: KotohaOutput) => {
+  const offer = async (outputValue: KotohaOutput, request?: RequestHandle) => {
     if (outputValue.warnings.length) {
       setPending(outputValue);
       return;
     }
-    await adopt(outputValue);
+    await adopt(outputValue, request);
   };
 
   const runSample = async () => {
+    const request = gate.start();
     userTouched.current = true;
     setBusy(true);
     setError(null);
@@ -169,18 +175,23 @@ export function KotohaTool() {
         source: '',
         options: { action: 'sample' },
         mode: 'local-static',
+        signal: request.signal,
       });
-      await adopt(result.output);
+      if (!request.isCurrent()) return;
+      await adopt(result.output, request);
+      if (!request.isCurrent()) return;
       setElapsed(result.elapsedMs);
       showToast('サンプル .docx を生成して分解しました');
     } catch (cause) {
+      if (!request.isCurrent()) return;
       setError(explainError(cause, 'サンプルを生成できませんでした。'));
     } finally {
-      setBusy(false);
+      if (request.isCurrent()) setBusy(false);
     }
   };
 
   const loadDocx = async (file: File) => {
+    const request = gate.start();
     userTouched.current = true;
     setError(null);
     if (file.size > KOTOHA_LIMITS.maxFileBytes) {
@@ -190,45 +201,55 @@ export function KotohaTool() {
     setBusy(true);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!request.isCurrent()) return;
       const result = await adapter.run({
         toolId: 'kotoha',
         sourceName: file.name,
         source: '',
         options: { action: 'decompose', bytes, fileName: file.name },
         mode: 'local-static',
+        signal: request.signal,
       });
-      await offer(result.output);
+      if (!request.isCurrent()) return;
+      await offer(result.output, request);
+      if (!request.isCurrent()) return;
       setElapsed(result.elapsedMs);
       showToast(`${file.name} を分解しました`);
     } catch (cause) {
+      if (!request.isCurrent()) return;
       // The current document is untouched on failure (KOT-004).
       setError(explainError(cause, 'このファイルは .docx 文書として読み取れませんでした。'));
     } finally {
-      setBusy(false);
+      if (request.isCurrent()) setBusy(false);
     }
   };
 
   const loadBundleFile = async (file: File) => {
+    const request = gate.start();
     userTouched.current = true;
     setError(null);
     try {
       const parsed = parseBundleExport(await file.text());
+      if (!request.isCurrent()) return;
       await adopt({
         action: 'decompose',
         fileName: parsed.bundle.fileName,
         markdown: parsed.markdown,
         bundle: parsed.bundle,
         warnings: parsed.bundle.warnings ?? [],
-      });
+      }, request);
+      if (!request.isCurrent()) return;
       setStorage(`スタイルバンドルを読み込み、${storageLabel()} に保存しました`);
       showToast('スタイルバンドルを読み込みました');
     } catch (cause) {
+      if (!request.isCurrent()) return;
       setError(explainError(cause, 'このファイルは琴葉のバンドルではありません。'));
     }
   };
 
   const rebuild = async (download = true) => {
     if (!document || !attributes) return;
+    const request = gate.start();
     setBusy(true);
     setError(null);
     try {
@@ -243,7 +264,9 @@ export function KotohaTool() {
           attributes,
         },
         mode: 'local-static',
+        signal: request.signal,
       });
+      if (!request.isCurrent()) return;
       setOutput(result.output);
       setElapsed(result.elapsedMs);
       // A rebuild only counts as a success when it produced a document; otherwise
@@ -255,6 +278,7 @@ export function KotohaTool() {
       setDocument({ bundle: result.output.bundle, markdown });
       setDocxSource({ markdown, attributes: JSON.stringify(result.output.bundle.attributes) });
       await saveDocumentDraft({ markdown, attributes: result.output.bundle.attributes, bundle: result.output.bundle });
+      if (!request.isCurrent()) return;
       if (download) {
         downloadBlob(
           result.output.fileName,
@@ -264,9 +288,10 @@ export function KotohaTool() {
       }
       showToast('保持したバンドルで .docx を再構築しました');
     } catch (cause) {
+      if (!request.isCurrent()) return;
       setError(explainError(cause, '文書を再構築できませんでした。'));
     } finally {
-      setBusy(false);
+      if (request.isCurrent()) setBusy(false);
     }
   };
 
@@ -294,6 +319,8 @@ export function KotohaTool() {
   };
 
   const resetDocument = async () => {
+    gate.invalidate();
+    setBusy(false);
     setDocument(null);
     setMarkdown('');
     setAttributes(null);

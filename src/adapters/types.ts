@@ -24,6 +24,8 @@ export interface EngineRequest<TOptions = Record<string, unknown>> {
   source: string;
   options: TOptions;
   mode: ProviderMode;
+  /** Aborted when the request is superseded or the tool unmounts. */
+  signal?: AbortSignal;
 }
 
 export type DiagnosticSeverity = 'info' | 'warn' | 'error';

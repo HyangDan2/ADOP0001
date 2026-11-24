@@ -79,7 +79,7 @@ export function TakaneTool() {
   const [hasShiori, setHasShiori] = useState(() => Boolean(readShioriRecord()));
   const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
-  const nextRequest = useRequestGate();
+  const gate = useRequestGate();
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -89,7 +89,7 @@ export function TakaneTool() {
         setError(null);
         return;
       }
-      const request = nextRequest();
+      const request = gate.start();
       setBusy(true);
       setError(null);
       void adapter
@@ -99,6 +99,7 @@ export function TakaneTool() {
           source,
           options: { language },
           mode: 'local-static',
+          signal: request.signal,
         })
         .then((result) => {
           if (!request.isCurrent()) return;
@@ -116,6 +117,9 @@ export function TakaneTool() {
     }, 240);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
+      // A source/option change, reset or unmount supersedes the run immediately;
+      // the debounce alone would leave the previous request current for ~250 ms.
+      gate.invalidate();
     };
   }, [source, fileName, language]);
 

@@ -41,7 +41,7 @@ export function ShioriTool() {
   const [toast, setToast] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
-  const nextRequest = useRequestGate();
+  const gate = useRequestGate();
 
   const run = async (text: string, name: string, activeSections: SpecSection[]) => {
     if (!text.trim()) {
@@ -49,7 +49,7 @@ export function ShioriTool() {
       setError(null);
       return;
     }
-    const request = nextRequest();
+    const request = gate.start();
     setBusy(true);
     setError(null);
     try {
@@ -59,6 +59,7 @@ export function ShioriTool() {
         source: text,
         options: { sections: activeSections, includePrivate: true },
         mode: 'local-static',
+        signal: request.signal,
       });
       if (!request.isCurrent()) return;
       setOutput(result.output);
@@ -85,6 +86,9 @@ export function ShioriTool() {
     timer.current = window.setTimeout(() => void run(source, fileName, sections), 260);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
+      // A source/option change, reset or unmount supersedes the run immediately;
+      // the debounce alone would leave the previous request current for ~250 ms.
+      gate.invalidate();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, fileName, sections]);

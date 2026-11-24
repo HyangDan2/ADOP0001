@@ -52,7 +52,7 @@ export function KozueTool() {
   const diagramRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
   const timer = useRef<number | null>(null);
-  const nextRequest = useRequestGate();
+  const gate = useRequestGate();
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -62,7 +62,7 @@ export function KozueTool() {
         setAnalysisError(null);
         return;
       }
-      const request = nextRequest();
+      const request = gate.start();
       setBusy(true);
       setAnalysisError(null);
       void adapter
@@ -72,6 +72,7 @@ export function KozueTool() {
           source,
           options: { kind, direction },
           mode: 'local-static',
+          signal: request.signal,
         })
         .then((result) => {
           if (!request.isCurrent()) return;
@@ -90,6 +91,9 @@ export function KozueTool() {
     }, 240);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
+      // A source/option change, reset or unmount supersedes the run immediately;
+      // the debounce alone would leave the previous request current for ~250 ms.
+      gate.invalidate();
     };
   }, [source, fileName, kind, direction]);
 
