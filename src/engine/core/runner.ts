@@ -13,7 +13,10 @@ import { ENGINE_LIMITS, normalizeDiagnostics, sourceSizeWarning } from './diagno
 import { adapterFor } from '../../adapters/registry';
 import { sha256Hex } from '../../lib/util';
 
-export const ENGINE_VERSION = '5b.1';
+export const ENGINE_VERSION = '5b.2';
+
+/** The identity schema version; changing how a key is built invalidates old keys. */
+const CACHE_IDENTITY_SCHEMA = 'adop0001.engine-identity.v2';
 
 let requestCounter = 0;
 
@@ -34,15 +37,55 @@ export function throwIfAborted(signal?: AbortSignal): void {
   throw signal.reason instanceof Error ? signal.reason : cancellationError();
 }
 
+/** A local-only adapter was asked to run in a mode it does not implement. */
+export class UnsupportedEngineModeError extends Error {
+  readonly mode: ProviderMode;
+  constructor(mode: ProviderMode) {
+    super(`このエンジンは ${mode} モードを実装していません。ローカル静的解析で実行してください。`);
+    this.name = 'UnsupportedEngineModeError';
+    this.mode = mode;
+  }
+}
+
 /**
  * Stable option signature for the cache key. Binary payloads and anything that
- * cannot be represented compactly is deliberately *not* cached: the key is
- * cheap and wrong caching is worse than none.
+ * cannot be represented compactly is deliberately *not* cached: DOCX bytes,
+ * style bundles that exceed the budget and typed arrays all return `null`, so
+ * they run uncached instead of risking a collision or eating memory.
  */
 function optionSignature(options: unknown): string | null {
   const serialized = serializeOption(options, 0);
   if (serialized === null || serialized.length > 64 * 1024) return null;
   return serialized;
+}
+
+/**
+ * Canonical cache identity. A JSON array is used instead of delimiter
+ * concatenation so a `|` in a file name or source cannot make two different
+ * requests look identical. Options are sorted recursively by `serializeOption`.
+ */
+function cacheIdentityMaterial(
+  toolId: ToolId,
+  mode: ProviderMode,
+  sourceName: string,
+  source: string,
+  signature: string | null,
+): string {
+  return JSON.stringify([
+    CACHE_IDENTITY_SCHEMA,
+    ENGINE_VERSION,
+    toolId,
+    mode,
+    sourceName,
+    source,
+    signature ?? { uncached: true },
+  ]);
+}
+
+/** Cached outputs are returned as copies: a caller mutating one must not poison the next hit. */
+function cloneResult<T>(result: EngineResult<T>): EngineResult<T> {
+  if (typeof structuredClone === 'function') return structuredClone(result);
+  return JSON.parse(JSON.stringify(result)) as EngineResult<T>;
 }
 
 function serializeOption(value: unknown, depth: number): string | null {
@@ -76,9 +119,16 @@ interface CacheEntry {
 
 const completed = new Map<string, CacheEntry>();
 
+function touch(cacheKey: string): void {
+  if (!completed.has(cacheKey)) return;
+  const entry = completed.get(cacheKey)!;
+  completed.delete(cacheKey);
+  completed.set(cacheKey, entry);
+}
+
 function store(cacheKey: string, result: EngineResult<unknown>): void {
   if (completed.has(cacheKey)) completed.delete(cacheKey);
-  completed.set(cacheKey, { result });
+  completed.set(cacheKey, { result: cloneResult(result) });
   while (completed.size > ENGINE_LIMITS.cacheEntries) {
     const oldest = completed.keys().next().value;
     if (oldest === undefined) break;
@@ -112,6 +162,9 @@ export async function executeEngine<K extends ToolId>(
   const sourceBytes = new TextEncoder().encode(input.source).length;
 
   throwIfAborted(input.signal);
+  if (mode === 'hybrid-ai' && adapter.providerMode !== 'hybrid-ai') {
+    throw new UnsupportedEngineModeError(mode);
+  }
   if (sourceBytes > ENGINE_LIMITS.hardSourceBytes) {
     throw new Error(
       `入力が大きすぎます。${Math.round(ENGINE_LIMITS.hardSourceBytes / 1024 / 1024)} MB までのソースを読み込んでください。`,
@@ -121,10 +174,11 @@ export async function executeEngine<K extends ToolId>(
   const signature = optionSignature(input.options);
   const [sourceHash, cacheKey] = await Promise.all([
     sha256Hex(input.source),
-    sha256Hex(
-      `${ENGINE_VERSION}|${adapter.id}|${mode}|${input.sourceName}|${signature ?? 'uncached'}|${input.source}`,
-    ),
+    sha256Hex(cacheIdentityMaterial(adapter.id, mode, input.sourceName, input.source, signature)),
   ]);
+  // Hashing is asynchronous; the user can cancel while it runs. A cancelled
+  // request must not report a cache hit, start the adapter, or store anything.
+  throwIfAborted(input.signal);
   const cacheable = signature !== null && mode === 'local-static';
 
   const buildContext = (elapsedMs: number, cacheHit: boolean, diagnostics: ExecutionContext['diagnostics']): ExecutionContext<K> => ({
@@ -145,10 +199,14 @@ export async function executeEngine<K extends ToolId>(
   if (cacheable) {
     const hit = completed.get(cacheKey);
     if (hit) {
-      const result = hit.result as EngineResult<ToolOutput<K>>;
+      throwIfAborted(input.signal);
+      touch(cacheKey);
+      const result = cloneResult(hit.result as EngineResult<ToolOutput<K>>);
       const diagnostics = normalizeDiagnostics(result.diagnostics);
       return {
         ...result,
+        cacheKey,
+        diagnostics,
         context: buildContext(Math.round(performance.now() - started), true, diagnostics),
       };
     }
@@ -166,11 +224,11 @@ export async function executeEngine<K extends ToolId>(
 
   const sizeWarning = sourceSizeWarning(sourceBytes);
   const diagnostics = normalizeDiagnostics([...(result.diagnostics ?? []), ...(sizeWarning ? [sizeWarning] : [])]);
-  const normalized: EngineResult<ToolOutput<K>> = { ...result, diagnostics };
+  const normalized: EngineResult<ToolOutput<K>> = { ...result, cacheKey, diagnostics };
   if (cacheable) store(cacheKey, normalized as EngineResult<unknown>);
 
   return {
-    ...normalized,
+    ...cloneResult(normalized),
     context: buildContext(Math.round(performance.now() - started), false, diagnostics),
   };
 }

@@ -7,6 +7,8 @@ import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
+import { EngineDiagnostics } from '../../components/EngineDiagnostics';
+import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
 import { type PseudoDepth, type PseudoLine, type PseudoStyle, type YayoiOutput } from './adapter';
 import { runEngine } from '../../engine/core/runner';
@@ -35,6 +37,7 @@ export function YayoiTool() {
   const [activeSource, setActiveSource] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<EngineDiagnostic[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const pseudoRefs = useRef(new Map<number, HTMLDivElement>());
@@ -45,7 +48,10 @@ export function YayoiTool() {
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
+        gate.invalidate();
+        setBusy(false);
         setOutput(null);
+        setDiagnostics([]);
         setError(null);
         return;
       }
@@ -62,11 +68,13 @@ export function YayoiTool() {
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
+          setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
           setOutput(null);
+          setDiagnostics([]);
           setError(errorMessage(cause, '擬似コードを生成できませんでした。'));
         })
         .finally(() => {
@@ -251,6 +259,7 @@ export function YayoiTool() {
         >
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
+        <EngineDiagnostics diagnostics={diagnostics} />
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (

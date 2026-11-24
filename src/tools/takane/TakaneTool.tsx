@@ -7,6 +7,8 @@ import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
+import { EngineDiagnostics } from '../../components/EngineDiagnostics';
+import type { EngineDiagnostic } from '../../adapters/types';
 import {
   LANGUAGE_EXTENSION,
   LANGUAGE_LABEL,
@@ -72,6 +74,7 @@ export function TakaneTool() {
   const [activeFile, setActiveFile] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<EngineDiagnostic[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [hasShiori, setHasShiori] = useState(() => Boolean(readShioriRecord()));
@@ -83,7 +86,10 @@ export function TakaneTool() {
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
+        gate.invalidate();
+        setBusy(false);
         setOutput(null);
+        setDiagnostics([]);
         setError(null);
         return;
       }
@@ -100,11 +106,13 @@ export function TakaneTool() {
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
+          setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
           setOutput(null);
+          setDiagnostics([]);
           setError(cause instanceof Error ? cause.message : 'コードを生成できませんでした。');
         })
         .finally(() => {
@@ -414,6 +422,7 @@ export function TakaneTool() {
         <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
+        <EngineDiagnostics diagnostics={diagnostics} />
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (

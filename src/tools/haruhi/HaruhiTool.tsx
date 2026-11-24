@@ -7,6 +7,8 @@ import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
+import { EngineDiagnostics } from '../../components/EngineDiagnostics';
+import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
 import { FRAMEWORK_LABEL, outputFileName, type Framework, type HaruhiOutput } from './adapter';
 import { runEngine } from '../../engine/core/runner';
@@ -41,6 +43,7 @@ export function HaruhiTool() {
   const [tab, setTab] = useState<'code' | 'checklist'>('code');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<EngineDiagnostic[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -51,7 +54,10 @@ export function HaruhiTool() {
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
+        gate.invalidate();
+        setBusy(false);
         setOutput(null);
+        setDiagnostics([]);
         setError(null);
         return;
       }
@@ -68,11 +74,13 @@ export function HaruhiTool() {
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
+          setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
           setOutput(null);
+          setDiagnostics([]);
           setError(errorMessage(cause, 'テストを生成できませんでした。'));
         })
         .finally(() => {
@@ -247,6 +255,7 @@ export function HaruhiTool() {
         >
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
+        <EngineDiagnostics diagnostics={diagnostics} />
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (

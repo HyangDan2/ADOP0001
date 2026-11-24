@@ -21,7 +21,7 @@ export class MockHybridProvider implements HybridProvider {
 
   async complete(request: HybridProviderRequest): Promise<HybridProviderResponse> {
     this.requests.push({ ...request, messages: request.messages.map((message) => ({ ...message })) });
-    if (request.signal?.aborted) throw new HybridResponseError('timeout', 'The mock request was aborted.');
+    if (request.signal?.aborted) throw new HybridResponseError('aborted', 'The mock request was aborted.');
     const text = this.responses.shift();
     if (text === undefined) throw new HybridResponseError('provider', 'The mock has no queued response.');
     return { text, usage: { inputTokens: 0, outputTokens: 0 } };

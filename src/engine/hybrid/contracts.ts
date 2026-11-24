@@ -24,6 +24,7 @@ export type HybridFailure =
   | 'no-consent'
   | 'no-key'
   | 'invalid-settings'
+  | 'aborted'
   | 'timeout'
   | 'offline'
   | 'schema'
@@ -41,6 +42,19 @@ export function validateHybridSettings(settings: HybridSettings): SettingsCheck 
   const localhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
   if (url.protocol !== 'https:' && !(localhost && url.protocol === 'http:')) {
     return { ok: false, failure: 'invalid-settings', message: 'Base URL は https で指定してください（localhost を除く）。' };
+  }
+  if (url.username || url.password) {
+    return {
+      ok: false,
+      failure: 'invalid-settings',
+      message: 'Base URL に認証情報を含めないでください。API キーは専用の欄で指定します。',
+    };
+  }
+  if (url.hash) {
+    return { ok: false, failure: 'invalid-settings', message: 'Base URL に #fragment を含めることはできません。' };
+  }
+  if (/\s/.test(settings.baseUrl.trim())) {
+    return { ok: false, failure: 'invalid-settings', message: 'Base URL に空白を含めることはできません。' };
   }
   if (!settings.model.trim()) {
     return { ok: false, failure: 'invalid-settings', message: 'モデル名を指定してください。' };
@@ -112,14 +126,29 @@ export interface LocalFallback<T> {
   message: string;
 }
 
-/** Never throw a remote failure into the UI: fall back and say why. */
+function isAbortLike(cause: unknown): boolean {
+  return (
+    (cause instanceof Error && cause.name === 'AbortError') ||
+    (typeof DOMException !== 'undefined' && cause instanceof DOMException && cause.name === 'AbortError')
+  );
+}
+
+/**
+ * Fall back to the local result for provider/schema failures. A user cancel is
+ * different: no local computation is started and the abort is surfaced with
+ * its own failure code (FIX-014).
+ */
 export async function withLocalFallback<T>(
   local: () => Promise<T>,
   remote: () => Promise<T>,
+  options: { signal?: AbortSignal } = {},
 ): Promise<{ value: T; fallback: LocalFallback<T>['failure'] | null }> {
   try {
     return { value: await remote(), fallback: null };
   } catch (cause) {
+    if (options.signal?.aborted || isAbortLike(cause)) {
+      throw new HybridResponseError('aborted', 'The hybrid request was cancelled by the user.');
+    }
     const failure = cause instanceof HybridResponseError ? cause.failure : 'provider';
     return { value: await local(), fallback: failure };
   }

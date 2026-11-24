@@ -5,10 +5,11 @@ export {
   clearKotohaDocument,
   loadDocumentDraft,
   saveDocumentDraft,
+  saveDocumentSnapshot,
   storageLabel,
   KOTOHA_DRAFT_VERSION,
 } from './store';
-export type { KotohaDraft, KotohaStorage } from './store';
+export type { KotohaDraft, KotohaSaveResult, KotohaStorage } from './store';
 export {
   inchToTwips,
   twipsToInch,

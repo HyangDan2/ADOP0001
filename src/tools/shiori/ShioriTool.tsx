@@ -7,6 +7,8 @@ import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
+import { EngineDiagnostics } from '../../components/EngineDiagnostics';
+import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
 import { ALL_SECTIONS, type ShioriOutput, type SpecSection } from './adapter';
 import { runEngine } from '../../engine/core/runner';
@@ -37,6 +39,7 @@ export function ShioriTool() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [diagnostics, setDiagnostics] = useState<EngineDiagnostic[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
@@ -44,7 +47,12 @@ export function ShioriTool() {
 
   const run = async (text: string, name: string, activeSections: SpecSection[]) => {
     if (!text.trim()) {
+      // The debounce may replace a run that was still busy; the empty input is
+      // the newest state, so it owns the release of the busy flag (FIX-006).
+      gate.invalidate();
+      setBusy(false);
       setOutput(null);
+      setDiagnostics([]);
       setError(null);
       return;
     }
@@ -61,6 +69,7 @@ export function ShioriTool() {
       });
       if (!request.isCurrent()) return;
       setOutput(result.output);
+      setDiagnostics(result.diagnostics);
       setElapsed(result.elapsedMs);
       try {
         localStorage.setItem(
@@ -73,6 +82,7 @@ export function ShioriTool() {
     } catch (cause) {
       if (!request.isCurrent()) return;
       setOutput(null);
+      setDiagnostics([]);
       setError(errorMessage(cause, '仕様書を生成できませんでした。'));
     } finally {
       if (request.isCurrent()) setBusy(false);
@@ -369,6 +379,7 @@ export function ShioriTool() {
         <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
+        <EngineDiagnostics diagnostics={diagnostics} />
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (

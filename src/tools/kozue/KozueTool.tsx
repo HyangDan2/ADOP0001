@@ -7,6 +7,8 @@ import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
+import { EngineDiagnostics } from '../../components/EngineDiagnostics';
+import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
 import { kindLabel, type Direction, type KozueOutput, type UmlKind } from './adapter';
 import { runEngine } from '../../engine/core/runner';
@@ -40,6 +42,7 @@ export function KozueTool() {
   const [svg, setSvg] = useState<string>('');
   const [renderError, setRenderError] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<EngineDiagnostic[]>([]);
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [busy, setBusy] = useState(false);
@@ -58,7 +61,10 @@ export function KozueTool() {
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
+        gate.invalidate();
+        setBusy(false);
         setOutput(null);
+        setDiagnostics([]);
         setAnalysisError(null);
         return;
       }
@@ -75,12 +81,14 @@ export function KozueTool() {
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
+          setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
           setOutput(null);
           setSvg('');
+          setDiagnostics([]);
           setAnalysisError(errorMessage(cause, '図を解析できませんでした。'));
         })
         .finally(() => {
@@ -369,6 +377,7 @@ export function KozueTool() {
                 ? '処理中'
                 : 'エラーなし'}
         </span>
+        <EngineDiagnostics diagnostics={diagnostics} />
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && svg ? (

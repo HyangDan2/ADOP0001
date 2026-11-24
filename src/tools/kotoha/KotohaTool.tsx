@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { EmptyHint, LineEditor, ToolPane } from '../../components/ui';
 import { ExportModal } from '../../components/ExportModal';
+import { EngineDiagnostics } from '../../components/EngineDiagnostics';
 import { DOCX_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { copyText, downloadBlob } from '../../lib/util';
@@ -12,15 +13,22 @@ import {
   kotohaErrorCode,
   loadDocumentDraft,
   loadLatestBundle,
-  saveBundle,
   saveDocumentDraft,
+  saveDocumentSnapshot,
   clearKotohaDocument,
   storageLabel,
   twipsToInch,
   KOTOHA_LIMITS,
 } from './index';
 import { runEngine } from '../../engine/core/runner';
+import type { EngineDiagnostic } from '../../adapters/types';
 const PRESET_KEY = 'adop0001.kotoha.presets';
+
+/** A document with warnings waits here, together with the request that produced it. */
+interface PendingApproval {
+  output: KotohaOutput;
+  request?: RequestHandle;
+}
 
 /** The store reports `indexeddb` / `memory`; the UI shows a Japanese label. */
 function storageName(storage: 'indexeddb' | 'memory'): string {
@@ -82,8 +90,9 @@ export function KotohaTool() {
   const [presetName, setPresetName] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [exportOpen, setExportOpen] = useState(false);
-  const [pending, setPending] = useState<KotohaOutput | null>(null);
+  const [pending, setPending] = useState<PendingApproval | null>(null);
   const [restored, setRestored] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<EngineDiagnostic[]>([]);
   /**
    * The markdown and attributes the current `output.docx` was built from
    * (UI-001). Exporting after an edit would otherwise write an older document
@@ -92,6 +101,8 @@ export function KotohaTool() {
   const [docxSource, setDocxSource] = useState<{ markdown: string; attributes: string } | null>(null);
   /** Guards the async draft restore: a user action always wins over a late load. */
   const userTouched = useRef(false);
+  /** A reset or adoption invalidates autosaves scheduled for an older document. */
+  const documentEpoch = useRef(0);
   /** FIX-003: a newer file/render/reset supersedes the run in flight. */
   const gate = useRequestGate();
 
@@ -112,12 +123,15 @@ export function KotohaTool() {
   // The draft keeps the edited Markdown, the inspector attributes and the bundle together.
   useEffect(() => {
     if (!document) return;
+    const epoch = documentEpoch.current;
     const timer = window.setTimeout(() => {
+      if (epoch !== documentEpoch.current) return;
       void saveDocumentDraft({
         markdown,
         attributes,
         bundle: withAttributes(document.bundle, attributes),
       }).then((saved) => {
+        if (epoch !== documentEpoch.current || saved.superseded) return;
         if (saved.storage === 'memory') setStorage('下書きを保存できませんでした（メモリのみ）');
       });
     }, 700);
@@ -130,6 +144,8 @@ export function KotohaTool() {
   };
 
   const adopt = async (outputValue: KotohaOutput, request?: RequestHandle) => {
+    if (request && !request.isCurrent()) return;
+    documentEpoch.current += 1;
     setDocument({ bundle: outputValue.bundle, markdown: outputValue.markdown });
     setMarkdown(outputValue.markdown);
     setAttributes(outputValue.bundle.attributes);
@@ -142,21 +158,26 @@ export function KotohaTool() {
     );
     setPending(null);
     setRestored(null);
-    const saved = await saveBundle(outputValue.bundle);
-    if (request && !request.isCurrent()) return;
-    await saveDocumentDraft({
+    // Latest bundle and working draft commit together, so a reload can never
+    // find the new bundle next to the previous document's Markdown (FIX-008).
+    const saved = await saveDocumentSnapshot({
       markdown: outputValue.markdown,
       attributes: outputValue.bundle.attributes,
       bundle: outputValue.bundle,
     });
     if (request && !request.isCurrent()) return;
-    setStorage(`スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString('ja-JP')}`);
+    if (saved.superseded) return;
+    setStorage(
+      saved.storage === 'indexeddb'
+        ? `スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString('ja-JP')}`
+        : '下書きを保存できませんでした（メモリのみ）',
+    );
   };
 
   /** A document with structural limits is shown to the user *before* it replaces the current work. */
   const offer = async (outputValue: KotohaOutput, request?: RequestHandle) => {
     if (outputValue.warnings.length) {
-      setPending(outputValue);
+      setPending({ output: outputValue, request });
       return;
     }
     await adopt(outputValue, request);
@@ -165,8 +186,10 @@ export function KotohaTool() {
   const runSample = async () => {
     const request = gate.start();
     userTouched.current = true;
+    setPending(null);
     setBusy(true);
     setError(null);
+    setDiagnostics([]);
     try {
       const result = await runEngine('kotoha', {
         sourceName: 'kotoha-sample.docx',
@@ -178,6 +201,7 @@ export function KotohaTool() {
       if (!request.isCurrent()) return;
       await adopt(result.output, request);
       if (!request.isCurrent()) return;
+      setDiagnostics(result.diagnostics);
       setElapsed(result.elapsedMs);
       showToast('サンプル .docx を生成して分解しました');
     } catch (cause) {
@@ -191,8 +215,14 @@ export function KotohaTool() {
   const loadDocx = async (file: File) => {
     const request = gate.start();
     userTouched.current = true;
+    setPending(null);
     setError(null);
+    setDiagnostics([]);
     if (file.size > KOTOHA_LIMITS.maxFileBytes) {
+      // This upload superseded any earlier run; it owns the busy release even
+      // though it stops before starting a new engine request (FIX-006).
+      gate.invalidate();
+      setBusy(false);
       setError(ERROR_LABEL['file-too-large']);
       return;
     }
@@ -210,6 +240,7 @@ export function KotohaTool() {
       if (!request.isCurrent()) return;
       await offer(result.output, request);
       if (!request.isCurrent()) return;
+      setDiagnostics(result.diagnostics);
       setElapsed(result.elapsedMs);
       showToast(`${file.name} を分解しました`);
     } catch (cause) {
@@ -224,7 +255,10 @@ export function KotohaTool() {
   const loadBundleFile = async (file: File) => {
     const request = gate.start();
     userTouched.current = true;
+    setPending(null);
+    setBusy(true);
     setError(null);
+    setDiagnostics([]);
     try {
       const parsed = parseBundleExport(await file.text());
       if (!request.isCurrent()) return;
@@ -241,40 +275,56 @@ export function KotohaTool() {
     } catch (cause) {
       if (!request.isCurrent()) return;
       setError(explainError(cause, 'このファイルは琴葉のバンドルではありません。'));
+    } finally {
+      if (request.isCurrent()) setBusy(false);
     }
   };
 
   const rebuild = async (download = true) => {
     if (!document || !attributes) return;
+    // The run is bound to this snapshot. Any Markdown, inspector or preset edit
+    // aborts it, so a late result can never replace the newer document (FIX-005).
+    const runMarkdown = markdown;
+    const runAttributes = attributes;
+    const runBundle = document.bundle;
     const request = gate.start();
+    setPending(null);
     setBusy(true);
     setError(null);
     try {
       const result = await runEngine('kotoha', {
-        sourceName: document.bundle.fileName,
-        source: markdown,
+        sourceName: runBundle.fileName,
+        source: runMarkdown,
         options: {
           action: 'rebuild',
-          markdown,
-          bundle: document.bundle,
-          attributes,
+          markdown: runMarkdown,
+          bundle: runBundle,
+          attributes: runAttributes,
         },
         mode: 'local-static',
         signal: request.signal,
       });
       if (!request.isCurrent()) return;
-      setOutput(result.output);
-      setElapsed(result.elapsedMs);
       // A rebuild only counts as a success when it produced a document; otherwise
       // the UI must say so instead of showing a success toast (UI-001).
       if (!result.output.docx) {
         throw new Error('再構築した .docx を作成できませんでした。');
       }
+      documentEpoch.current += 1;
+      setOutput(result.output);
+      setElapsed(result.elapsedMs);
+      setDiagnostics(result.diagnostics);
       // The rebuilt bundle carries the same attributes that were applied (KOT-003).
-      setDocument({ bundle: result.output.bundle, markdown });
-      setDocxSource({ markdown, attributes: JSON.stringify(result.output.bundle.attributes) });
-      await saveDocumentDraft({ markdown, attributes: result.output.bundle.attributes, bundle: result.output.bundle });
+      setDocument({ bundle: result.output.bundle, markdown: runMarkdown });
+      setDocxSource({ markdown: runMarkdown, attributes: JSON.stringify(result.output.bundle.attributes) });
+      const saved = await saveDocumentSnapshot({
+        markdown: runMarkdown,
+        attributes: result.output.bundle.attributes,
+        bundle: result.output.bundle,
+      });
       if (!request.isCurrent()) return;
+      if (saved.superseded) return;
+      if (saved.storage === 'memory') setStorage('下書きを保存できませんでした（メモリのみ）');
       if (download) {
         downloadBlob(
           result.output.fileName,
@@ -315,6 +365,7 @@ export function KotohaTool() {
   };
 
   const resetDocument = async () => {
+    documentEpoch.current += 1;
     gate.invalidate();
     setBusy(false);
     setDocument(null);
@@ -325,9 +376,23 @@ export function KotohaTool() {
     setRestored(null);
     setDocxSource(null);
     setError(null);
+    setDiagnostics([]);
     setStorage('未保存');
     await clearKotohaDocument();
     showToast('この文書と下書きを破棄しました');
+  };
+
+  /** Any human edit supersedes an in-flight rebuild; adoption writes bypass this. */
+  const beginEdit = () => {
+    gate.invalidate();
+    setBusy(false);
+    setOutput(null);
+    setDocxSource(null);
+  };
+
+  const changeMarkdown = (value: string) => {
+    beginEdit();
+    setMarkdown(value);
   };
 
   const savePreset = () => {
@@ -349,6 +414,7 @@ export function KotohaTool() {
   const attributesReady = Boolean(attributes);
 
   const update = (patch: Partial<BundleAttributes>) => {
+    beginEdit();
     setAttributes((current) => (current ? { ...current, ...patch } : current));
   };
 
@@ -460,7 +526,7 @@ export function KotohaTool() {
                   {warningSummary(warnings)} — インスペクタの「制限事項」で確認できます。
                 </div>
               ) : null}
-              <LineEditor value={markdown} onChange={setMarkdown} ariaLabel="Markdown 文書" />
+              <LineEditor value={markdown} onChange={changeMarkdown} ariaLabel="Markdown 文書" />
             </div>
           )}
         </ToolPane>
@@ -631,7 +697,10 @@ export function KotohaTool() {
                       defaultValue=""
                       onChange={(event) => {
                         const found = presets.find((preset) => preset.name === event.target.value);
-                        if (found) setAttributes(found.attributes);
+                        if (found) {
+                          beginEdit();
+                          setAttributes(found.attributes);
+                        }
                       }}
                     >
                       <option value="">プリセットを読み込む…</option>
@@ -730,6 +799,7 @@ export function KotohaTool() {
         <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
+        <EngineDiagnostics diagnostics={diagnostics} />
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
 
@@ -741,7 +811,7 @@ export function KotohaTool() {
               <p style={{ color: 'var(--muted)', fontSize: 12.5 }}>
                 Markdown で正確に表せない要素があります。これらは削除せず原本の OOXML のまま保持し、再構築時にその位置へ戻します（編集はできません）。
               </p>
-              {pending.warnings.map((warning) => (
+              {pending.output.warnings.map((warning) => (
                 <div key={warning.code} className="check-item">
                   <span className="check-mark">·</span>
                   <span>
@@ -755,7 +825,17 @@ export function KotohaTool() {
               <button type="button" className="btn" onClick={() => { setPending(null); showToast('読み込みを中止しました（現在の文書はそのままです）'); }} data-testid="kotoha-loss-cancel">
                 読み込まない
               </button>
-              <button type="button" className="btn btn-primary" onClick={() => void adopt(pending)} data-testid="kotoha-loss-continue">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  const approval = pending;
+                  setPending(null);
+                  if (approval.request && !approval.request.isCurrent()) return;
+                  void adopt(approval.output, approval.request);
+                }}
+                data-testid="kotoha-loss-continue"
+              >
                 このまま読み込む
               </button>
             </div>

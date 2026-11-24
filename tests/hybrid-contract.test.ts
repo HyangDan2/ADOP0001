@@ -48,6 +48,19 @@ describe('hybrid settings gate (ENG-005)', () => {
       if (!result.ok) expect(result.failure, failure).toBe(failure);
     }
   });
+
+  it('rejects credentials, a fragment or whitespace in the Base URL (FIX-014)', () => {
+    const cases = [
+      'https://user:secret@api.example.invalid/v1',
+      'https://api.example.invalid/v1#fragment',
+      'https://api.example.invalid/v 1',
+    ];
+    for (const baseUrl of cases) {
+      const result = validateHybridSettings({ ...SETTINGS, baseUrl });
+      expect(result.ok, baseUrl).toBe(false);
+      if (!result.ok) expect(result.failure, baseUrl).toBe('invalid-settings');
+    }
+  });
 });
 
 describe('mock provider contract (ENG-005)', () => {
@@ -85,6 +98,15 @@ describe('mock provider contract (ENG-005)', () => {
       failure: 'provider',
     });
   });
+
+  it('reports an aborted request as aborted, not as a provider failure (FIX-014)', async () => {
+    const provider = new MockHybridProvider();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      provider.complete({ settings: SETTINGS, messages: [], budget: BUDGET, signal: controller.signal }),
+    ).rejects.toMatchObject({ failure: 'aborted' });
+  });
 });
 
 describe('structured output and local fallback (ENG-005)', () => {
@@ -110,5 +132,48 @@ describe('structured output and local fallback (ENG-005)', () => {
   it('uses the remote result when it succeeds', async () => {
     const result = await withLocalFallback(async () => 'local', async () => 'remote');
     expect(result).toEqual({ value: 'remote', fallback: null });
+  });
+
+  it('treats a provider failure as a fallback, not as a cancel', async () => {
+    const result = await withLocalFallback(
+      async () => 'local',
+      async () => {
+        throw new Error('network down');
+      },
+    );
+    expect(result).toEqual({ value: 'local', fallback: 'provider' });
+  });
+
+  it('surfaces a user cancel without starting the local fallback (FIX-014)', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const local = vi.fn(async () => 'local');
+    const rejection = withLocalFallback(
+      local,
+      async () => {
+        throw new DOMException('cancelled', 'AbortError');
+      },
+      { signal: controller.signal },
+    );
+    await expect(rejection).rejects.toMatchObject({ name: 'HybridResponseError', failure: 'aborted' });
+    expect(local).not.toHaveBeenCalled();
+  });
+
+  it('recognizes an AbortError even without an explicit signal', async () => {
+    const local = vi.fn(async () => 'local');
+    await expect(
+      withLocalFallback(local, async () => {
+        throw new Error('aborted');
+      }),
+    ).resolves.toEqual({ value: 'local', fallback: 'provider' });
+
+    const abortError = new Error('The operation was aborted.');
+    abortError.name = 'AbortError';
+    await expect(
+      withLocalFallback(local, async () => {
+        throw abortError;
+      }),
+    ).rejects.toMatchObject({ failure: 'aborted' });
+    expect(local).toHaveBeenCalledTimes(1);
   });
 });
