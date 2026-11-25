@@ -21,6 +21,7 @@ import {
 import { TAKANE_SAMPLES } from './samples';
 import { runEngine } from '../../engine/core/runner';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
+import { HybridAssist } from '../../components/HybridAssist';
 const SHIORI_KEY = 'adop0001.shiori.latest';
 
 const LANGUAGES: { value: TakaneLanguage; label: string }[] = [
@@ -443,6 +444,18 @@ export function TakaneTool() {
           </div>
         </ToolPane>
       </div>
+      <HybridAssist
+        toolId="takane"
+        source={source}
+        sourceName={fileName}
+        options={{ language }}
+        localOutput={output}
+        targetLanguage={language}
+        onApplied={(next, note) => {
+          setOutput(next);
+          showToast(note);
+        }}
+      />
       <div className="statusbar">
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>

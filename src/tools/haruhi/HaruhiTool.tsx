@@ -15,6 +15,7 @@ import { SAMPLE_BY_EXT } from '../samples';
 import { FRAMEWORK_LABEL, outputFileName, type Framework, type HaruhiOutput } from './adapter';
 import { runEngine } from '../../engine/core/runner';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
+import { HybridAssist } from '../../components/HybridAssist';
 
 /** Japanese explanation for a branch that no running test reaches. */
 function branchReasonLabel(item: { reasonCode?: string; reason?: string }): string {
@@ -271,6 +272,18 @@ export function HaruhiTool() {
           </div>
         </ToolPane>
       </div>
+      <HybridAssist
+        toolId="haruhi"
+        source={source}
+        sourceName={fileName}
+        options={{ framework }}
+        localOutput={output}
+        targetLanguage={framework}
+        onApplied={(next, note) => {
+          setOutput(next);
+          showToast(note);
+        }}
+      />
       <div className="statusbar">
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>

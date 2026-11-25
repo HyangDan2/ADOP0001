@@ -15,6 +15,7 @@ import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
 import { ALL_SECTIONS, type ShioriOutput, type SpecSection } from './adapter';
 import { runEngine } from '../../engine/core/runner';
+import { HybridAssist } from '../../components/HybridAssist';
 
 const SECTION_LABEL: Record<SpecSection, string> = {
   overview: '概要',
@@ -401,6 +402,17 @@ export function ShioriTool() {
           </div>
         </ToolPane>
       </div>
+      <HybridAssist
+        toolId="shiori"
+        source={source}
+        sourceName={fileName}
+        options={{ sections, includePrivate: true }}
+        localOutput={output}
+        onApplied={(next, note) => {
+          setOutput(next);
+          showToast(note);
+        }}
+      />
       <div className="statusbar">
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>

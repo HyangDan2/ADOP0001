@@ -24,6 +24,7 @@ import {
 } from './index';
 import { runEngine } from '../../engine/core/runner';
 import type { EngineDiagnostic } from '../../adapters/types';
+import { HybridAssist } from '../../components/HybridAssist';
 const PRESET_KEY = 'adop0001.kotoha.presets';
 
 /** A document with warnings waits here, together with the request that produced it. */
@@ -822,6 +823,18 @@ export function KotohaTool() {
           </div>
         </ToolPane>
       </div>
+      <HybridAssist
+        toolId="kotoha"
+        source={markdown}
+        sourceName={output ? output.fileName.replace(/\.docx$/i, '.md') : 'document.md'}
+        options={{ action: 'decompose' }}
+        localOutput={output}
+        onApplied={(next, note) => {
+          setMarkdown(next.markdown);
+          setOutput(next);
+          showToast(note);
+        }}
+      />
       <div className="statusbar">
         <span className="dot" /> <span>OOXML エンジン（JSZip）</span>
         <span>{busy ? '処理中' : '待機中'}</span>

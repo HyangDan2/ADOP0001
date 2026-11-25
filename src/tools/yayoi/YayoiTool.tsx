@@ -15,6 +15,7 @@ import { SAMPLE_BY_EXT } from '../samples';
 import { type PseudoDepth, type PseudoLine, type PseudoStyle, type YayoiOutput } from './adapter';
 import { runEngine } from '../../engine/core/runner';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
+import { HybridAssist } from '../../components/HybridAssist';
 
 const STYLES: { value: PseudoStyle; label: string }[] = [
   { value: 'standard', label: '標準構造化' },
@@ -276,6 +277,17 @@ export function YayoiTool() {
           </div>
         </ToolPane>
       </div>
+      <HybridAssist
+        toolId="yayoi"
+        source={source}
+        sourceName={fileName}
+        options={{ style, depth }}
+        localOutput={output}
+        onApplied={(next, note) => {
+          setOutput(next);
+          showToast(note);
+        }}
+      />
       <div className="statusbar">
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>

@@ -16,6 +16,7 @@ import { kindLabel, type Direction, type KozueOutput, type UmlKind } from './ada
 import { runEngine } from '../../engine/core/runner';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { loadMermaid, type MermaidTheme } from './mermaid';
+import { HybridAssist } from '../../components/HybridAssist';
 
 const KINDS: UmlKind[] = ['sequence', 'class', 'state', 'activity', 'component'];
 
@@ -394,6 +395,17 @@ export function KozueTool() {
           </div>
         </ToolPane>
       </div>
+      <HybridAssist
+        toolId="kozue"
+        source={source}
+        sourceName={fileName}
+        options={{ kind, direction }}
+        localOutput={output}
+        onApplied={(next, note) => {
+          setOutput(next);
+          showToast(note);
+        }}
+      />
       <div className="statusbar">
         <span className="dot" /> <span>Mermaid レンダラー</span>
         <span>{Math.round(scale * 100)}% ズーム</span>
