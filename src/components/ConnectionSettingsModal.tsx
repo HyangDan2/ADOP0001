@@ -298,7 +298,7 @@ export function ConnectionSettingsModal({ onClose, onSaved }: Props) {
         ) : null}
 
         <div className="connection-actions">
-          <button type="button" className="btn btn-ghost" onClick={onClose}>
+          <button type="button" className="btn btn-ghost" onClick={onClose} data-testid="connection-close">
             閉じる
           </button>
           <button type="button" className="btn btn-primary" onClick={save} data-testid="connection-save">
