@@ -18,6 +18,12 @@ export interface HybridSettings {
   /** Explicit opt-in. False means every run stays local. */
   consent: boolean;
   promptStrategy?: PromptStrategy;
+  /** Sampling temperature (Phase 5C connection setting, default 0.2). */
+  temperature?: number;
+  /** Whole-request deadline in milliseconds (default 120 000). */
+  requestTimeoutMs?: number;
+  /** Upper bound for the answer the provider may return. */
+  maxOutputTokens?: number;
 }
 
 export type HybridFailure =
@@ -83,6 +89,8 @@ export interface HybridProviderRequest {
 export interface HybridProviderResponse {
   text: string;
   usage?: { inputTokens: number; outputTokens: number };
+  /** Provider stop reason; `length` means the answer was cut off by `max_tokens`. */
+  finishReason?: string | null;
 }
 
 export interface HybridProvider {
