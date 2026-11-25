@@ -13,6 +13,7 @@ import type { ShioriOutput } from '../../../tools/shiori/adapter';
 import { escapeHtml } from '../../../lib/util';
 import type { AiProposal, EvidenceFacts } from '../mergePolicy';
 import { envelopeSchemaFor } from '../mergePolicy';
+import { sanitizeAiHtml } from '../sanitize';
 import {
   addSymbol,
   markdownAppendix,
@@ -111,6 +112,8 @@ export const shioriSpec: ToolHybridSpec<'shiori'> = {
     const html = output.html.includes('</main>')
       ? output.html.replace('</main>', `${htmlBlock}\n</main>`)
       : `${output.html}\n${htmlBlock}`;
-    return { ...output, markdown, html };
+    // WO-12: every field above is escaped, and the assembled block is sanitized
+    // once more so no AI-derived markup can run or fetch in the HTML artifact.
+    return { ...output, markdown, html: sanitizeAiHtml(html) };
   },
 };

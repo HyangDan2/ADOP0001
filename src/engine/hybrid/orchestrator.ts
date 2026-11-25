@@ -23,6 +23,7 @@
  */
 
 import type { ToolId } from '../../adapters/types';
+import type { EngineMode } from '../../lib/engineMode';
 import type { HybridFailure, HybridProvider, HybridProviderRequest } from './contracts';
 import type { EngineRunResult, ToolOptions, ToolOutput } from '../core/contracts';
 import { runEngine } from '../core/runner';
@@ -44,6 +45,8 @@ import {
   type HybridUsage,
 } from './streamEngine';
 import { toolHybridSpec } from './tools';
+import { buildTelemetry, type HybridTelemetry } from './telemetry';
+import { describeActiveContent, findActiveContent } from './sanitize';
 
 export type HybridProvenance = 'local-static' | 'hybrid-ai' | 'local-fallback';
 
@@ -64,6 +67,12 @@ export interface HybridPassInput<K extends ToolId> {
   localOutput?: ToolOutput<K>;
   settings: ConnectionSettings;
   apiKey?: string | null;
+  /**
+   * The engine mode the operator selected (WO-11). `'local'` ends the pass at the
+   * local result before a prompt is built, so Mode A cannot transmit even if a
+   * screen calls this function by mistake.
+   */
+  engineMode?: EngineMode;
   /** The user's approval of the exact preview. `false` keeps the local result. */
   approve(preview: PreflightPreview): boolean | Promise<boolean>;
   /** A preview the caller already showed; the orchestrator sends exactly this. */
@@ -105,6 +114,12 @@ export interface HybridPassOutcome<K extends ToolId> {
   usage: HybridUsage | null;
   ttftMs: number | null;
   elapsedMs: number;
+  /** Stable id for this run, shown in the telemetry panel. */
+  requestId: string;
+  finishReason: string | null;
+  redactionCount: number;
+  /** Token/time/request numbers for the in-tab panel; never persisted, never sent. */
+  telemetry: HybridTelemetry;
   aiText: string | null;
   /** False when the caller moved on while this pass was running (stale). */
   applied: boolean;
@@ -157,33 +172,71 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
   const spec = toolHybridSpec(input.toolId);
   const clock = input.now ?? (() => Date.now());
   const startedAt = clock();
+  const engineMode: EngineMode = input.engineMode ?? 'hybrid';
   const session = createHybridSession({ signal: input.signal, now: input.now, onStatus: input.onStatus });
   input.onSession?.(session);
   session.enter('preflight');
 
   const stale = () => Boolean(input.isCurrent && !input.isCurrent());
+  /** Known once the preview exists; the telemetry reads it for host/model/redactions. */
+  let plan: HybridRequestPlan | null = null;
+  let gatewayFinishReason: string | null = null;
 
   const finish = (
     fields: Partial<HybridPassOutcome<K>> & Pick<HybridPassOutcome<K>, 'local' | 'provenance'>,
-  ): HybridPassOutcome<K> => ({
-    stage: session.stage(),
-    status: session.status(),
-    output: fields.local.output,
-    plan: null,
-    preview: null,
-    proposals: [],
-    rejected: [],
-    conflicts: [],
-    summary: '',
-    failure: null,
-    reason: null,
-    usage: session.usage(),
-    ttftMs: session.status().ttftMs,
-    elapsedMs: Math.max(0, clock() - startedAt),
-    aiText: null,
-    applied: true,
-    ...fields,
-  });
+  ): HybridPassOutcome<K> => {
+    const provenance = fields.provenance;
+    const elapsedMs = Math.max(0, clock() - startedAt);
+    const status = session.status();
+    const usage = fields.usage ?? session.usage();
+    const aiText = fields.aiText ?? null;
+    const proposals = fields.proposals ?? [];
+    const rejected = fields.rejected ?? [];
+    const reason = fields.reason ?? null;
+    const telemetry = buildTelemetry({
+      requestId: session.requestId,
+      toolId: input.toolId,
+      engineMode,
+      providerMode: provenance,
+      modelId: plan ? input.settings.model : null,
+      destinationHost: plan?.preview.destination?.host ?? null,
+      stage: session.stage(),
+      elapsedMs,
+      ttftMs: status.ttftMs,
+      usage,
+      estimatedInputTokens: plan?.preview.estimatedInputTokens ?? null,
+      outputChars: (aiText ?? session.text()).length,
+      finishReason: gatewayFinishReason,
+      redactionCount: plan?.preview.redaction.total ?? 0,
+      retryCount: 0,
+      fallbackReason: reason,
+      proposalCount: proposals.length,
+      rejectedCount: rejected.length,
+    });
+    return {
+      stage: session.stage(),
+      status,
+      output: fields.local.output,
+      plan,
+      preview: null,
+      proposals: [],
+      rejected: [],
+      conflicts: [],
+      summary: '',
+      failure: null,
+      reason: null,
+      usage: session.usage(),
+      ttftMs: status.ttftMs,
+      elapsedMs,
+      requestId: session.requestId,
+      finishReason: gatewayFinishReason,
+      redactionCount: plan?.preview.redaction.total ?? 0,
+      telemetry,
+      aiText: null,
+      applied: true,
+      ...fields,
+    };
+  };
 
   const cancel = (reason: string, local: EngineRunResult<K>, plan: HybridRequestPlan | null, extra: Partial<HybridPassOutcome<K>> = {}) => {
     if (!TERMINAL_STAGES.has(session.stage())) session.enter('cancelled', reason);
@@ -215,8 +268,15 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
     return { ...outcome, applied: false };
   }
 
+  // Mode A: the local result is the artifact. The check runs before a prompt is
+  // built, so no payload, destination or approval exists at all (WO-11).
+  if (engineMode === 'local') {
+    const reason = 'モードA（ローカル解析）が選択されています。外部への送信は行いません。';
+    session.enter('completed', reason);
+    return finish({ local, provenance: 'local-static', reason });
+  }
+
   // 2–6. Prompt, redaction, budget and the preview the user will approve.
-  let plan: HybridRequestPlan;
   try {
     plan =
       input.plan ??
@@ -318,6 +378,7 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
     }
     return fallback(error.message, error.failure, local, plan, { aiText: session.text() || null });
   }
+  gatewayFinishReason = gateway.finishReason;
 
   if (stale()) {
     session.markStale();
@@ -361,6 +422,18 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
   const rejected: RejectedProposal[] = [...merged.rejected];
   const accepted: AiProposal[] = [];
   for (const proposal of merged.proposals) {
+    // WO-12: prose that could run or fetch when rendered is refused before it
+    // ever reaches an artifact or the screen's proposal list.
+    const findings = findActiveContent([proposal.title, proposal.detail, proposal.rationale ?? ''].join('\n'));
+    if (findings.length) {
+      rejected.push({
+        id: proposal.id,
+        title: proposal.title,
+        reason: 'active-content',
+        message: describeActiveContent(findings),
+      });
+      continue;
+    }
     const message = spec.checkProposal?.(proposal, local.output) ?? null;
     if (message) {
       rejected.push({ id: proposal.id, title: proposal.title, reason: 'schema', message });

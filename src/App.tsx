@@ -7,6 +7,7 @@ import { WorkspacePanel } from './components/WorkspacePanel';
 import { ConnectionSettingsModal } from './components/ConnectionSettingsModal';
 import { TOOLS, toolFromHash, type ToolMeta } from './adapters/registry';
 import type { ToolId } from './adapters/types';
+import { ENGINE_MODE_STATUS, setEngineMode, useEngineMode } from './lib/engineMode';
 import { publishOpenedFile, type OpenedFile } from './lib/fileBus';
 import { activeExampleCounts } from './lib/fewShotStore';
 import { resetAllDrafts } from './lib/drafts';
@@ -53,6 +54,8 @@ export default function App() {
   const [fewShotOpen, setFewShotOpen] = useState(false);
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(initialRail);
+  /** WO-11: one engine mode for every tool, remembered as a preference. */
+  const engineMode = useEngineMode();
   const [counts, setCounts] = useState<Record<ToolId, number>>(ZERO_COUNTS);
   const [fewShotVersion, setFewShotVersion] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -390,7 +393,31 @@ export default function App() {
             </div>
             <div className="head-actions">
               <span className="badge soft">ブラウザ完結</span>
-              <span className="badge">ローカル静的解析</span>
+              <div className="mode-switch" role="group" aria-label="解析モード">
+                <button
+                  type="button"
+                  className="mode-chip"
+                  aria-pressed={engineMode === 'local'}
+                  title="Mode A · ローカル解析（完全オフライン）"
+                  onClick={() => setEngineMode('local')}
+                  data-testid="engine-mode-a"
+                >
+                  A ローカル
+                </button>
+                <button
+                  type="button"
+                  className="mode-chip"
+                  aria-pressed={engineMode === 'hybrid'}
+                  title="Mode B · AI ハイブリッド解析（送信は毎回承認）"
+                  onClick={() => setEngineMode('hybrid')}
+                  data-testid="engine-mode-b"
+                >
+                  B ハイブリッド
+                </button>
+              </div>
+              <span className="badge" data-testid="engine-mode-current" data-engine-mode={engineMode}>
+                {ENGINE_MODE_STATUS[engineMode]}
+              </span>
             </div>
           </div>
           {desktop ? (

@@ -78,7 +78,11 @@ export const EVIDENCE_FAILURE_LABEL: Record<EvidenceFailure, string> = {
 export interface RejectedProposal {
   id: string;
   title: string;
-  reason: EvidenceFailure | 'duplicate-id' | 'schema';
+  /**
+   * `active-content` is WO-12: the proposal's prose contained markup or a URL
+   * that would run or fetch if it were rendered.
+   */
+  reason: EvidenceFailure | 'duplicate-id' | 'schema' | 'active-content';
   message: string;
 }
 

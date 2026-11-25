@@ -147,14 +147,32 @@ export function parseRetryAfter(value: string | null, now = Date.now()): number 
   return undefined;
 }
 
+/**
+ * WO-12 — provider text is diagnostic, not a place for secrets.
+ *
+ * A 4xx/5xx body may echo the request (some gateways do), including the
+ * `Authorization` header or a key-shaped string. Only a short excerpt is kept,
+ * and key-shaped material and bearer values are replaced before it is stored on
+ * the error or shown to the operator.
+ */
+export function scrubProviderText(text: string): string {
+  return text
+    .replace(/\b(?:sk|pk|rk|ak|api)[-_][A-Za-z0-9_-]{6,}/g, '[redacted-key]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{6,}/gi, 'Bearer [redacted]')
+    .replace(
+      /((?:api[_-]?key|authorization|access[_-]?token|x-api-key)"?\s*[:=]\s*"?)([^"\s,}]{4,})/gi,
+      '$1[redacted]',
+    );
+}
+
 export function errorForStatus(status: number, headers?: { get(name: string): string | null }, bodyText?: string): HybridError {
   const kind = classifyStatus(status);
   const retryAfterMs = headers ? parseRetryAfter(headers.get('retry-after')) : undefined;
   return new HybridError(kind, describeStatus(status), {
     status,
     retryAfterMs,
-    // The body can echo the request; keep only a short, trimmed excerpt.
-    detail: bodyText ? bodyText.slice(0, 400) : undefined,
+    // The body can echo the request; keep only a short, scrubbed excerpt.
+    detail: bodyText ? scrubProviderText(bodyText).slice(0, 400) : undefined,
   });
 }
 
@@ -180,13 +198,13 @@ export function classifyFetchFailure(cause: unknown, timeoutMs?: number): Hybrid
   }
   if (/cors|cross-origin|opaque/i.test(message)) {
     return new HybridError('cors', 'ブラウザが応答を読み取れませんでした（CORS）。プロバイダの CORS 設定を確認してください。', {
-      detail: message,
+      detail: scrubProviderText(message),
     });
   }
   return new HybridError(
     'network',
     'ネットワークに接続できませんでした。オフラインか、プロバイダがブラウザからの接続（CORS）を許可していない可能性があります。',
-    { detail: message },
+    { detail: scrubProviderText(message) },
   );
 }
 

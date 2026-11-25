@@ -17,6 +17,7 @@
 import type { ToolId } from '../../../adapters/types';
 import type { ToolOutput } from '../../core/contracts';
 import type { AiProposal, EvidenceFacts } from '../mergePolicy';
+import { neutralizeActiveContent } from '../sanitize';
 
 export interface ToolHybridSpec<K extends ToolId> {
   readonly toolId: K;
@@ -93,9 +94,9 @@ export function markdownAppendix(title: string, proposals: AiProposal[], fileNam
     '',
   ];
   for (const proposal of proposals) {
-    lines.push(`### ${proposal.title}`, '');
-    lines.push(proposal.detail.trim(), '');
-    if (proposal.rationale?.trim()) lines.push(`> AI interpretation: ${proposal.rationale.trim()}`, '');
+    lines.push(`### ${neutralizeActiveContent(proposal.title)}`, '');
+    lines.push(neutralizeActiveContent(proposal.detail).trim(), '');
+    if (proposal.rationale?.trim()) lines.push(`> AI interpretation: ${neutralizeActiveContent(proposal.rationale).trim()}`, '');
     lines.push('Evidence:', '');
     lines.push(...evidenceBullets(proposal, fileName), '');
   }
@@ -131,10 +132,10 @@ export function commentedAppendix(title: string, proposals: AiProposal[], fileNa
   lines.push(commentLine(style, 'Applied after operator review. Not executed by ADOP0001.'));
   for (const proposal of proposals) {
     lines.push(commentLine(style, '-'.repeat(50)));
-    lines.push(commentLine(style, `${proposal.title} [${proposal.kind}]`));
+    lines.push(commentLine(style, `${neutralizeActiveContent(proposal.title)} [${proposal.kind}]`));
     for (const bullet of evidenceBullets(proposal, fileName)) lines.push(commentLine(style, bullet.replace(/^- /, '')));
-    if (proposal.rationale?.trim()) lines.push(commentLine(style, `AI interpretation: ${proposal.rationale.trim()}`));
-    for (const line of proposal.detail.split('\n')) lines.push(commentLine(style, line));
+    if (proposal.rationale?.trim()) lines.push(commentLine(style, `AI interpretation: ${neutralizeActiveContent(proposal.rationale).trim()}`));
+    for (const line of neutralizeActiveContent(proposal.detail).split('\n')) lines.push(commentLine(style, line));
     if (proposal.code?.trim()) {
       lines.push(commentLine(style, 'proposed code:'));
       for (const line of proposal.code.split('\n')) lines.push(commentLine(style, line));

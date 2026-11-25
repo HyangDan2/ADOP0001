@@ -17,6 +17,7 @@
 import type { KozueOutput, UmlKind } from '../../../tools/kozue/adapter';
 import type { AiProposal, EvidenceFacts } from '../mergePolicy';
 import { envelopeSchemaFor } from '../mergePolicy';
+import { neutralizeActiveContent } from '../sanitize';
 import { addSymbol, sourceLines, type ToolHybridSpec } from './types';
 
 export const KOZUE_PROPOSAL_KINDS = ['relation', 'sequence', 'activity', 'diagram', 'naming'] as const;
@@ -225,8 +226,8 @@ export const kozueSpec: ToolHybridSpec<'kozue'> = {
       '',
       '%% AI-assisted supplement (reviewed) — applied as comments; review before merging into the diagram.',
       ...accepted.flatMap((proposal) => [
-        `%% [${proposal.kind}] ${proposal.title}`,
-        ...proposal.detail.split('\n').map((line) => `%% ${line}`),
+        `%% [${proposal.kind}] ${neutralizeActiveContent(proposal.title)}`,
+        ...neutralizeActiveContent(proposal.detail).split('\n').map((line) => `%% ${line}`),
         ...(proposal.code?.trim() ? proposal.code.split('\n').map((line) => `%% ${line}`) : []),
         ...proposal.evidence.map(
           (entry) => `%% evidence: ${[entry.file ?? output.activeKind, entry.line ? `L${entry.line}` : '', entry.symbol ?? ''].filter(Boolean).join(' · ')}`,

@@ -28,6 +28,7 @@
 import type { HybridProvider, HybridProviderRequest, HybridProviderResponse } from './contracts';
 import { HybridError, toHybridError } from './errors';
 import type { StreamUsage } from './streamParser';
+import { newRequestId } from './telemetry';
 
 export type HybridStage =
   | 'idle'
@@ -62,7 +63,9 @@ export const STAGE_LABEL: Record<HybridStage, string> = {
 /** The stage graph. `cancelled` is reachable from every non-terminal stage. */
 const TRANSITIONS: Record<HybridStage, readonly HybridStage[]> = {
   idle: ['preflight', 'connecting', 'cancelled'],
-  preflight: ['awaiting-consent', 'local-fallback', 'cancelled'],
+  // `completed` from `preflight` is Mode A: the local result is final and no
+  // request was made (WO-11).
+  preflight: ['awaiting-consent', 'completed', 'local-fallback', 'cancelled'],
   'awaiting-consent': ['connecting', 'local-fallback', 'cancelled'],
   connecting: ['streaming', 'validating', 'local-fallback', 'cancelled'],
   streaming: ['validating', 'local-fallback', 'cancelled'],
@@ -103,6 +106,8 @@ export interface HybridSessionOptions {
   /** The caller's lifetime signal (unmount, new input, tool switch). */
   signal?: AbortSignal;
   now?: () => number;
+  /** Overrides the generated request id (tests ask for a fixed one). */
+  requestId?: string;
   /** Called on every stage change and on every accepted delta. */
   onStatus?: (status: HybridStatus) => void;
   /** Characters shown in `status().previewText`. */
@@ -110,6 +115,8 @@ export interface HybridSessionOptions {
 }
 
 export interface HybridSession {
+  /** This run's id, for the in-tab telemetry panel (WO-13). */
+  readonly requestId: string;
   /** The signal to hand to the provider: aborted by Stop, by the caller signal or by `abort()`. */
   readonly signal: AbortSignal;
   stage(): HybridStage;
@@ -140,6 +147,7 @@ export function createHybridSession(options: HybridSessionOptions = {}): HybridS
   const previewChars = options.previewChars ?? DEFAULT_PREVIEW_CHARS;
   const controller = new AbortController();
   const startedAt = clock();
+  const requestId = options.requestId ?? newRequestId(startedAt);
   let stage: HybridStage = 'idle';
   let firstTokenAt: number | null = null;
   let settledAt: number | null = null;
@@ -187,6 +195,7 @@ export function createHybridSession(options: HybridSessionOptions = {}): HybridS
   }
 
   return {
+    requestId,
     get signal() {
       return controller.signal;
     },

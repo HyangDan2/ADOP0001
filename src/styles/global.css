@@ -1183,3 +1183,50 @@ table.grid td code { font-family: var(--mono); font-size: 11.5px; color: var(--a
 .hybrid-rejected { margin: 10px 0; font-size: 11.5px; color: var(--muted); }
 .hybrid-rejected summary { cursor: pointer; color: var(--accent-2); }
 .hybrid-rejected ul { margin: 8px 0 0; padding-left: 20px; line-height: 1.65; }
+
+/* WO-11 — shared engine mode switch (Mode A local / Mode B hybrid). */
+.mode-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+.mode-chip {
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mode-chip[aria-pressed='true'] {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.mode-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* WO-13 — in-tab telemetry panel. */
+.hybrid-telemetry {
+  margin: 12px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  padding: 8px 12px;
+}
+.hybrid-telemetry summary { cursor: pointer; font-size: 12px; color: var(--accent-2); }
+.hybrid-telemetry .hybrid-preview-grid { margin-top: 6px; }
+
+/* The bar's own error line, shown when the mode refuses to open the panel. */
+.hybrid-note.err { color: var(--danger); }
+
+@media (max-width: 480px) {
+  .mode-switch { flex: 1 1 auto; justify-content: center; }
+  .mode-chip { padding: 4px 8px; font-size: 10.5px; }
+}

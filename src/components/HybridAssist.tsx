@@ -4,9 +4,12 @@ import type { ToolOptions, ToolOutput } from '../engine/core/contracts';
 import { applyAccepted, PROVENANCE_LABEL, runHybridPass, type HybridPassOutcome } from '../engine/hybrid/orchestrator';
 import { planHybridRequest, type HybridRequestPlan } from '../engine/hybrid/requestPlan';
 import { connectionSettingsStore, sessionApiKey } from '../engine/hybrid/settings';
+import { NO_PRICE_LABEL, telemetryRows } from '../engine/hybrid/telemetry';
 import type { HybridSession, HybridStatus } from '../engine/hybrid/streamEngine';
 import type { AiProposal } from '../engine/hybrid/mergePolicy';
 import { toolHybridSpec } from '../engine/hybrid/tools';
+import { ENGINE_MODE_SHORT, getEngineMode, useEngineMode } from '../lib/engineMode';
+import { assertSameArtifact } from '../lib/artifactRevision';
 import { errorMessage } from '../lib/requestGate';
 
 /**
@@ -64,7 +67,11 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
   const sessionRef = useRef<HybridSession | null>(null);
   const revision = useRef(0);
   const startedAtRef = useRef<number | null>(null);
+  /** The artifact the running request (and its proposals) were built from. */
+  const baseOutputRef = useRef<ToolOutput<K> | null>(null);
   const busy = phase === 'running';
+  const mode = useEngineMode();
+  const localOnly = mode === 'local';
 
   const spec = useMemo(() => toolHybridSpec(props.toolId), [props.toolId]);
 
@@ -92,6 +99,11 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
 
   const open = async () => {
     if (!props.localOutput) return;
+    if (localOnly) {
+      setPhase('closed');
+      setError('モードA（ローカル解析）では AI 補完を行いません。上部の解析モードを Mode B に切り替えてください。');
+      return;
+    }
     setPhase('preview');
     setPreparing(true);
     setError(null);
@@ -128,8 +140,13 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
 
   const start = async () => {
     if (!plan || !props.localOutput) return;
+    if (localOnly) {
+      setError('モードA（ローカル解析）では送信しません。');
+      return;
+    }
     const startedAt = revision.current;
     startedAtRef.current = Date.now();
+    baseOutputRef.current = props.localOutput;
     setPhase('running');
     setError(null);
     setOutcome(null);
@@ -145,6 +162,9 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
         settings,
         apiKey: sessionApiKey.get(),
         plan,
+        // Read at send time: a switch to Mode A while the preview is open must
+        // stop the request before it leaves the tab.
+        engineMode: getEngineMode(),
         approve: () => true, // the consent box below is the approval of this payload
         isCurrent: () => revision.current === startedAt,
         targetLanguage: props.targetLanguage ?? spec.targetLanguage,
@@ -173,6 +193,15 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
 
   const applySelected = () => {
     if (!outcome || !props.localOutput) return;
+    try {
+      // WO-11: the proposals were written against the artifact the request
+      // started from. If the pane has produced a different one since, applying
+      // them would describe a result the user is no longer looking at.
+      assertSameArtifact(baseOutputRef.current, props.localOutput);
+    } catch (cause) {
+      setError(errorMessage(cause, 'ローカル結果が更新されたため、この提案は適用できません。'));
+      return;
+    }
     const chosen = outcome.proposals.filter((proposal) => accepted[proposal.id]);
     if (!chosen.length) return;
     const next = applyAccepted(props.toolId, props.localOutput, chosen);
@@ -194,25 +223,38 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
 
   return (
     <>
-      <div className="hybrid-bar" data-testid="hybrid-bar">
+      <div className="hybrid-bar" data-testid="hybrid-bar" data-engine-mode={mode}>
         <div className="hybrid-bar-text">
           <b>AI 補完</b>
+          <span data-testid="hybrid-mode-label">
+            {localOnly
+              ? 'Mode A · ローカル解析（完全オフライン）: 外部へは何も送信しません。'
+              : 'Mode B · AI ハイブリッド解析: ローカル解析の事実を保ったまま、根拠つきの補完提案だけを受け取ります。'}
+          </span>
           <span>
-            {props.localOutput
-              ? 'ローカル解析の事実を保ったまま、根拠つきの補完提案だけを受け取ります。送信は毎回確認します。'
-              : 'ローカル解析が終わると使えます。'}
+            {localOnly
+              ? 'AI 補完を使うには、上部の解析モードを「B ハイブリッド」に切り替えてください。'
+              : props.localOutput
+                ? '送信は毎回確認します。ローカル結果は変更されません。'
+                : 'ローカル解析が終わると使えます。'}
           </span>
         </div>
         <button
           type="button"
           className="btn btn-sm"
           onClick={() => void open()}
-          disabled={!props.localOutput || busy}
+          disabled={!props.localOutput || busy || localOnly}
           data-testid="hybrid-open"
+          title={localOnly ? 'モードA（ローカル解析）では AI 補完を行いません。' : undefined}
         >
-          事前確認を開く
+          {localOnly ? 'モードA（送信なし）' : '事前確認を開く'}
         </button>
       </div>
+      {phase === 'closed' && error ? (
+        <p className="hybrid-note err" role="status" data-testid="hybrid-bar-error">
+          {error}
+        </p>
+      ) : null}
 
       {phase !== 'closed' ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && close()}>
@@ -267,6 +309,10 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
                     <div>
                       <dt>出力上限</dt>
                       <dd>{formatCount(plan.preview.maxOutputTokens)} tokens</dd>
+                    </div>
+                    <div>
+                      <dt>推定コスト</dt>
+                      <dd data-testid="hybrid-preview-cost">{NO_PRICE_LABEL}</dd>
                     </div>
                     <div>
                       <dt>Few-shot</dt>
@@ -372,6 +418,7 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
                     {PROVENANCE_LABEL[outcome.provenance]}
                   </span>
                   <span>状態 {outcome.status.stageLabel}</span>
+                  <span data-testid="hybrid-result-mode">{ENGINE_MODE_SHORT[outcome.telemetry.engineMode]}</span>
                   <span data-testid="hybrid-result-elapsed">経過 {formatMs(outcome.elapsedMs)}</span>
                   <span data-testid="hybrid-result-ttft">初回トークン {formatMs(outcome.ttftMs)}</span>
                   <span data-testid="hybrid-result-usage">
@@ -390,6 +437,18 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
                   </p>
                 ) : null}
                 {outcome.summary ? <p className="hybrid-summary">{outcome.summary}</p> : null}
+
+                <details className="hybrid-telemetry" data-testid="hybrid-telemetry" open>
+                  <summary>実行テレメトリ（このタブ内のみ・外部送信なし）</summary>
+                  <dl className="hybrid-preview-grid">
+                    {telemetryRows(outcome.telemetry).map((row) => (
+                      <div key={row.testId}>
+                        <dt>{row.label}</dt>
+                        <dd data-testid={row.testId}>{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </details>
 
                 {outcome.proposals.length ? (
                   <div className="hybrid-proposals" data-testid="hybrid-proposals">
