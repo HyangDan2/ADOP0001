@@ -378,6 +378,10 @@ test.describe('Phase 5A — stabilization', () => {
     // The fake clock keeps the debounce from regenerating during the assertions,
     // so the stale state is held deterministically instead of for ~260 ms.
     await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+    // Pausing keeps the 260 ms debounce from firing between two clicks, so the
+    // stale window is held for the assertions instead of racing the next paint
+    // (this test flaked once per few runs while the clock was merely installed).
+    await page.clock.pauseAt(new Date('2026-01-01T00:00:00Z'));
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('#/shiori');
     await page.clock.runFor(2_000);
