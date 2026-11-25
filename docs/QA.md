@@ -145,3 +145,17 @@ review copy of the same definition, and both name the toolchains CI installs in
   all-`@Disabled` artefact is no longer mistaken for executed coverage.
 - Executed coverage is still not measured; the UI shows the static branch
   mapping rate and `N/A` for executed coverage (HAR-003).
+
+## Phase 5C hybrid matrix (REG-5C-01 ~ REG-5C-25)
+
+Stage 3 (WO-14) adds a second matrix for the hybrid gateway. It is enforced by
+`tests/reg-5c-matrix.test.ts`, which runs one real engine/provider/transport path
+per row, and by `tests/e2e/phase5c-stage3.spec.ts` for the rows that only a
+browser can prove (`REG-5C-08`, `09`, `12`, `15`, `24`). The matrix guard fails
+when a row loses the test that names it or its line in
+`docs/PHASE5C_QA_REPORT.md`. The full table, the evidence files and the
+`npm ci` / `tsc` / `npm test` / `qa:generated` / `build` / `test:e2e` results are
+in `docs/PHASE5C_QA_REPORT.md`.
+
+No live AI gateway was connected for Phase 5C: the provider path is verified with
+a mock transport and a loopback SSE server, and the report states that plainly.
