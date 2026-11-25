@@ -300,9 +300,17 @@ export class OpenAiCompatibleProvider implements HybridProvider {
         while (!finished) {
           const { value, done } = await reader.read();
           if (done) break;
+          // `stream: true` keeps a multi-byte UTF-8 sequence that was split
+          // across chunks pending until its bytes are complete, so a Korean or
+          // Japanese character is never mangled at a chunk boundary.
           consume(parser.push(decoder.decode(value, { stream: true })));
         }
-        if (!finished) consume(parser.flush());
+        if (!finished) {
+          // Flush the decoder first: a trailing partial sequence must not be lost,
+          // and the last event may not have been followed by a blank line.
+          consume(parser.push(decoder.decode()));
+          consume(parser.flush());
+        }
       } catch (cause) {
         // A cancel keeps escaping as a cancel even mid-stream.
         if (request.signal?.aborted) throw new HybridError('aborted', 'リクエストはキャンセルされました。');
@@ -319,7 +327,7 @@ export class OpenAiCompatibleProvider implements HybridProvider {
         throw new HybridError('empty-choices', 'ストリームから本文を受け取れませんでした。');
       }
       this.lastUsage = usage ?? null;
-      return { text: answer, usage, finishReason };
+      return { text: answer, usage, finishReason, streamTerminated: parser.terminated };
     });
   }
 }

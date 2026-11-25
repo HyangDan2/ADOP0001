@@ -20,6 +20,9 @@
  * - user cancel         → `aborted`
  * - body not JSON       → `invalid-json`
  * - no usable choice    → `empty-choices` / `unsupported-format`
+ * - stream ended without `[DONE]` / `finish_reason`, or was cut at the output
+ *   cap                    → `incomplete-stream` (WO-08)
+ * - answer longer than the receive cap → `response-too-long` (WO-08)
  */
 
 import type { HybridFailure } from './contracts';
@@ -43,6 +46,8 @@ export type HybridErrorKind =
   | 'invalid-json'
   | 'empty-choices'
   | 'unsupported-format'
+  | 'incomplete-stream'
+  | 'response-too-long'
   | 'schema'
   | 'approval'
   | 'provider';

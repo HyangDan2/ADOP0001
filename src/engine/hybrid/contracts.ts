@@ -91,6 +91,12 @@ export interface HybridProviderResponse {
   usage?: { inputTokens: number; outputTokens: number };
   /** Provider stop reason; `length` means the answer was cut off by `max_tokens`. */
   finishReason?: string | null;
+  /**
+   * Streaming only: true when the stream ended with `[DONE]` or a
+   * `finish_reason`, false when it simply closed. `undefined` for a
+   * non-streaming response (WO-08 abnormal-EOF detection).
+   */
+  streamTerminated?: boolean;
 }
 
 export interface HybridProvider {

@@ -28,6 +28,12 @@ export interface SseParser {
   push(chunk: string): StreamEvent[];
   /** Flushes a trailing event that was not followed by a blank line. */
   flush(): StreamEvent[];
+  /**
+   * True once `[DONE]` or a `finish_reason` was seen. A stream that closes
+   * without either is an abnormal EOF, which WO-08 reports instead of
+   * accepting a possibly truncated answer.
+   */
+  readonly terminated: boolean;
 }
 
 interface UsageRecord {
@@ -158,6 +164,10 @@ export function createSseParser(): SseParser {
       }
       dispatch(events);
       return events;
+    },
+
+    get terminated() {
+      return done;
     },
   };
 }
