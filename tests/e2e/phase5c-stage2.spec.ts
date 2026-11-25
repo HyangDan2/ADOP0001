@@ -47,6 +47,10 @@ async function configureConnection(page: Page) {
   await page.getByTestId('connection-save').click();
   await expect(page.getByTestId('connection-save-state')).toContainText('保存しました');
   await page.getByTestId('connection-close').click();
+  // Stage 3 (WO-11): the AI bar only works in Mode B, which is an explicit
+  // choice per tab. These tests exercise that path.
+  await page.getByTestId('engine-mode-b').click();
+  await expect(page.getByTestId('engine-mode-current')).toHaveAttribute('data-engine-mode', 'hybrid');
 }
 
 test.describe('Phase 5C Stage 2 — hybrid AI assist', () => {
