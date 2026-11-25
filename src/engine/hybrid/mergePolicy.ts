@@ -83,7 +83,12 @@ export interface RejectedProposal {
 }
 
 export interface MergeConflict {
-  kind: 'duplicate-target';
+  /**
+   * `duplicate-target`: two proposals claim the same target with the same kind.
+   * `local-changed`: the local artifact moved while the AI answer was being
+   * produced, so the answer no longer describes the current result.
+   */
+  kind: 'duplicate-target' | 'local-changed';
   message: string;
   proposalIds: string[];
 }

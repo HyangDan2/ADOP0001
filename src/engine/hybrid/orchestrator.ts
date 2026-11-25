@@ -321,7 +321,18 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
 
   if (stale()) {
     session.markStale();
-    const outcome = cancel('入力が変更されたため、この AI 実行は破棄しました。', local, plan, { aiText: gateway.raw });
+    // The answer describes an artifact that no longer exists on screen; record
+    // the conflict so a caller that inspects the outcome sees why it was dropped.
+    const outcome = cancel('入力が変更されたため、この AI 実行は破棄しました。', local, plan, {
+      aiText: gateway.raw,
+      conflicts: [
+        {
+          kind: 'local-changed',
+          message: 'AI の応答中にローカル結果が更新されたため、この応答は現在の成果物に適用できません。',
+          proposalIds: [],
+        },
+      ],
+    });
     return { ...outcome, applied: false };
   }
   if (session.stopRequested()) {

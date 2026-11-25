@@ -277,6 +277,7 @@ describe('failure and cancellation policy', () => {
     expect(outcome.provenance).toBe('local-static');
     expect(outcome.proposals).toHaveLength(0);
     expect(outcome.stage).toBe('cancelled');
+    expect(outcome.conflicts[0]).toMatchObject({ kind: 'local-changed' });
   });
 
   it('reuses a result handed in by the caller instead of analysing again', async () => {

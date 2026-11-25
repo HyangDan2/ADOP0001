@@ -153,6 +153,13 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
           sessionRef.current = session;
         },
       });
+      if (!result.applied) {
+        // The input moved on while the answer was in flight: the answer is not
+        // the current artifact's, so it never reaches the screen.
+        setOutcome(null);
+        setPhase('closed');
+        return;
+      }
       setOutcome(result);
       setAccepted(Object.fromEntries(result.proposals.map((proposal) => [proposal.id, true])));
       setPhase('result');
