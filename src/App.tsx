@@ -4,6 +4,7 @@ import { HelpModal } from './components/HelpModal';
 import { FewShotModal } from './components/FewShotModal';
 import { PromptPane } from './components/PromptPane';
 import { WorkspacePanel } from './components/WorkspacePanel';
+import { ConnectionSettingsModal } from './components/ConnectionSettingsModal';
 import { TOOLS, toolFromHash, type ToolMeta } from './adapters/registry';
 import type { ToolId } from './adapters/types';
 import { publishOpenedFile, type OpenedFile } from './lib/fileBus';
@@ -50,6 +51,7 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [helpOpen, setHelpOpen] = useState(false);
   const [fewShotOpen, setFewShotOpen] = useState(false);
+  const [connectionOpen, setConnectionOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(initialRail);
   const [counts, setCounts] = useState<Record<ToolId, number>>(ZERO_COUNTS);
   const [fewShotVersion, setFewShotVersion] = useState(0);
@@ -116,6 +118,7 @@ export default function App() {
         setMenuOpen(false);
         setHelpOpen(false);
         setFewShotOpen(false);
+        setConnectionOpen(false);
       }
       if (event.key === '?' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement)) {
         setHelpOpen((open) => !open);
@@ -316,6 +319,20 @@ export default function App() {
                   </button>
                 ))}
                 <div className="menu-sep" />
+                <div className="menu-group">AI</div>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setConnectionOpen(true);
+                  }}
+                  data-testid="connection-settings"
+                >
+                  <span className="menu-jp">接続</span>
+                  <span>AI 接続設定</span>
+                </button>
+                <div className="menu-sep" />
                 <div className="menu-group">作業データ</div>
                 <button type="button" role="menuitem" onClick={() => void resetDrafts()} data-testid="reset-drafts">
                   <span className="menu-jp">初期化</span>
@@ -392,6 +409,7 @@ export default function App() {
       {fewShotOpen ? (
         <FewShotModal tool={tool} onClose={() => setFewShotOpen(false)} onChanged={refreshCounts} />
       ) : null}
+      {connectionOpen ? <ConnectionSettingsModal onClose={() => setConnectionOpen(false)} /> : null}
     </div>
   );
 }
