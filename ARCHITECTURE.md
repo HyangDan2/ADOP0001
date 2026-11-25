@@ -36,8 +36,9 @@ flowchart TB
     EXPORT[Export modal<br/>per-tool formats · copy]
     FSS[(IndexedDB adop0001_fewshot_v1<br/>few-shot examples + bundle)]
     Registry[Engine registry<br/>src/adapters/registry.ts]
+    Runner[Engine runner<br/>src/engine/core/runner.ts<br/>context · limits · cache]
     subgraph Core["Shared analysis core"]
-      Parser[src/lib/source.ts<br/>language-neutral model]
+      Parser[src/engine/parser/<br/>types · tokenizer · normalizer<br/>typescript · python · java · go]
       Util[src/lib/util.ts<br/>hash · download · copy]
     end
     S1[枝織 Shiori adapter]
@@ -56,7 +57,8 @@ flowchart TB
   PROMPT --> FSS
   WS --> FSS
   UI --> EXPORT
-  Registry --> S1 & S2 & S3 & S4 & S5 & S6
+  Registry --> Runner
+  Runner --> S1 & S2 & S3 & S4 & S5 & S6
   S1 & S2 & S3 & S4 --> Parser
   S1 & S2 & S3 & S4 & S5 & S6 --> Util
   S1 -.specification Markdown.-> S6
@@ -65,22 +67,27 @@ flowchart TB
   S3 --> MER
 ```
 
-Every tool is a pure function behind the same port. The UI never branches on provider: it asks the
-registry for an adapter and calls `run()`.
+Every tool is a pure function behind the same port. The UI never branches on provider: it calls
+`runEngine(toolId, …)`, which resolves the typed adapter, builds one execution context and normalizes
+diagnostics before the result reaches the screen.
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant U as User
   participant UI as React tool page
+  participant RN as Engine runner
   participant R as Registry
   participant A as EngineAdapter (local-static)
   U->>UI: paste / drop / sample
-  UI->>R: adapterFor(toolId)
-  R-->>UI: adapter
-  UI->>A: run(EngineRequest)
+  UI->>RN: runEngine(toolId, input + AbortSignal)
+  RN->>R: adapterFor(toolId)
+  R-->>RN: typed adapter
+  RN->>RN: context · limits · cache lookup
+  RN->>A: run(EngineRequest)
   A->>A: parse → model → generate
-  A-->>UI: EngineResult + diagnostics + cacheKey
+  A-->>RN: EngineResult + diagnostics
+  RN-->>UI: result + ExecutionContext
   UI-->>U: preview, exports, status bar
 ```
 
@@ -189,7 +196,9 @@ and changes nothing else in the UI.
 
 ### Registry contract
 
-`src/adapters/registry.ts` exports `TOOLS: ToolMeta[]`, one entry per tool:
+`src/adapters/registry.ts` exports `TOOLS: readonly ToolMeta[]`, one entry per tool. `ToolMeta` is a
+mapped union over `ToolId`, so each entry keeps its own option/output types; `adapterFor(id)` has one
+overload per tool and returns the typed singleton adapter, with no `never` casts:
 
 | Field | Contract |
 | --- | --- |
@@ -198,18 +207,46 @@ and changes nothing else in the UI.
 | `japanese`, `label` | Japanese brand title (e.g. `枝織`) and the Japanese switcher label (e.g. `仕様書作成`) shown in the top bar, the `⋮` menu and the tool head. |
 | `tagline`, `longDescription` | Japanese copy for the tool head and the Help modal. |
 | `adapter.title` | English engine name (e.g. `Specification Writer`), kept for the adapter port; the UI shows `japanese` / `label`. |
-| `adapter` | The live `EngineAdapter`. Swapping the adapter is the only change needed to move a tool from Option A to Option B. |
+| `adapter` | The live `TypedEngineAdapter<id>`. Swapping the adapter is the only change needed to move a tool from Option A to Option B. |
 
-The UI reads `tool.adapter.capabilities` to explain a tool in Help, and calls `adapter.run()` with
-`mode` set to the adapter's own `providerMode`. There is no other coupling.
+The UI reads `tool.adapter.capabilities` to explain a tool in Help; execution always goes through the
+runner, which resolves `adapterFor(toolId)` itself. There is no other coupling.
+
+### Runner and execution context
+
+`src/engine/core/contracts.ts` holds the `EngineContracts` map: one row per `ToolId` binding its
+options and output (for example `kotoha: { options: KotohaOptions; output: KotohaOutput }`). The
+runner, registry, adapters and UI are all checked against that single map, so a tool cannot be
+registered with another tool's result type.
+
+`runEngine(toolId, input)` / `executeEngine(adapter, input)` build one `ExecutionContext` per run:
+
+| Field | Meaning |
+| --- | --- |
+| `requestId` | Unique per run; diagnostics and logs can be correlated. |
+| `toolId`, `sourceName`, `sourceHash` | What ran and which exact input it saw (`sha256`). |
+| `options`, `providerMode` | The typed options and `local-static` / `hybrid-ai`. |
+| `signal` | The request gate's `AbortSignal`; checked before and after the adapter. |
+| `diagnostics` | One severity vocabulary (`error` blocks, `warn` = partially supported, `info` = note), de-duplicated and ordered errors-first. |
+| `elapsedMs`, `cacheKey`, `engineVersion`, `cacheHit` | Observability and de-duplication identity. |
+
+The runner refuses sources over 8 MB before parsing, warns above 2 MB, and caches up to 16 completed
+`local-static` results keyed by engine version, tool, mode, source name, source and a canonical option
+signature. Binary payloads and large bundles are deliberately not cached. Cancellation is cooperative:
+the request gate aborts the signal, and a superseded run cannot reach the UI or storage.
 
 ---
 
 ## 3. Option A — pure browser static / OOXML
 
-### 3.1 Shared static analysis (`src/lib/source.ts`)
+### 3.1 Shared static analysis (`src/engine/parser/`)
 
-One language-neutral model feeds 枝織, 弥生, 梢絵 and 春日:
+One language-neutral model feeds 枝織, 弥生, 梢絵 and 春日. The parser is split by responsibility so a
+language can be reviewed or replaced on its own: `types.ts` (public model), `tokenizer.ts` (the
+two-pass comment/string mask), `normalizer.ts` (shared declaration, parameter, guard and statement
+heuristics), `typescript.ts`, `python.ts`, `java.ts` and `go.ts`, assembled by `index.ts`.
+`src/lib/source.ts` is a compatibility re-export, so existing imports keep working. The heuristic
+design is unchanged; this is a structural split, not an AST rewrite:
 
 ```mermaid
 flowchart LR
@@ -948,13 +985,16 @@ may only fill holes an example can justify.
 | Haruhi case IR | `tests/haruhi-reliability.test.ts` pins the work-order matrix: `isPositive(0/-1/42)`, `divide(42, 0)`, async resolve/reject, `Calculator.add()` on an instance, `voidFunction()`, `throwsOnInvalid()`, Jest `@jest/globals`, Pytest module imports and constructor handling, JUnit `@Disabled`, Go subtests and `(T, error)` returns, and the static-mapping metric. |
 | Generated artifacts (`npm run qa:generated`) | Writes every scaffold to `.qa-out/` and checks it with an independent toolchain: `ast.parse` + import for Python, `pytest` for the generated Pytest file, `gcc`/`clang`/`zig cc` (`-std=c11`, `-std=c++17`) for C, C++ and MCU, `vitest` in a real project for the generated TypeScript, `go test` for Go and `javac` + JUnit when a JDK and jar are available. A missing toolchain is reported as SKIP, never as a pass. |
 | Vitest (`tests/*.test.ts`) | Parser coverage for four languages; spec Markdown/HTML; pseudocode styles and line maps; all five UML kinds and manual override; four test frameworks; docx ZIP → Markdown → edit → rebuild with styles, headers, footers, media and margins intact; bundle store round trip; specification parsing in all three Markdown shapes and code generation for Python, C, C++ and MCU (fixed-width MCU types, static buffers, status codes, untranslated guards reported as TODO), including the 枝織 → 貴音 round trip; few-shot store CRUD, token estimation, budget truncation, `.fewshot.json` round trip and prompt preview; workspace tree building, noisy-directory pruning, filtering and file routing. |
-| Playwright (`tests/e2e/*.spec.ts`) | Live site: six tools exercised for real, Mermaid actually rendered, docx round trip downloaded, 貴音 generating Python/C/C++/MCU and exporting each through the export modal, few-shot upload → token count → prompt preview → reload persistence, workspace folder tree (PC) opening a file into the centre pane and attaching a few-shot example, 3-column layout at 1440x900, and a 390x844 pass with the rail hidden, zero horizontal overflow and zero console/network errors. |
+| Engine core (`tests/engine-core.test.ts`, `tests/hybrid-contract.test.ts`, `tests/request-gate.test.ts`) | Typed registry/adapter identity, context fields, diagnostic normalization, identical-input cache hits, option-change cache misses, abort before start, a 400-function performance ceiling, the hybrid consent/settings gate, mock provider streaming, structured-output validation and local fallback. No network call is made. |
+| Playwright (`tests/e2e/*.spec.ts`) | Live site: six tools exercised for real, the prompt save-error and clean-save paths, input reset cancelling a stale run, Mermaid actually rendered, docx round trip downloaded, 貴音 generating Python/C/C++/MCU and exporting each through the export modal, few-shot upload → token count → prompt preview → reload persistence, workspace folder tree (PC) opening a file into the centre pane and attaching a few-shot example, 3-column layout at 1440x900, and a 390x844 pass with the rail hidden, zero horizontal overflow and zero console/network errors. |
 
 ## 6. Deployment
 
 - `vite.config.ts` sets `base: '/ADOP0001/'` for GitHub Pages.
-- `.github/workflows/deploy.yml`: `npm ci` → `tsc --noEmit` → `vitest run` → `vite build` →
-  `upload-pages-artifact` → `deploy-pages`.
+- `.github/workflows/deploy.yml` runs the full gate on every push to `main`, every pull request and on
+  demand: `npm ci` → `tsc --noEmit` → `npm test` → generated-code QA (real Jest, pytest, gcc/g++,
+  Go when available) → `vite build` → Playwright. QA JSON and logs are uploaded as an artifact even
+  on failure. Only a push to `main` reaches `upload-pages-artifact` → `deploy-pages`.
 - Pages source is **GitHub Actions**; every push to `main` redeploys.
 - Mermaid is served from `public/vendor/mermaid.min.js`, which Vite copies to `dist/vendor/` and the
   app loads with `import.meta.env.BASE_URL` so the sub-path deployment resolves correctly.

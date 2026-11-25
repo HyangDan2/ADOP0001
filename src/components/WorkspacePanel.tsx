@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { ToolId } from '../adapters/types';
 import { CODE_FILE_ACCEPT, DOCX_FILE_ACCEPT, FEW_SHOT_FILE_ACCEPT, isBinaryFile, languageTagFor, targetToolForFile } from '../lib/fileKinds';
 import { openedFileFrom, type OpenedFile } from '../lib/fileBus';
+import { readSourceFile } from '../lib/fileInput';
 import { saveExample } from '../lib/fewShotStore';
 import {
   buildWorkspaceTree,
@@ -82,8 +83,12 @@ export function WorkspacePanel(props: {
       setError('このファイルは読み込めませんでした。フォルダを開き直してください。');
       return;
     }
-    const payload = await openedFileFrom(file, node.path);
-    props.onOpenFile(targetToolForFile(node.path, props.activeToolId), payload);
+    try {
+      const payload = await openedFileFrom(file, node.path);
+      props.onOpenFile(targetToolForFile(node.path, props.activeToolId), payload);
+    } catch {
+      setError(`ファイルを読み取れませんでした（${node.name}）。フォルダを開き直してください。`);
+    }
   };
 
   const attachFewShot = async (node: WorkspaceFileNode) => {
@@ -97,11 +102,16 @@ export function WorkspacePanel(props: {
       setError('512KB を超えるファイルは Few-shot 例にできません。');
       return;
     }
+    const read = await readSourceFile(file);
+    if (read.text === null) {
+      setError(read.error);
+      return;
+    }
     await saveExample({
       toolId: props.activeToolId,
       title: node.name,
       outputFileName: node.name,
-      outputText: await file.text(),
+      outputText: read.text,
       targetLanguage: languageTagFor(node.name),
       enabled: true,
     });

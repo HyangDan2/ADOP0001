@@ -24,6 +24,8 @@ export interface EngineRequest<TOptions = Record<string, unknown>> {
   source: string;
   options: TOptions;
   mode: ProviderMode;
+  /** Aborted when the request is superseded or the tool unmounts. */
+  signal?: AbortSignal;
 }
 
 export type DiagnosticSeverity = 'info' | 'warn' | 'error';
@@ -39,7 +41,11 @@ export interface EngineResult<TOut> {
   providerMode: ProviderMode;
   diagnostics: EngineDiagnostic[];
   elapsedMs: number;
-  /** `sha256(toolId + providerMode + source + options)` – the semantic cache key. */
+  /**
+   * Canonical identity assigned by the engine runner: a SHA-256 over the engine
+   * version, adapter id, provider mode, file name, source and canonically sorted
+   * options. It is the same value as `ExecutionContext.cacheKey`.
+   */
   cacheKey: string;
 }
 

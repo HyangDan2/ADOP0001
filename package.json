@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "HD2Lab Aomatsukan - 5-in-1 Code & Document Suite (Shiori, Yayoi, Kozue, Haruhi, Kotoha), 100% in-browser",
+  "description": "HD2Lab Aomatsukan (\u9752\u677e\u9928) \u2014 6-in-1 code and document suite: specification, pseudocode, UML, tests, Docx round trip and spec-to-code. 100% in-browser.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -21,12 +21,15 @@
   },
   "devDependencies": {
     "@playwright/test": "1.65.1",
+    "@types/jest": "^29.5.14",
     "@types/node": "^22.13.4",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
     "@vitejs/plugin-react": "^4.3.4",
     "happy-dom": "^21.0.4",
+    "jest": "^29.7.0",
     "mermaid": "11.4.1",
+    "ts-jest": "^29.2.5",
     "typescript": "^5.7.3",
     "vite": "^6.2.0",
     "vitest": "^3.0.5"

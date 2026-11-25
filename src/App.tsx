@@ -15,6 +15,8 @@ import { YayoiTool } from './tools/yayoi/YayoiTool';
 import { KozueTool } from './tools/kozue/KozueTool';
 import { HaruhiTool } from './tools/haruhi/HaruhiTool';
 import { KotohaTool } from './tools/kotoha/KotohaTool';
+import { clearKotohaDocument } from './tools/kotoha';
+import { clearEngineCache } from './engine/core/runner';
 import { TakaneTool } from './tools/takane/TakaneTool';
 
 type Theme = 'dark' | 'light';
@@ -52,6 +54,7 @@ export default function App() {
   const [counts, setCounts] = useState<Record<ToolId, number>>(ZERO_COUNTS);
   const [fewShotVersion, setFewShotVersion] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
   /** Bumped after an explicit draft reset so the open tool re-reads empty storage. */
   const [draftEpoch, setDraftEpoch] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -160,7 +163,20 @@ export default function App() {
   };
 
   const resetDrafts = async () => {
+    setResetError(null);
+    // Kotoha keeps its document draft in its own store, so the generic draft
+    // reset alone would let the cleared document return after the reload.
+    // Its reset is awaited first: when IndexedDB refuses the transaction the
+    // drafts are left untouched and nothing is announced as cleared
+    // (PATCH-002).
+    const kotohaReset = await clearKotohaDocument();
+    if (!kotohaReset.ok) {
+      setResetError('保存領域を初期化できませんでした。下書きと文書は削除されていません。');
+      return;
+    }
     await resetAllDrafts(TOOLS.map((item) => item.id));
+    // Completed analyses belong to the drafts that were just discarded.
+    clearEngineCache();
     setDraftEpoch((value) => value + 1);
     setMenuOpen(false);
     // Remounting is not enough: a tool that still holds its document in memory
@@ -272,7 +288,10 @@ export default function App() {
               aria-label="メニューを開く"
               aria-expanded={menuOpen}
               title="その他"
-              onClick={() => setMenuOpen((open) => !open)}
+              onClick={() => {
+                setResetError(null);
+                setMenuOpen((open) => !open);
+              }}
               data-testid="kebab-button"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -296,6 +315,11 @@ export default function App() {
                   <span className="menu-jp">初期化</span>
                   <span>下書きをすべて破棄</span>
                 </button>
+                {resetError ? (
+                  <p className="menu-error" role="alert" data-testid="reset-error">
+                    {resetError}
+                  </p>
+                ) : null}
                 <div className="menu-sep" />
                 <div className="menu-group">HD2Lab</div>
                 <a href="https://hyangdan2.github.io/" role="menuitem" target="_blank" rel="noreferrer">

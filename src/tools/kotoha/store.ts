@@ -31,6 +31,24 @@ export interface KotohaDraft {
 const memory = new Map<string, { bundle: KotohaBundle; savedAt: string }>();
 const draftMemory = new Map<string, KotohaDraft>();
 
+/**
+ * FIX-008 — writes are serialized and carry the reset epoch they started in.
+ * A reset bumps the epoch and is queued behind writes that already began, so an
+ * older write can neither survive a reset nor overtake the empty state it
+ * produced. Writes invoked before the reset are skipped outright.
+ */
+let resetEpoch = 0;
+let writeQueue: Promise<void> = Promise.resolve();
+
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+  const run = writeQueue.then(task, task);
+  writeQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 function openDb(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
     try {
@@ -52,36 +70,156 @@ function openDb(): Promise<IDBDatabase | null> {
   });
 }
 
-function tx<T>(db: IDBDatabase, mode: IDBTransactionMode, run: (store: IDBObjectStore) => IDBRequest<T>): Promise<T | null> {
+/**
+ * A write succeeds only when IndexedDB reports `transaction.oncomplete`.
+ * `request.onsuccess` alone is not a commit: the transaction can still abort
+ * (quota, a closing connection), and reporting success then would lie to the
+ * user and to the next restore.
+ */
+function writeTransaction(db: IDBDatabase, run: (store: IDBObjectStore) => void): Promise<boolean> {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
     try {
-      const transaction = db.transaction(STORE, mode);
-      const request = run(transaction.objectStore(STORE));
-      request.onsuccess = () => resolve(request.result as T);
-      request.onerror = () => resolve(null);
+      const transaction = db.transaction(STORE, 'readwrite');
+      run(transaction.objectStore(STORE));
+      transaction.oncomplete = () => finish(true);
+      transaction.onerror = () => finish(false);
+      transaction.onabort = () => finish(false);
     } catch {
-      resolve(null);
+      finish(false);
     }
   });
 }
 
-export async function saveBundle(bundle: KotohaBundle): Promise<{ storage: KotohaStorage; savedAt: string }> {
+function readRecord<T>(db: IDBDatabase, key: string): Promise<T | null> {
+  return new Promise((resolve) => {
+    let value: T | null = null;
+    let settled = false;
+    const finish = (next: T | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(next);
+    };
+    try {
+      const transaction = db.transaction(STORE, 'readonly');
+      const request = transaction.objectStore(STORE).get(key);
+      request.onsuccess = () => {
+        value = (request.result as T | undefined) ?? null;
+      };
+      transaction.oncomplete = () => finish(value);
+      transaction.onerror = () => finish(null);
+      transaction.onabort = () => finish(null);
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+export interface KotohaSaveResult {
+  storage: KotohaStorage;
+  savedAt: string;
+  /** True when a reset happened before this write could run. */
+  superseded?: boolean;
+}
+
+/**
+ * A reset only reports success when IndexedDB confirmed it. `ok: false` means
+ * the transaction was refused or aborted, so the caller must not claim the
+ * document was discarded (PATCH-002).
+ */
+export interface KotohaClearResult {
+  ok: boolean;
+  storage: KotohaStorage;
+}
+
+function mirrorBundle(record: { bundle: KotohaBundle; savedAt: string }): void {
+  memory.set(LATEST_KEY, record);
+  memory.set(record.bundle.sourceHash, record);
+}
+
+/**
+ * The latest-bundle record and its source-hash alias, written in one
+ * transaction so a restore cannot see only half of the new pair.
+ */
+export async function saveBundle(bundle: KotohaBundle): Promise<KotohaSaveResult> {
   const savedAt = new Date().toISOString();
   const record = { bundle, savedAt };
-  memory.set(LATEST_KEY, record);
-  memory.set(bundle.sourceHash, record);
-  const db = await openDb();
-  if (!db) return { storage: 'memory', savedAt };
-  await tx(db, 'readwrite', (store) => store.put(record, LATEST_KEY));
-  await tx(db, 'readwrite', (store) => store.put(record, bundle.sourceHash));
-  db.close();
-  return { storage: 'indexeddb', savedAt };
+  const startedEpoch = resetEpoch;
+  return enqueue(async () => {
+    if (startedEpoch !== resetEpoch) return { storage: 'memory', savedAt, superseded: true };
+    const db = await openDb();
+    if (startedEpoch !== resetEpoch) {
+      db?.close();
+      return { storage: 'memory', savedAt, superseded: true };
+    }
+    if (!db) {
+      mirrorBundle(record);
+      return { storage: 'memory', savedAt };
+    }
+    const committed = await writeTransaction(db, (store) => {
+      store.put(record, LATEST_KEY);
+      store.put(record, bundle.sourceHash);
+    });
+    db.close();
+    if (startedEpoch === resetEpoch) mirrorBundle(record);
+    return { storage: committed ? 'indexeddb' : 'memory', savedAt };
+  });
+}
+
+/**
+ * One transaction for the latest bundle and the working draft. The user never
+ * sees a success message for a bundle whose Markdown draft was not written.
+ */
+export async function saveDocumentSnapshot(input: {
+  markdown: string;
+  attributes: BundleAttributes | null;
+  bundle: KotohaBundle;
+}): Promise<KotohaSaveResult> {
+  const savedAt = new Date().toISOString();
+  const bundleRecord = { bundle: input.bundle, savedAt };
+  const draft: KotohaDraft = {
+    version: KOTOHA_DRAFT_VERSION,
+    markdown: input.markdown,
+    attributes: input.attributes,
+    bundle: input.bundle,
+    savedAt,
+  };
+  const startedEpoch = resetEpoch;
+  return enqueue(async () => {
+    if (startedEpoch !== resetEpoch) return { storage: 'memory', savedAt, superseded: true };
+    const db = await openDb();
+    if (startedEpoch !== resetEpoch) {
+      db?.close();
+      return { storage: 'memory', savedAt, superseded: true };
+    }
+    if (!db) {
+      mirrorBundle(bundleRecord);
+      draftMemory.set(DRAFT_KEY, draft);
+      return { storage: 'memory', savedAt };
+    }
+    const committed = await writeTransaction(db, (store) => {
+      store.put(bundleRecord, LATEST_KEY);
+      store.put(bundleRecord, input.bundle.sourceHash);
+      store.put(draft, DRAFT_KEY);
+    });
+    db.close();
+    if (startedEpoch === resetEpoch) {
+      mirrorBundle(bundleRecord);
+      draftMemory.set(DRAFT_KEY, draft);
+    }
+    return { storage: committed ? 'indexeddb' : 'memory', savedAt };
+  });
 }
 
 export async function loadLatestBundle(): Promise<{ bundle: KotohaBundle; savedAt: string } | null> {
   const db = await openDb();
   if (db) {
-    const record = await tx<{ bundle: KotohaBundle; savedAt: string }>(db, 'readonly', (store) => store.get(LATEST_KEY));
+    const record = await readRecord<{ bundle: KotohaBundle; savedAt: string }>(db, LATEST_KEY);
     db.close();
     if (record?.bundle) return { ...record, bundle: normaliseBundle(record.bundle) };
   }
@@ -94,7 +232,7 @@ export async function saveDocumentDraft(input: {
   markdown: string;
   attributes: BundleAttributes | null;
   bundle: KotohaBundle | null;
-}): Promise<{ storage: KotohaStorage; savedAt: string }> {
+}): Promise<KotohaSaveResult> {
   const savedAt = new Date().toISOString();
   const record: KotohaDraft = {
     version: KOTOHA_DRAFT_VERSION,
@@ -103,13 +241,23 @@ export async function saveDocumentDraft(input: {
     bundle: input.bundle,
     savedAt,
   };
-  draftMemory.set(DRAFT_KEY, record);
-  const db = await openDb();
-  if (!db) return { storage: 'memory', savedAt };
-  const written = await tx(db, 'readwrite', (store) => store.put(record, DRAFT_KEY));
-  db.close();
-  // `put` resolves with the key; a failed write returns null.
-  return { storage: written === null ? 'memory' : 'indexeddb', savedAt };
+  const startedEpoch = resetEpoch;
+  return enqueue(async () => {
+    if (startedEpoch !== resetEpoch) return { storage: 'memory', savedAt, superseded: true };
+    const db = await openDb();
+    if (startedEpoch !== resetEpoch) {
+      db?.close();
+      return { storage: 'memory', savedAt, superseded: true };
+    }
+    if (!db) {
+      draftMemory.set(DRAFT_KEY, record);
+      return { storage: 'memory', savedAt };
+    }
+    const committed = await writeTransaction(db, (store) => store.put(record, DRAFT_KEY));
+    db.close();
+    if (startedEpoch === resetEpoch) draftMemory.set(DRAFT_KEY, record);
+    return { storage: committed ? 'indexeddb' : 'memory', savedAt };
+  });
 }
 
 function migrateDraft(raw: unknown): KotohaDraft | null {
@@ -130,7 +278,7 @@ function migrateDraft(raw: unknown): KotohaDraft | null {
 export async function loadDocumentDraft(): Promise<KotohaDraft | null> {
   const db = await openDb();
   if (db) {
-    const record = await tx<unknown>(db, 'readonly', (store) => store.get(DRAFT_KEY));
+    const record = await readRecord<unknown>(db, DRAFT_KEY);
     db.close();
     const migrated = migrateDraft(record);
     if (migrated) return migrated;
@@ -138,24 +286,38 @@ export async function loadDocumentDraft(): Promise<KotohaDraft | null> {
   return migrateDraft(draftMemory.get(DRAFT_KEY));
 }
 
-export async function clearBundles(): Promise<void> {
+function resetInMemory(): void {
+  resetEpoch += 1;
   memory.clear();
   draftMemory.clear();
-  const db = await openDb();
-  if (!db) return;
-  await tx(db, 'readwrite', (store) => store.clear());
-  db.close();
+}
+
+export async function clearBundles(): Promise<KotohaClearResult> {
+  resetInMemory();
+  return enqueue(async () => {
+    const db = await openDb();
+    if (!db) return { ok: true, storage: 'memory' as const };
+    const committed = await writeTransaction(db, (store) => store.clear());
+    db.close();
+    return { ok: committed, storage: 'indexeddb' as const };
+  });
 }
 
 /** Explicit "start over" for one browser: bundle, draft and dedupe keys. */
-export async function clearKotohaDocument(): Promise<void> {
-  memory.clear();
-  draftMemory.clear();
-  const db = await openDb();
-  if (!db) return;
-  await tx(db, 'readwrite', (store) => store.delete(LATEST_KEY));
-  await tx(db, 'readwrite', (store) => store.delete(DRAFT_KEY));
-  db.close();
+export async function clearKotohaDocument(): Promise<KotohaClearResult> {
+  resetInMemory();
+  return enqueue(async () => {
+    const db = await openDb();
+    if (!db) return { ok: true, storage: 'memory' as const };
+    // `clear()` rather than deleting the well-known keys: `saveBundle` also
+    // writes a source-hash alias per document, and a reset that leaves those
+    // behind keeps the old styles/media in storage forever (FIX-016).
+    const committed = await writeTransaction(db, (store) => {
+      store.clear();
+    });
+    db.close();
+    return { ok: committed, storage: 'indexeddb' as const };
+  });
 }
 
 export function storageLabel(): string {

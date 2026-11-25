@@ -3,14 +3,17 @@ import { EmptyHint, LineEditor, Segmented, ToolPane, useDropFile } from '../../c
 import { ExportModal } from '../../components/ExportModal';
 import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
+import { readSourceFile, takeFileInput } from '../../lib/fileInput';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
+import { EngineDiagnostics } from '../../components/EngineDiagnostics';
+import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
-import { YayoiAdapter, type PseudoDepth, type PseudoLine, type PseudoStyle, type YayoiOutput } from './adapter';
-
-const adapter = new YayoiAdapter();
+import { type PseudoDepth, type PseudoLine, type PseudoStyle, type YayoiOutput } from './adapter';
+import { runEngine } from '../../engine/core/runner';
+import { assertArtifactRevision } from '../../lib/artifactRevision';
 
 const STYLES: { value: PseudoStyle; label: string }[] = [
   { value: 'standard', label: '標準構造化' },
@@ -36,39 +39,53 @@ export function YayoiTool() {
   const [activeSource, setActiveSource] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<EngineDiagnostic[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const pseudoRefs = useRef(new Map<number, HTMLDivElement>());
   const timer = useRef<number | null>(null);
-  const nextRequest = useRequestGate();
+  const gate = useRequestGate();
+  // PATCH-006: input/output revisions so a stale result can never be exported.
+  const inputRevision = useRef(0);
+  const outputRevision = useRef<number | null>(null);
+  const readSeq = useRef(0);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
+    inputRevision.current += 1;
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
+        gate.invalidate();
+        setBusy(false);
         setOutput(null);
+        outputRevision.current = null;
+        setDiagnostics([]);
         setError(null);
         return;
       }
-      const request = nextRequest();
+      const revision = inputRevision.current;
+      const request = gate.start();
       setBusy(true);
       setError(null);
-      void adapter
-        .run({
-          toolId: 'yayoi',
-          sourceName: fileName,
-          source,
-          options: { style, depth },
-          mode: 'local-static',
-        })
+      void runEngine('yayoi', {
+        sourceName: fileName,
+        source,
+        options: { style, depth },
+        mode: 'local-static',
+        signal: request.signal,
+      })
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
+          outputRevision.current = revision;
+          setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
           setOutput(null);
+          outputRevision.current = null;
+          setDiagnostics([]);
           setError(errorMessage(cause, '擬似コードを生成できませんでした。'));
         })
         .finally(() => {
@@ -77,6 +94,9 @@ export function YayoiTool() {
     }, 220);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
+      // A source/option change, reset or unmount supersedes the run immediately;
+      // the debounce alone would leave the previous request current for ~250 ms.
+      gate.invalidate();
     };
   }, [source, fileName, style, depth]);
 
@@ -91,15 +111,24 @@ export function YayoiTool() {
     if (first !== undefined) pseudoRefs.current.get(first)?.scrollIntoView({ block: 'nearest' });
   }, [linkedIds, activeSource]);
 
-  const drop = useDropFile(async (file) => {
-    setSource(await file.text());
-    setFileName(file.name);
-  });
-
   const showToast = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 1800);
   };
+
+  const loadFile = async (file: File) => {
+    const readId = ++readSeq.current;
+    const read = await readSourceFile(file);
+    if (readId !== readSeq.current) return;
+    if (read.text === null) {
+      showToast(read.error);
+      return;
+    }
+    setSource(read.text);
+    setFileName(file.name);
+  };
+
+  const drop = useDropFile((file) => void loadFile(file));
 
   useOpenedFile('yayoi', (opened) => {
     setSource(opened.text);
@@ -110,6 +139,7 @@ export function YayoiTool() {
   const baseName = fileName.replace(/\.[^.]+$/, '') || 'pseudocode';
 
   const download = (kind: 'md' | 'txt', base: string) => {
+    assertArtifactRevision(inputRevision.current, output ? outputRevision.current : null);
     if (!output) return;
     if (kind === 'md') downloadBlob(`${base}.pseudo.md`, output.markdown, 'text/markdown;charset=utf-8');
     else downloadBlob(`${base}.pseudo.txt`, output.plain, 'text/plain;charset=utf-8');
@@ -129,11 +159,9 @@ export function YayoiTool() {
                   type="file"
                   accept={CODE_FILE_ACCEPT}
                   style={{ display: 'none' }}
-                  onChange={async (event) => {
-                    const file = event.target.files?.[0];
-                    if (!file) return;
-                    setSource(await file.text());
-                    setFileName(file.name);
+                  onChange={(event) => {
+                    const file = takeFileInput(event);
+                    if (file) void loadFile(file);
                   }}
                 />
               </label>
@@ -250,6 +278,7 @@ export function YayoiTool() {
         >
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
+        <EngineDiagnostics diagnostics={diagnostics} />
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (
@@ -264,7 +293,10 @@ export function YayoiTool() {
               description: '擬似コードと対応付けの Markdown',
               fileName: (base) => `${base}.pseudo.md`,
               run: (base) => download('md', base),
-              copy: () => output.markdown,
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.markdown;
+              },
             },
             {
               id: 'text',
@@ -272,7 +304,10 @@ export function YayoiTool() {
               description: '擬似コードだけのプレーンテキスト',
               fileName: (base) => `${base}.pseudo.txt`,
               run: (base) => download('txt', base),
-              copy: () => output.plain,
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.plain;
+              },
             },
           ]}
         />

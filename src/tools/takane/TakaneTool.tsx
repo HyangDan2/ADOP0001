@@ -3,21 +3,23 @@ import { EmptyHint, LineEditor, Segmented, ToolPane, useDropFile } from '../../c
 import { ExportModal } from '../../components/ExportModal';
 import { SPEC_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
+import { readSourceFile, takeFileInput } from '../../lib/fileInput';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
+import { EngineDiagnostics } from '../../components/EngineDiagnostics';
+import type { EngineDiagnostic } from '../../adapters/types';
 import {
   LANGUAGE_EXTENSION,
   LANGUAGE_LABEL,
-  TakaneAdapter,
   buildTakane,
   type TakaneLanguage,
   type TakaneOutput,
 } from './adapter';
 import { TAKANE_SAMPLES } from './samples';
-
-const adapter = new TakaneAdapter();
+import { runEngine } from '../../engine/core/runner';
+import { assertArtifactRevision } from '../../lib/artifactRevision';
 const SHIORI_KEY = 'adop0001.shiori.latest';
 
 const LANGUAGES: { value: TakaneLanguage; label: string }[] = [
@@ -74,40 +76,54 @@ export function TakaneTool() {
   const [activeFile, setActiveFile] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<EngineDiagnostic[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [hasShiori, setHasShiori] = useState(() => Boolean(readShioriRecord()));
   const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
-  const nextRequest = useRequestGate();
+  const gate = useRequestGate();
+  // PATCH-006: input/output revisions so a stale result can never be exported.
+  const inputRevision = useRef(0);
+  const outputRevision = useRef<number | null>(null);
+  const readSeq = useRef(0);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
+    inputRevision.current += 1;
     timer.current = window.setTimeout(() => {
       if (!source.trim()) {
+        gate.invalidate();
+        setBusy(false);
         setOutput(null);
+        outputRevision.current = null;
+        setDiagnostics([]);
         setError(null);
         return;
       }
-      const request = nextRequest();
+      const revision = inputRevision.current;
+      const request = gate.start();
       setBusy(true);
       setError(null);
-      void adapter
-        .run({
-          toolId: 'takane',
-          sourceName: fileName,
-          source,
-          options: { language },
-          mode: 'local-static',
-        })
+      void runEngine('takane', {
+        sourceName: fileName,
+        source,
+        options: { language },
+        mode: 'local-static',
+        signal: request.signal,
+      })
         .then((result) => {
           if (!request.isCurrent()) return;
           setOutput(result.output);
+          outputRevision.current = revision;
+          setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
           setOutput(null);
+          outputRevision.current = null;
+          setDiagnostics([]);
           setError(cause instanceof Error ? cause.message : 'コードを生成できませんでした。');
         })
         .finally(() => {
@@ -116,24 +132,36 @@ export function TakaneTool() {
     }, 240);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
+      // A source/option change, reset or unmount supersedes the run immediately;
+      // the debounce alone would leave the previous request current for ~250 ms.
+      gate.invalidate();
     };
   }, [source, fileName, language]);
 
-  const drop = useDropFile(async (file) => {
-    setSource(await file.text());
+  const showToast = (message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 1900);
+  };
+
+  const loadFile = async (file: File) => {
+    const readId = ++readSeq.current;
+    const read = await readSourceFile(file);
+    if (readId !== readSeq.current) return;
+    if (read.text === null) {
+      showToast(read.error);
+      return;
+    }
+    setSource(read.text);
     setFileName(file.name);
-  });
+  };
+
+  const drop = useDropFile((file) => void loadFile(file));
 
   useOpenedFile('takane', (opened) => {
     setSource(opened.text);
     setFileName(opened.name);
     showToast(`${opened.path} を開きました`);
   });
-
-  const showToast = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(null), 1900);
-  };
 
   const loadShiori = () => {
     const record = readShioriRecord();
@@ -161,6 +189,7 @@ export function TakaneTool() {
 
   /** Downloads one artifact of the freshly generated scaffold. */
   const download = (target: TakaneLanguage, base: string, role: 'header' | 'implementation') => {
+    assertArtifactRevision(inputRevision.current, outputRevision.current);
     const built = buildTakane(fileName, source, target);
     const file = built.files.find((item) => item.role === role) ?? built.files[built.files.length - 1];
     downloadBlob(artifactName(target, base, role), file.code, 'text/plain;charset=utf-8');
@@ -203,11 +232,9 @@ export function TakaneTool() {
                   type="file"
                   accept={SPEC_FILE_ACCEPT}
                   style={{ display: 'none' }}
-                  onChange={async (event) => {
-                    const file = event.target.files?.[0];
-                    if (!file) return;
-                    setSource(await file.text());
-                    setFileName(file.name);
+                  onChange={(event) => {
+                    const file = takeFileInput(event);
+                    if (file) void loadFile(file);
                   }}
                 />
               </label>
@@ -414,6 +441,7 @@ export function TakaneTool() {
         <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
+        <EngineDiagnostics diagnostics={diagnostics} />
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (
@@ -429,7 +457,10 @@ export function TakaneTool() {
               description: 'Python スキャフォールド（dataclass・型ヒント・docstring）',
               fileName: (base) => takaneFileName('python', base),
               run: (base) => download('python', base, 'implementation'),
-              copy: () => output.code,
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.code;
+              },
             },
             {
               id: 'c',
@@ -479,6 +510,7 @@ export function TakaneTool() {
               description: 'いま選んでいる言語のファイルをすべて書き出す',
               fileName: (base) => takaneFileName(language, base),
               run: (base) => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
                 const target = language;
                 const built = buildTakane(fileName, source, target);
                 for (const file of built.files) {

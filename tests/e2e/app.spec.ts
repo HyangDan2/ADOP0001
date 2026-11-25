@@ -192,6 +192,9 @@ test.describe('HD2Lab Aomatsukan live application', () => {
     const diagram = page.getByTestId('kozue-diagram');
     await expect(diagram.locator('svg')).toBeVisible({ timeout: 30_000 });
     await page.getByRole('group', { name: 'ダイアグラムの種類' }).getByRole('button', { name: 'シーケンス' }).click();
+    // The previous diagram is not exportable: wait until the sequence diagram
+    // has been analysed and re-rendered (PATCH-006).
+    await expect(diagram).toHaveAttribute('data-diagram-kind', 'sequence', { timeout: 30_000 });
     await expect(diagram.locator('svg')).toBeVisible({ timeout: 30_000 });
 
     await page.getByTestId('kozue-export').click();

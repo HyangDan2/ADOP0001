@@ -216,6 +216,25 @@ export function withAttributes(bundle: KotohaBundle, attributes: BundleAttribute
   return { ...bundle, attributes: mergeAttributes(bundle.attributes, attributes) };
 }
 
+/**
+ * Order-insensitive identity of an attribute set, used for the "is the rebuilt
+ * .docx still current?" guard. Two objects with the same values can stringify
+ * differently when a preset or an imported bundle introduced another key order;
+ * that mismatch must not be mistaken for an edit (FIX-020).
+ */
+export function attributeSignature(attributes: BundleAttributes | null): string {
+  if (!attributes) return '';
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      return Object.fromEntries(Object.keys(record).sort().map((key) => [key, canonical(record[key])]));
+    }
+    return value;
+  };
+  return JSON.stringify(canonical(attributes));
+}
+
 /** Fills fields that bundles written by an older build do not carry. */
 export function normaliseBundle(bundle: KotohaBundle): KotohaBundle {
   return {

@@ -3,14 +3,17 @@ import { EmptyHint, LineEditor, ToolPane, useDropFile } from '../../components/u
 import { ExportModal } from '../../components/ExportModal';
 import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
+import { readSourceFile, takeFileInput } from '../../lib/fileInput';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
+import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
+import { EngineDiagnostics } from '../../components/EngineDiagnostics';
+import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
-import { ALL_SECTIONS, ShioriAdapter, type ShioriOutput, type SpecSection } from './adapter';
-
-const adapter = new ShioriAdapter();
+import { ALL_SECTIONS, type ShioriOutput, type SpecSection } from './adapter';
+import { runEngine } from '../../engine/core/runner';
 
 const SECTION_LABEL: Record<SpecSection, string> = {
   overview: '概要',
@@ -38,31 +41,46 @@ export function ShioriTool() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [diagnostics, setDiagnostics] = useState<EngineDiagnostic[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const timer = useRef<number | null>(null);
-  const nextRequest = useRequestGate();
+  const gate = useRequestGate();
+  /** PATCH-006: the input an output belongs to, and the input it was built from. */
+  const inputRevision = useRef(0);
+  const outputRevision = useRef<number | null>(null);
+  /** PATCH-006: identity of the newest file pick; older reads are dropped. */
+  const readSeq = useRef(0);
 
   const run = async (text: string, name: string, activeSections: SpecSection[]) => {
+    const revision = inputRevision.current;
     if (!text.trim()) {
+      // The debounce may replace a run that was still busy; the empty input is
+      // the newest state, so it owns the release of the busy flag (FIX-006).
+      gate.invalidate();
+      setBusy(false);
       setOutput(null);
+      setDiagnostics([]);
       setError(null);
+      outputRevision.current = null;
       return;
     }
-    const request = nextRequest();
+    const request = gate.start();
     setBusy(true);
     setError(null);
     try {
-      const result = await adapter.run({
-        toolId: 'shiori',
+      const result = await runEngine('shiori', {
         sourceName: name,
         source: text,
         options: { sections: activeSections, includePrivate: true },
         mode: 'local-static',
+        signal: request.signal,
       });
       if (!request.isCurrent()) return;
       setOutput(result.output);
+      setDiagnostics(result.diagnostics);
       setElapsed(result.elapsedMs);
+      outputRevision.current = revision;
       try {
         localStorage.setItem(
           'adop0001.shiori.latest',
@@ -74,17 +92,23 @@ export function ShioriTool() {
     } catch (cause) {
       if (!request.isCurrent()) return;
       setOutput(null);
+      setDiagnostics([]);
       setError(errorMessage(cause, '仕様書を生成できませんでした。'));
+      outputRevision.current = null;
     } finally {
       if (request.isCurrent()) setBusy(false);
     }
   };
 
   useEffect(() => {
+    inputRevision.current += 1;
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => void run(source, fileName, sections), 260);
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
+      // A source/option change, reset or unmount supersedes the run immediately;
+      // the debounce alone would leave the previous request current for ~250 ms.
+      gate.invalidate();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, fileName, sections]);
@@ -95,8 +119,16 @@ export function ShioriTool() {
   };
 
   const loadFile = async (file: File) => {
-    const text = await file.text();
-    setSource(text);
+    // PATCH-006: only the latest pick may land; a slower earlier read must not
+    // overwrite the file the user chose afterwards.
+    const readId = ++readSeq.current;
+    const read = await readSourceFile(file);
+    if (readId !== readSeq.current) return;
+    if (read.text === null) {
+      showToast(read.error);
+      return;
+    }
+    setSource(read.text);
     setFileName(file.name);
   };
 
@@ -111,6 +143,8 @@ export function ShioriTool() {
   const baseName = fileName.replace(/\.[^.]+$/, '') || 'specification';
 
   const download = (kind: 'md' | 'html', base: string) => {
+    // PATCH-006: the download is only allowed for the artifact of the current input.
+    assertArtifactRevision(inputRevision.current, output ? outputRevision.current : null);
     if (!output) return;
     if (kind === 'md') downloadBlob(`${base}.spec.md`, output.markdown, 'text/markdown;charset=utf-8');
     else downloadBlob(`${base}.spec.html`, output.html, 'text/html;charset=utf-8');
@@ -150,7 +184,7 @@ export function ShioriTool() {
                   accept={CODE_FILE_ACCEPT}
                   style={{ display: 'none' }}
                   onChange={(event) => {
-                    const file = event.target.files?.[0];
+                    const file = takeFileInput(event);
                     if (file) void loadFile(file);
                   }}
                 />
@@ -367,6 +401,7 @@ export function ShioriTool() {
         <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
+        <EngineDiagnostics diagnostics={diagnostics} />
       </div>
       {toast ? <div className="toast">{toast}</div> : null}
       {exportOpen && output ? (
@@ -381,7 +416,10 @@ export function ShioriTool() {
               description: '契約表・振る舞い・エラー経路を含む Markdown 仕様書',
               fileName: (base) => `${base}.spec.md`,
               run: (base) => download('md', base),
-              copy: () => output.markdown,
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.markdown;
+              },
             },
             {
               id: 'html',
@@ -389,7 +427,10 @@ export function ShioriTool() {
               description: 'そのまま配布できるスタンドアロン HTML 仕様書',
               fileName: (base) => `${base}.spec.html`,
               run: (base) => download('html', base),
-              copy: () => output.html,
+              copy: () => {
+                assertArtifactRevision(inputRevision.current, outputRevision.current);
+                return output.html;
+              },
             },
           ]}
         />
