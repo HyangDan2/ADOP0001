@@ -4,6 +4,7 @@ import { ExportModal } from '../../components/ExportModal';
 import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { readSourceFile, takeFileInput } from '../../lib/fileInput';
+import { useInputArbiter } from '../../lib/inputArbiter';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
@@ -36,7 +37,12 @@ export function KozueTool() {
     direction: 'TD' as Direction,
   });
   const { source, fileName, kind, direction } = draft;
-  const setSource = (value: string) => setField('source', value);
+  /** WO-02: typing, Clear, samples and workspace opens all supersede a pending file read. */
+  const input = useInputArbiter();
+  const setSource = (value: string) => {
+    input.commit();
+    setField('source', value);
+  };
   const setFileName = (value: string) => setField('fileName', value);
   const setKind = (value: UmlKind | 'auto') => setField('kind', value);
   const setDirection = (value: Direction) => setField('direction', value);
@@ -61,7 +67,6 @@ export function KozueTool() {
   // PATCH-006: input/output revisions so a stale result can never be exported.
   const inputRevision = useRef(0);
   const outputRevision = useRef<number | null>(null);
-  const readSeq = useRef(0);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -164,9 +169,11 @@ export function KozueTool() {
   };
 
   const loadFile = async (file: File) => {
-    const readId = ++readSeq.current;
+    // WO-02: only the newest input may land. A slower read loses to a later
+    // pick, to typing, to Clear, to a sample or to a workspace open.
+    const readId = input.beginRead();
     const read = await readSourceFile(file);
-    if (readId !== readSeq.current) return;
+    if (!input.isReadCurrent(readId)) return;
     if (read.text === null) {
       showToast(read.error);
       return;
@@ -178,6 +185,8 @@ export function KozueTool() {
   const drop = useDropFile((file) => void loadFile(file));
 
   useOpenedFile('kozue', (opened) => {
+    // A workspace pick is a newer input than any read still in flight.
+    input.commit();
     setSource(opened.text);
     setFileName(opened.name);
     showToast(`${opened.path} を開きました`);

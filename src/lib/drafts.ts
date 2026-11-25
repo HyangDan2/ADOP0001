@@ -13,6 +13,17 @@
  *   of being guessed at.
  * - A failed write is reported to the UI (`state.error`) instead of pretending to save.
  * - `resetAllDrafts()` is the explicit "start over" used by the app menu.
+ *
+ * WO-02 additions:
+ *
+ * - An IndexedDB access that was *attempted and refused* (`failed`) is reported as a
+ *   degraded save, while a browser without IndexedDB at all (`unavailable`) is a normal
+ *   memory/localStorage-only environment with no alarming message.
+ * - A refused draft deletion is a failure now: `clearDraft()` and `resetAllDrafts()`
+ *   report it, so the app can keep the drafts and stop the reload.
+ * - Every durable write goes through one queue per tool and carries the store epoch it
+ *   was accepted in. A write captured before a reset is dropped, and the reset's deletes
+ *   run last, so an autosave that fires during a reset cannot re-create the draft.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -29,6 +40,14 @@ const LOCAL_LIMIT_CHARS = 200_000;
 
 export type DraftStorage = 'indexeddb' | 'localstorage' | 'memory';
 
+/**
+ * - `ok`: IndexedDB answered.
+ * - `unavailable`: this environment has no IndexedDB at all — memory/localStorage-only
+ *   operation is expected and is not an error.
+ * - `failed`: access was attempted and refused (blocked, opaque origin, open error).
+ */
+export type IdbStatus = 'ok' | 'unavailable' | 'failed';
+
 export interface DraftRecord<T> {
   version: number;
   toolId: ToolId;
@@ -42,15 +61,50 @@ export interface DraftState {
   /** True when the values on screen came from storage rather than the built-in sample. */
   restored: boolean;
   error: string | null;
+  /** Why the save went where it did; distinguishes a degraded save from a normal one. */
+  idb?: IdbStatus;
+  /** Set when the draft was saved somewhere durable but not where it was meant to go. */
+  notice?: string | null;
+}
+
+export interface DraftWriteResult {
+  savedAt: string;
+  storage: DraftStorage;
+  /** Set only when nothing durable holds the draft. */
+  error: string | null;
+  idb: IdbStatus;
+  /** A durable but degraded save (e.g. IndexedDB refused, localStorage kept it). */
+  notice: string | null;
+  /** True when a reset discarded the draft while this write was queued. */
+  superseded: boolean;
+}
+
+export interface ClearDraftResult {
+  /** False when a stored copy could not be removed. */
+  ok: boolean;
+  idb: IdbStatus;
+  error: string | null;
+}
+
+export interface ResetDraftsResult {
+  ok: boolean;
+  failed: ToolId[];
+  idb: IdbStatus;
+  error: string | null;
 }
 
 const memory = new Map<string, DraftRecord<Record<string, unknown>>>();
 
-function openDb(): Promise<IDBDatabase | null> {
+interface OpenedDb {
+  db: IDBDatabase | null;
+  status: IdbStatus;
+}
+
+function openDb(): Promise<OpenedDb> {
   return new Promise((resolve) => {
     try {
       if (typeof indexedDB === 'undefined') {
-        resolve(null);
+        resolve({ db: null, status: 'unavailable' });
         return;
       }
       const request = indexedDB.open(DB_NAME, 1);
@@ -58,11 +112,11 @@ function openDb(): Promise<IDBDatabase | null> {
         const db = request.result;
         if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
       };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => resolve(null);
-      request.onblocked = () => resolve(null);
+      request.onsuccess = () => resolve({ db: request.result, status: 'ok' });
+      request.onerror = () => resolve({ db: null, status: 'failed' });
+      request.onblocked = () => resolve({ db: null, status: 'failed' });
     } catch {
-      resolve(null);
+      resolve({ db: null, status: 'failed' });
     }
   });
 }
@@ -94,15 +148,16 @@ function idbGet<T>(db: IDBDatabase, toolId: ToolId): Promise<DraftRecord<T> | nu
   });
 }
 
-function idbDelete(db: IDBDatabase, toolId: ToolId): Promise<void> {
+function idbDelete(db: IDBDatabase, toolId: ToolId): Promise<boolean> {
   return new Promise((resolve) => {
     try {
       const transaction = db.transaction(STORE, 'readwrite');
       transaction.objectStore(STORE).delete(toolId);
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => resolve();
+      transaction.oncomplete = () => resolve(true);
+      transaction.onerror = () => resolve(false);
+      transaction.onabort = () => resolve(false);
     } catch {
-      resolve();
+      resolve(false);
     }
   });
 }
@@ -154,13 +209,23 @@ function writeLocal(toolId: ToolId, record: DraftRecord<unknown>): boolean {
   }
 }
 
+function removeLocal(toolId: ToolId): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    localStorage.removeItem(`${LOCAL_PREFIX}${toolId}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Full read: IndexedDB wins when it holds a record at least as new as localStorage. */
 export async function readDraft<T>(toolId: ToolId): Promise<{ data: T; savedAt: string; storage: DraftStorage } | null> {
   const local = readLocalRaw<T>(toolId);
-  const db = await openDb();
-  if (db) {
-    const remote = await idbGet<T>(db, toolId);
-    db.close();
+  const opened = await openDb();
+  if (opened.db) {
+    const remote = await idbGet<T>(opened.db, toolId);
+    opened.db.close();
     const migrated = migrate<T>(remote, toolId);
     if (migrated && (!local || migrated.savedAt >= local.savedAt)) {
       return { data: migrated.data, savedAt: migrated.savedAt, storage: 'indexeddb' };
@@ -171,66 +236,202 @@ export async function readDraft<T>(toolId: ToolId): Promise<{ data: T; savedAt: 
   return fallback ? { data: fallback.data, savedAt: fallback.savedAt, storage: 'memory' } : null;
 }
 
+/* ------------------------------------------------------------------ */
+/* Write queue and store epoch                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One queue per tool. Writes and deletes run in the order they were accepted, so a
+ * reset that is queued after a write deletes what that write left behind, and a write
+ * queued after a reset is evaluated against the new epoch.
+ */
+const writeChains = new Map<ToolId, Promise<unknown>>();
+
+function enqueue<T>(toolId: ToolId, task: () => Promise<T>): Promise<T> {
+  const previous = writeChains.get(toolId) ?? Promise.resolve();
+  const next = previous.then(task, task);
+  writeChains.set(
+    toolId,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
+/**
+ * Bumped by `resetAllDrafts()`. A writer carries the epoch it was accepted in; once the
+ * epoch moved, that writer belongs to a draft the user discarded and is dropped. This is
+ * what stops an autosave that fires mid-reset from resurrecting the cleared draft.
+ */
+let storeEpoch = 0;
+
+export function draftStoreEpoch(): number {
+  return storeEpoch;
+}
+
+export interface DraftWriteOptions {
+  /** Epoch the caller was mounted in; a write from an older epoch is dropped. */
+  epoch?: number;
+}
+
+function supersededResult(savedAt: string): DraftWriteResult {
+  return { savedAt, storage: 'memory', error: null, idb: 'unavailable', notice: null, superseded: true };
+}
+
 /**
  * Writes the draft. The small mirror is written synchronously; IndexedDB is written in
  * the background and upgrades the reported storage when it succeeds.
  */
-export async function writeDraft<T>(toolId: ToolId, data: T): Promise<{ savedAt: string; storage: DraftStorage; error: string | null }> {
+export async function writeDraft<T>(
+  toolId: ToolId,
+  data: T,
+  options: DraftWriteOptions = {},
+): Promise<DraftWriteResult> {
   const savedAt = new Date().toISOString();
   const record: DraftRecord<T> = { version: DRAFT_VERSION, toolId, savedAt, data };
-  memory.set(toolId, record as DraftRecord<Record<string, unknown>>);
-  const localOk = writeLocal(toolId, record as DraftRecord<unknown>);
-  const db = await openDb();
-  if (!db) {
-    return localOk
-      ? { savedAt, storage: 'localstorage', error: null }
-      : { savedAt, storage: 'memory', error: 'このブラウザに下書きを保存できませんでした。' };
-  }
-  const ok = await idbPut(db, record as DraftRecord<unknown>);
-  db.close();
-  if (ok) return { savedAt, storage: 'indexeddb', error: null };
-  return localOk
-    ? { savedAt, storage: 'localstorage', error: null }
-    : { savedAt, storage: 'memory', error: '下書きの保存に失敗しました（IndexedDB と localStorage の両方が使えません）。' };
+  const acceptedEpoch = options.epoch ?? storeEpoch;
+  return enqueue(toolId, async () => {
+    if (options.epoch !== undefined && options.epoch !== storeEpoch) return supersededResult(savedAt);
+    memory.set(toolId, record as DraftRecord<Record<string, unknown>>);
+    const localOk = writeLocal(toolId, record as DraftRecord<unknown>);
+    const opened = await openDb();
+    if (!opened.db) {
+      if (opened.status === 'failed') {
+        return localOk
+          ? {
+              savedAt,
+              storage: 'localstorage' as const,
+              error: null,
+              idb: 'failed' as const,
+              notice: 'このブラウザの IndexedDB にアクセスできないため、下書きは localStorage に保存しました。',
+              superseded: false,
+            }
+          : {
+              savedAt,
+              storage: 'memory' as const,
+              error: '下書きを保存できませんでした（IndexedDB と localStorage の両方が使えません）。',
+              idb: 'failed' as const,
+              notice: null,
+              superseded: false,
+            };
+      }
+      // No IndexedDB in this browser: a localStorage mirror is the expected landing spot.
+      return localOk
+        ? { savedAt, storage: 'localstorage' as const, error: null, idb: 'unavailable' as const, notice: null, superseded: false }
+        : {
+            savedAt,
+            storage: 'memory' as const,
+            error: null,
+            idb: 'unavailable' as const,
+            notice: 'このブラウザは保存領域を使えないため、下書きはメモリのみに保持しています（再読み込みで失われます）。',
+            superseded: false,
+          };
+    }
+    const ok = await idbPut(opened.db, record as DraftRecord<unknown>);
+    opened.db.close();
+    if (!ok) {
+      return localOk
+        ? {
+            savedAt,
+            storage: 'localstorage' as const,
+            error: null,
+            idb: 'failed' as const,
+            notice: 'IndexedDB への書き込みに失敗したため、下書きは localStorage に保存しました。',
+            superseded: false,
+          }
+        : {
+            savedAt,
+            storage: 'memory' as const,
+            error: '下書きの保存に失敗しました（IndexedDB と localStorage の両方が使えません）。',
+            idb: 'failed' as const,
+            notice: null,
+            superseded: false,
+          };
+    }
+    // A reset that started while this transaction was open must win.
+    if (acceptedEpoch !== storeEpoch) {
+      const reopened = await openDb();
+      if (reopened.db) {
+        await idbDelete(reopened.db, toolId);
+        reopened.db.close();
+      }
+      memory.delete(toolId);
+      removeLocal(toolId);
+      return supersededResult(savedAt);
+    }
+    return { savedAt, storage: 'indexeddb' as const, error: null, idb: 'ok' as const, notice: null, superseded: false };
+  });
 }
 
 /** Synchronous best-effort write for `pagehide`/unmount. */
-export function writeDraftNow<T>(toolId: ToolId, data: T): void {
+export function writeDraftNow<T>(toolId: ToolId, data: T, options: DraftWriteOptions = {}): void {
+  if (options.epoch !== undefined && options.epoch !== storeEpoch) return;
   const savedAt = new Date().toISOString();
   const record: DraftRecord<T> = { version: DRAFT_VERSION, toolId, savedAt, data };
   memory.set(toolId, record as DraftRecord<Record<string, unknown>>);
   writeLocal(toolId, record as DraftRecord<unknown>);
-  void openDb().then(async (db) => {
-    if (!db) return;
-    await idbPut(db, record as DraftRecord<unknown>);
-    db.close();
-  });
-}
-
-export async function clearDraft(toolId: ToolId): Promise<void> {
-  memory.delete(toolId);
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.removeItem(`${LOCAL_PREFIX}${toolId}`);
-  } catch {
-    /* ignore */
-  }
-  const db = await openDb();
-  if (!db) return;
-  await idbDelete(db, toolId);
-  db.close();
+  // The durable copy still goes through the queue so a reset can order itself after it.
+  void enqueue(toolId, async () => {
+    if (options.epoch !== undefined && options.epoch !== storeEpoch) return;
+    const opened = await openDb();
+    if (!opened.db) return;
+    await idbPut(opened.db, record as DraftRecord<unknown>);
+    opened.db.close();
+  }).catch(() => undefined);
 }
 
 /**
- * Bumped by `resetAllDrafts()`. A tool that was mounted before the reset keeps
- * its own document in memory and would otherwise re-save it from a pending
- * debounce or a pagehide flush, resurrecting the draft the user just cleared.
- * Writers captured in an older epoch are dropped.
+ * Removes the draft everywhere. A refused IndexedDB delete is reported: the stored copy
+ * is still there, so the caller must not announce the draft as discarded (WO-02).
  */
-let storeEpoch = 0;
+export async function clearDraft(toolId: ToolId): Promise<ClearDraftResult> {
+  memory.delete(toolId);
+  return enqueue(toolId, async () => {
+    removeLocal(toolId);
+    const opened = await openDb();
+    if (!opened.db) {
+      if (opened.status === 'failed') {
+        return {
+          ok: false,
+          idb: 'failed' as const,
+          error: 'このブラウザの IndexedDB にアクセスできず、下書きを削除できませんでした。',
+        };
+      }
+      return { ok: true, idb: 'unavailable' as const, error: null };
+    }
+    const removed = await idbDelete(opened.db, toolId);
+    opened.db.close();
+    memory.delete(toolId);
+    if (!removed) {
+      return { ok: false, idb: 'failed' as const, error: '下書きの削除に失敗しました。' };
+    }
+    return { ok: true, idb: 'ok' as const, error: null };
+  });
+}
 
-export async function resetAllDrafts(toolIds: ToolId[]): Promise<void> {
+/**
+ * Explicit "start over". The epoch moves first so a write captured by an older mount is
+ * dropped, the queue is drained, and the deletes are queued last — an autosave that fires
+ * during the reset can neither overtake a delete nor re-create what it removed.
+ */
+export async function resetAllDrafts(toolIds: ToolId[]): Promise<ResetDraftsResult> {
   storeEpoch += 1;
-  await Promise.all(toolIds.map((toolId) => clearDraft(toolId)));
+  await Promise.all([...writeChains.values()]);
+  const results = await Promise.all(toolIds.map(async (toolId) => ({ toolId, result: await clearDraft(toolId) })));
+  const failed = results.filter((entry) => !entry.result.ok).map((entry) => entry.toolId);
+  const idb: IdbStatus = results.some((entry) => entry.result.idb === 'failed')
+    ? 'failed'
+    : results.every((entry) => entry.result.idb === 'unavailable')
+      ? 'unavailable'
+      : 'ok';
+  return {
+    ok: failed.length === 0,
+    failed,
+    idb,
+    error: failed.length ? '下書きの削除に失敗しました。下書きは残っています。' : null,
+  };
 }
 
 /** Short Japanese status shown in a tool's status bar. */
@@ -241,6 +442,27 @@ export function draftLabel(state: DraftState): string {
     return `下書き保存済み ${time}`;
   }
   return '下書きなし';
+}
+
+/**
+ * Explains a degraded or memory-only save. A refused IndexedDB is an incident worth a
+ * sentence; a browser that simply has no IndexedDB is a normal environment, so only the
+ * "nothing durable at all" case is called out there (WO-02).
+ */
+export function draftStorageDetail(state: DraftState): string | null {
+  if (state.error) return state.error;
+  if (state.idb === 'failed') {
+    return state.storage === 'localstorage'
+      ? 'IndexedDB にアクセスできませんでした。下書きは localStorage に保存しています。'
+      : 'IndexedDB にアクセスできませんでした。下書きを保存できません。';
+  }
+  if (state.storage === 'memory') {
+    return 'このブラウザは保存領域を使えないため、下書きはメモリのみです（再読み込みで失われます）。';
+  }
+  if (state.idb === 'unavailable' && state.storage === 'localstorage') {
+    return 'このブラウザは IndexedDB を使えません。下書きは localStorage に保存しています。';
+  }
+  return null;
 }
 
 export interface ToolDraft<T> {
@@ -281,7 +503,7 @@ export function useToolDraft<T extends Record<string, unknown>>(toolId: ToolId, 
       if (storeEpoch !== epoch.current) return;
       if (record.storage !== 'indexeddb') return; // the sync path already handled it
       setSnapshot({ data: { ...initial, ...record.data }, savedAt: record.savedAt, restored: true });
-      setState({ savedAt: record.savedAt, storage: 'indexeddb', restored: true, error: null });
+      setState({ savedAt: record.savedAt, storage: 'indexeddb', restored: true, error: null, idb: 'ok' });
     });
     return () => {
       cancelled = true;
@@ -292,7 +514,7 @@ export function useToolDraft<T extends Record<string, unknown>>(toolId: ToolId, 
 
   const flush = useCallback(() => {
     if (!touched.current || storeEpoch !== epoch.current) return;
-    writeDraftNow(toolId, latest.current);
+    writeDraftNow(toolId, latest.current, { epoch: epoch.current });
   }, [toolId]);
 
   useEffect(() => {
@@ -322,8 +544,16 @@ export function useToolDraft<T extends Record<string, unknown>>(toolId: ToolId, 
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       if (storeEpoch !== epoch.current) return;
-      void writeDraft(toolId, snapshot.data).then((result) => {
-        setState({ savedAt: result.savedAt, storage: result.storage, restored: false, error: result.error });
+      void writeDraft(toolId, snapshot.data, { epoch: epoch.current }).then((result) => {
+        if (result.superseded) return;
+        setState({
+          savedAt: result.savedAt,
+          storage: result.storage,
+          restored: false,
+          error: result.error,
+          idb: result.idb,
+          notice: result.notice,
+        });
       });
     }, 250);
     return () => {

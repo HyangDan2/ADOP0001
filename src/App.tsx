@@ -174,7 +174,13 @@ export default function App() {
       setResetError('保存領域を初期化できませんでした。下書きと文書は削除されていません。');
       return;
     }
-    await resetAllDrafts(TOOLS.map((item) => item.id));
+    const resetAll = await resetAllDrafts(TOOLS.map((item) => item.id));
+    if (!resetAll.ok) {
+      // WO-02: a refused deletion is not a success. The drafts are still there,
+      // so the app keeps them and does not reload as if the reset had happened.
+      setResetError('下書きの削除に失敗しました。下書きは残っています。');
+      return;
+    }
     // Completed analyses belong to the drafts that were just discarded.
     clearEngineCache();
     setDraftEpoch((value) => value + 1);
