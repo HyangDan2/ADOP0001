@@ -44,6 +44,7 @@ export type HybridErrorKind =
   | 'empty-choices'
   | 'unsupported-format'
   | 'schema'
+  | 'approval'
   | 'provider';
 
 export interface HybridErrorInit {
