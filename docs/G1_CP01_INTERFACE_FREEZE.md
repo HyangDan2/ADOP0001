@@ -1,19 +1,20 @@
 # G1-CP01 Interface Freeze Candidate
 
-- **Status:** REVIEW REQUESTED — CP01-FIX-01~06 applied
-- **Gate:** G0 PO approval recorded (2026-11-27); CP01 final approval pending; G1 implementation locked
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 contract foundation
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 in progress; CP02-01 locked until the contract SHA is fixed
 - **Baseline:** `04dd2fc` (merged tree identical to approved `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Scope:** WO-D01~D04 and SUP-D01~D07 only
 - **Date:** 2026-11-27
 - **Repository:** `HyangDan2/ADOP0001`
 - **Review branch:** `docs/g1-cp01-interface-freeze`
-- **Supervisor disposition:** CONDITIONAL PASS; amendments CP01-FIX-01~06 applied
+- **Supervisor disposition:** APPROVED WITH IMPLEMENTATION CONDITIONS; CP01-FIX-01~06 and C01~C06 applied
 
 This document is the Interface Freeze Candidate for Phase 5D Gate G1. It is a
 design document only. No artifact implementation, database migration, test
-change, or runtime wiring is included. G0 final approval is recorded; CP01
-approval is still required before any G1 implementation or parallel work starts.
+change, or runtime wiring is included. G0 final approval and CP01 approval are
+recorded with the C01~C06 implementation conditions; CP02-00 is the only
+authorized work until the common contract SHA is fixed.
 
 The amendments in CP01-FIX-01~06 are applied in place. They are not a second
 contract: they amend the types, policies, interfaces, and decision log below.
@@ -1392,13 +1393,14 @@ Remaining:
 
 | ID | Blocker | State |
 | --- | --- | --- |
-| B-02 | CP01 Interface Freeze final approval is pending. | Open |
+| — | None | — |
 
 Resolved:
 
 | ID | Resolution |
 | --- | --- |
 | B-01 | G0 PO final approval recorded 2026-11-27. PR #12 merged at `04dd2fc`; its tree is identical to the approved candidate `3af2427`; the frozen baseline is tag `g0-baseline`; CI run `45911307876` passed build and Pages deploy. |
+| B-02 | CP01 approved 2026-11-27 with implementation conditions. C01~C06 are applied in CP02-00; CP02-01 waits for the fixed contract SHA. |
 | B-03 | SUP-D01~D07 full text is sourced from the existing G1 integrated Work Order PART B and Supervisor Addendum and registered as a repository-managed document before CP02. This workspace does not contain the source text, so it is not reproduced or inferred here. |
 | B-04 | This is a documentation design stage. Contract typecheck is performed in CP02 after approval, not now. |
 | B-05 | Draft link is an approved recoverable cache with the repository as authority. No cross-DB atomicity claim. |
@@ -1422,7 +1424,7 @@ Work Order text.
   work after approval (B-04).
 - The existing baseline is preserved at `04dd2fc` (approved candidate `3af2427`;
   tag `g0-baseline`).
-- CP02 parallel implementation is forbidden until the Supervisor records CP01
-  final approval. G0 approval is recorded.
+- CP02-00 contract work is authorized. CP02-01 parallel implementation starts only
+  after the common contract SHA is fixed and the per-agent worktrees exist.
 
-**CP01 state: REVIEW REQUESTED — amendments applied. No implementation is authorized.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 authorized; CP02-01 locked until the contract SHA.**

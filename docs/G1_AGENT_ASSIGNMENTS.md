@@ -1,7 +1,7 @@
 # G1 Agent Assignments and Collaboration Protocol
 
-- **Status:** REVIEW REQUESTED — CP01-FIX-01~06 applied
-- **Gate:** G0 PO approval recorded (2026-11-27); CP01 final approval pending; G1 implementation locked
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 contract foundation
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 in progress; CP02-01 locked until the contract SHA is fixed
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -19,13 +19,14 @@ authorize implementation.
 | Gate | State | Meaning |
 | --- | --- | --- |
 | G0 final PO approval | RECORDED 2026-11-27 | PR #12 merged at `04dd2fc`; tree identical to approved `3af2427`; tag `g0-baseline`; CI `45911307876` passed build and Pages deploy. |
-| CP01 Interface Freeze | REVIEW REQUESTED — amendments applied | CP01-FIX-01~06 are applied to the document set for re-review. |
-| G1 parallel implementation | Locked | No branch, worktree, source, test, or DB schema work before CP01 final approval. |
-| CP02 | Forbidden | Cannot start before CP01 final approval. |
+| CP01 Interface Freeze | APPROVED WITH IMPLEMENTATION CONDITIONS | C01~C06 corrections are applied in the contract foundation. |
+| G1 parallel implementation | CP02-00 only | CP02-01 waits for the fixed common contract SHA and worktrees. |
+| CP02 | AUTHORIZED | WO-D01~D04 only; CP03 needs separate approval. |
 
-The only permitted work in this state is CP01 documentation re-review. The
-document-only branch is `docs/g1-cp01-interface-freeze`, based on `3af2427`; the
-amendment commit supersedes `c5d2221`.
+The CP02 order is registered in `docs/G1_SUP_D01_D07.md`. The correction record is
+`docs/CP02_CONTRACT_CORRECTIONS.md`. The document-only branch is
+`docs/g1-cp01-interface-freeze`; the integration branch is
+`feature/phase5d-artifact-pipeline`, based on `04dd2fc`.
 
 ---
 
@@ -177,23 +178,25 @@ implementation scope is inferred from an absent text.
 
 ### 6.2 Unresolved decisions
 
-The Supervisor resolved B-03~B-06, B-09, and B-10. B-03 remains a registration
-action before CP02: the full SUP text is registered from the existing Work Order
-PART B and Supervisor Addendum. B-01 (G0 approval) is recorded at `04dd2fc`;
-only B-02 (CP01 final approval) remains a blocker. See the freeze document
-§11.3.
+The Supervisor approved CP01 with the C01~C06 implementation conditions. B-03
+remains a registration action before CP02-01: the full SUP text is registered
+from the existing Work Order PART B and Supervisor Addendum in
+`docs/G1_SUP_D01_D07.md`. All gate blockers are closed; the next gate is the
+fixed contract SHA. See the freeze document §11.3.
 
 ---
 
 ## 7. Handoff and next allowed action
 
-1. Supervisor re-reviews the four CP01 documents with CP01-FIX-01~06 applied.
-2. Supervisor records Interface Freeze approval.
-3. G0 final approval and baseline freeze are recorded at `04dd2fc`
+1. Supervisor re-review of CP01 is complete: approved with implementation
+   conditions.
+2. G0 final approval and baseline freeze are recorded at `04dd2fc`
    (tag `g0-baseline`).
-4. The SUP-D01~D07 registration document is present before CP02 starts.
-5. Only then may Qoder-00 create the integration branch/worktrees and hand off
-   implementation to Q01~Q05.
-6. CP02 parallel implementation remains forbidden until step 2 is recorded.
+3. The SUP-D01~D07 registration is present in
+   `docs/G1_SUP_D01_D07.md`.
+4. CP02-00 implements the common contract and C01~C06 corrections.
+5. After the contract SHA is fixed and worktrees exist, Qoder-00 may hand off
+   CP02-01 to Q01~Q05.
+6. CP03 Runtime Integration remains forbidden until separate approval.
 
-**Current state: CP01 REVIEW REQUESTED — amendments applied. No implementation is authorized.**
+**Current state: CP02-00 contract foundation in progress. CP02-01 is locked until the contract SHA is fixed.**

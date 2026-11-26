@@ -1,14 +1,14 @@
 # G1 File Ownership Matrix
 
-- **Status:** REVIEW REQUESTED — CP01-FIX-01~06 applied
-- **Gate:** G0 PO approval recorded (2026-11-27); CP01 final approval pending; G1 implementation locked
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 contract foundation
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 in progress; CP02-01 locked until the contract SHA is fixed
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
 
 This matrix assigns proposed G1 paths to one owner. Paths marked "proposed" do not
-exist yet; they are created only after CP01 approval. A shared file requires the
-owner's review and Qoder-00's approval.
+exist yet; they are created in CP02-01 after the contract SHA is fixed. A shared
+file requires the owner's review and Qoder-00's approval.
 
 ---
 
@@ -94,7 +94,7 @@ change the implementation to make a test pass.
 5. Q01 owns `ArtifactType`; no other agent declares a parallel type.
 6. Q05 may add tests but must not edit implementation. If a test reveals a defect,
    it is assigned to the owner.
-7. Only Qoder-00 merges into the integration branch after CP01 approval.
+7. Only Qoder-00 merges into the integration branch after CP02-02 review.
 8. No agent creates a worktree before approval.
 9. Q01 owns `inputFingerprint` semantics; Q04 composes it from the actual tool
    options. No tool may substitute `sourceHash` for freshness.
@@ -111,9 +111,10 @@ change the implementation to make a test pass.
 
 ## 7. Current state
 
-All paths in sections 1-3 and 5 are proposals. Only this documentation set exists
-on the review branch. The amendment commit supersedes `c5d2221`; the G0 baseline
-is frozen at `04dd2fc` (approved candidate `3af2427`, tag `g0-baseline`).
-CP01-FIX-01~06 changed contracts and ownership notes only.
+All paths in sections 1-3 and 5 except the contract foundation are proposals. The
+CP02-00 contract files exist on `feature/phase5d-artifact-pipeline`; the G0
+baseline is frozen at `04dd2fc` (approved candidate `3af2427`, tag
+`g0-baseline`). CP02-01 creates the remaining modules on per-agent worktrees.
+CP01-FIX-01~06 and C01~C06 changed contracts and ownership notes only.
 
-**CP01 state: REVIEW REQUESTED — amendments applied.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 contract foundation in progress.**

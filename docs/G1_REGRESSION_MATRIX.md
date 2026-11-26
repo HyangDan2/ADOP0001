@@ -1,7 +1,7 @@
 # G1 Regression Matrix (REG-G1-01~29)
 
-- **Status:** REVIEW REQUESTED — CP01-FIX-06 cases added
-- **Gate:** G0 PO approval recorded (2026-11-27); CP01 final approval pending; G1 implementation locked
+- **Status:** APPROVED — CP02-00 contract foundation
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 in progress; CP02-01 locked until the contract SHA is fixed
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -280,10 +280,10 @@ unrelated behavior.
 - No G1 test has been run.
 - No source, test, branch, worktree, or DB schema was created for G1.
 - CP01-FIX-06 cases (REG-G1-21~29) are added for re-review; INV-27~34 bind them.
-- B-03 is a registration action; B-04 is CP02 work; neither authorizes inference or
-  implementation now.
+- B-03 is registered in `docs/G1_SUP_D01_D07.md`; B-04 is CP02 work; neither
+  authorizes inference or implementation beyond the approved scope.
 - G0 final approval and baseline freeze are recorded at `04dd2fc` (tag `g0-baseline`).
-- CP01 final approval is still required.
-- CP02 parallel implementation is forbidden until CP01 approval is recorded.
+- CP01 is approved with the C01~C06 implementation conditions.
+- CP02-01 parallel implementation starts only after the contract SHA is fixed.
 
-**CP01 state: REVIEW REQUESTED — amendments applied.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 contract foundation in progress; no G1 behavior test has run.**
