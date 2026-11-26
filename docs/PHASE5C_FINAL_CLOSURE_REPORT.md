@@ -6,10 +6,10 @@
 | Branch | `feature/phase5c-hybrid-gateway` |
 | Baseline | `e982314db778ed191b402154dfa43cf740410195` |
 | Pull request | [#12](https://github.com/HyangDan2/ADOP0001/pull/12) |
-| Scope | PART A only: BUG-301 through BUG-304 and Gate G0 verification |
-| Gate G0 | REVIEW REQUESTED; Supervisor and PO approval pending |
+| Scope | PART A: BUG-301 through BUG-304, plus Gate G0 closure tasks G0-R01 through G0-R03 |
+| Gate G0 | REVIEW REQUESTED; G0-R02 exception approval and PO merge approval pending |
 | Gate G1 | LOCKED; no G1 implementation started |
-| Live Gateway | NOT TESTED |
+| Live Gateway | NOT TESTED; no credential or cost approval supplied |
 
 This report records the corrective implementation and its verification. It does not approve Gate G0,
 merge to `main`, deploy, or authorize Gate G1 / WO-D05 or later work.
@@ -195,30 +195,108 @@ The final independent read-only reaudit found no remaining actionable exact-sess
 related preview, section-picker, provider error/finish-reason, status or telemetry paths. It made no file
 changes and no live network calls.
 
+## G0-R01 — Dependency security audit
+
+Audit data was captured on 2026-11-27 against the npm registry. The raw JSON evidence is committed at:
+
+- `docs/audit/g0-npm-audit-baseline-all.json`
+- `docs/audit/g0-npm-audit-baseline-prod.json`
+- `docs/audit/g0-npm-audit-patched-all.json`
+- `docs/audit/g0-npm-audit-patched-prod.json`
+
+The pre-correction `npm audit --json` run reported 13 findings. The baseline files reproduce that same set
+from the committed `ce06ca9` lockfile with `--package-lock-only`; the patched files are the full audit output
+from the corrected install. No direct dependency other than Mermaid was changed: the lockfile changes are
+Mermaid's new transitive graph, and `npm audit fix --force` was not run.
+
+| Audit | Baseline `ce06ca9` | Patched `a2d1126` |
+| --- | --- | --- |
+| `npm audit --json` | 13 — 1 low, 2 moderate, 8 high, 2 critical | 5 — 2 low, 1 moderate, 0 high, 2 critical |
+| `npm audit --omit=dev --json` | 0 | 0 |
+| Lockfile dependency count | 549 | 525 |
+
+### Findings and dependency paths
+
+| Package | Severity | Baseline | Dependency path | Patched state |
+| --- | --- | --- | --- | --- |
+| `mermaid` | High | 11.4.1 | Direct dev dependency; deployed as `dist/vendor/mermaid.min.js` | 11.17.2; low remains through KaTeX |
+| `@mermaid-js/parser` | High | 0.3.0 | `mermaid → @mermaid-js/parser` | 1.2.1, no high finding |
+| `langium` | High | 3.0.0 | `mermaid → @mermaid-js/parser → langium` | Removed from the tree |
+| `chevrotain` | High | 11.0.3 | Mermaid parser chain, plus `chevrotain-allstar → chevrotain` | Removed from the tree |
+| `chevrotain-allstar` | High | 0.3.1 | `mermaid → chevrotain-allstar` | Removed from the tree |
+| `@chevrotain/cst-dts-gen` | High | 11.0.3 | `chevrotain → @chevrotain/cst-dts-gen → lodash-es` | Removed from the tree |
+| `@chevrotain/gast` | High | 11.0.3 | `chevrotain → @chevrotain/gast → lodash-es` | Removed from the tree |
+| `lodash-es` | High | 4.17.21 (nested) | Nested under the Chevrotain packages above | Vulnerable nested copies removed |
+| `uuid` | Moderate | 9.0.1 | `mermaid → uuid` | 14.0.3, no finding |
+| `@vitest/mocker` | Moderate | 3.2.7 | `vitest → @vitest/mocker` | Remains; test-only |
+| `katex` | Low | 0.16.47 | `mermaid → katex` | Remains; fixed only by Mermaid 12.3.0 |
+| `vitest` | Critical | 3.2.7 | Direct dev dependency; test runner | Remains; fixed only by Vitest 5.1.2 |
+| `tinypool` | Critical | 1.1.1 | `vitest → tinypool` | Remains; test-only |
+
+### Runtime, build and test impact
+
+| Surface | Exposure | Impact and disposition |
+| --- | --- | --- |
+| Deployed browser runtime | `mermaid@11.4.1` is declared under `devDependencies`, but `public/vendor/mermaid.min.js` is copied into `dist/vendor/` and loaded on demand by Kozue. | This is a deployable runtime asset, so the Mermaid high findings were treated as a real P1 even though `--omit=dev` reports zero. The eight high findings were corrected. Only the KaTeX low finding remains, and Kozue emits no math nodes. |
+| Production dependencies | The production dependency set is 17 packages; `npm audit --omit=dev --json` reports zero findings before and after the correction. | No production package, API or server code changed. |
+| Build environment | Mermaid is a build-time input used to regenerate the vendored IIFE bundle with esbuild. | The high findings could not be dismissed as dev-only because their code is shipped. The bundle was regenerated from Mermaid 11.17.2 and the build passes. |
+| Test environment | `vitest@3.2.7` runs in the local/CI test process only. | The Vitest and tinypool critical findings require a Vitest 5 major upgrade. They are not in the deployed bundle, no test server is exposed, and CI executes only repository-controlled tests. |
+
+### Critical and High response plan
+
+| Finding group | Response | Remaining action |
+| --- | --- | --- |
+| Eight Mermaid-chain High findings | Upgraded the exact Mermaid pin from 11.4.1 to 11.17.2, which is a non-major release, and rebuilt the vendored asset. `@mermaid-js/parser`, `langium`, `chevrotain`, `chevrotain-allstar`, both `@chevrotain/*` packages and the vulnerable nested `lodash-es` copies no longer carry high findings. | Closed. |
+| Critical `tinypool` and `vitest` | Both are confined to the test runner and are absent from production dependencies and the deployed bundle. The only offered fix is Vitest 5.1.2, a major upgrade that is outside this G0 corrective change and was not forced. | Schedule an authorized Vitest 5 upgrade after Gate G0, or record an explicit Supervisor/PO acceptance for the test-only exposure. |
+| Moderate `uuid` | Corrected by the Mermaid upgrade to `uuid@14.0.3`. | Closed. |
+| Moderate `@vitest/mocker` | Test-only; fixed by the same deferred Vitest 5 upgrade. | Not deployable; follow the Vitest 5 action above. |
+| Low `katex` / `mermaid` | KaTeX is reachable only through Mermaid math rendering; Kozue emits sequence, class, state, activity and component diagrams, not math nodes. Fix requires Mermaid 12.3.0, a major upgrade. | Deferred as a non-P0/P1 finding; review with the next Mermaid major upgrade. |
+
+No Critical or High finding remains in the deployed runtime or in any production dependency.
+
+### Deployed bundle impact
+
+| Asset | Before `ce06ca9` | After `a2d1126` | Change |
+| --- | --- | --- | --- |
+| `public/vendor/mermaid.min.js` | 2,571,900 bytes | 3,529,958 bytes | +958,058 bytes (+37.25%) |
+| Same asset, gzip | 743,419 bytes | 966,040 bytes | +222,621 bytes (+29.95%) |
+| Main application bundle | 858.24 kB | 858.24 kB | Unchanged |
+| SHA-256 of vendored asset | `a43bc1afd446f9c4cc66ac5dd45d02e8d65e26fc5344ec0ef787f88d6ddb6f9e` | `4fad8798764e7f9051a6702575117b67fcd30c0c5f9f9fef13c627b66cd4c65b` | Source and `dist/vendor` copies match |
+
+Mermaid remains a separate on-demand script; the main application bundle does not absorb the larger vendor
+asset. The correction therefore affects only the Kozue diagram loader and its first-load cost.
+
 ## Mandatory QA
 
 | Command | Result |
 | --- | --- |
-| `npm ci` | PASS; 13 dependency advisories reported (1 low, 2 moderate, 8 high, 2 critical) |
+| `npm ci` | PASS; 5 dependency advisories reported (2 low, 1 moderate, 2 critical; 0 high) |
 | `npx tsc --noEmit` | PASS, 0 diagnostics |
 | `npm test` | PASS — 66 files / 680 tests (634 existing + 46 new G0 regressions) |
 | `npm run qa:generated` | PASS — 39 matrix pairs; 54 PASS, 0 FAIL, 8 SKIP; all 26 executed generated tests passed |
-| `npm run build` | PASS |
+| `npm run build` | PASS — main JS 858.24 kB (gzip 263.76 kB); vendored Mermaid copied byte-for-byte |
 | `npm run test:e2e` | PASS — 70/70 Chromium tests using the supported `PW_CHROMIUM` override |
+| `npm audit --omit=dev --json` | 0 vulnerabilities |
+| `npm audit --json` | 5 residual findings, 0 high; disposition recorded under G0-R01 |
 | `git diff --check` | PASS |
 
 Generated-QA skips are limited to unavailable local Go/JUnit tooling and artifact/environment cases; they
-are reported as SKIP, not PASS. Dependency changes were not made because dependency remediation is outside
-the authorized BUG-301…304 corrective scope.
+are reported as SKIP, not PASS. The only direct dependency change is the authorized, non-major Mermaid
+11.4.1 → 11.17.2 correction and its regenerated vendor asset. No production dependency changed, no direct
+dependency other than Mermaid changed, and `npm audit fix --force` was not run.
 
 The installed Playwright package expected Chromium 1255 while the local cache ended at 1254. The full E2E
 command was therefore run with the repository-supported `PW_CHROMIUM` override pointing to installed
 Google Chrome; no Playwright configuration or workflow check was bypassed.
 
-## Live Gateway smoke test
+## Live Gateway smoke test (G0-R02)
 
-**Status: NOT TESTED.** No live gateway, credential or cost approval was supplied, and no live request was
-made. Mock transport and Playwright routing are not reported as live-provider verification.
+**Status: NOT TESTED.** No live gateway, credential or cost approval was supplied in the review
+environment, and no live request was made. Mock transport and Playwright routing are not reported as
+live-provider verification. **Supervisor and PO exception approval is requested for this item**; until it is
+granted, the smoke matrix remains NOT TESTED rather than PASS.
+
+This report contains no production data, live endpoint details or authentication material.
 
 | Smoke item | Status |
 | --- | --- |
@@ -232,16 +310,35 @@ made. Mock transport and Playwright routing are not reported as live-provider ve
 
 ## Release evidence
 
-- Candidate source/test SHA: `29473e2bbf3d607348b24177054312380c1c6ae2`
-- Candidate CI: https://github.com/HyangDan2/ADOP0001/actions/runs/45866660997 — SUCCESS
-- Candidate CI scope: TypeScript, 680 unit tests, generated-code QA, production build and 70 Chromium E2E tests passed; deploy skipped.
+- BUG-301…304 source/test SHA: `29473e2bbf3d607348b24177054312380c1c6ae2`
+- BUG-301…304 candidate CI: https://github.com/HyangDan2/ADOP0001/actions/runs/45866660997 — SUCCESS
+- BUG-301…304 CI scope: TypeScript, 680 unit tests, generated-code QA, production build and 70 Chromium E2E tests passed; deploy skipped.
+- Final G0 source/test SHA after G0-R01: `a2d1126f446a5da406c6687aafbc77a2608edfcc`
+- Final QA on `a2d1126`: 680/680 unit tests, 54 PASS / 0 FAIL generated QA with 8 SKIP, production build, 70/70 Chromium E2E tests, and `git diff --check` all passed.
 - PR: https://github.com/HyangDan2/ADOP0001/pull/12
-- Baseline-to-candidate diff/log/status/HEAD evidence will be recorded in the Gate G0 review submission.
+- The final branch HEAD and its CI run after the report commit are recorded in the PR #12 review comment.
+
+## G0-R03 — Baseline freeze and final review request
+
+- The 680 existing unit tests and 70 existing E2E tests are retained; no test was deleted and no pass
+  condition was relaxed.
+- The G0 corrective change adds no architecture, tool or user-facing feature. It contains the authorized
+  Mermaid dependency/vendor correction, audit evidence, the `.gitattributes` exemption for the already
+  vendored minified asset, and this report.
+- Residual risks: live gateway behavior is NOT TESTED pending G0-R02 exception approval; five audit
+  findings remain with the G0-R01 disposition above (zero production and zero High); cross-store reset
+  remains non-atomic and retryable.
+- Approved exceptions: none recorded yet. The only requested exception is G0-R02.
+- No merge to `main`, deployment or Phase 5D / Gate G1 work has been performed.
+- Supervisor final review and PO merge approval are requested.
 
 ## Open items and risks
 
-- Live gateway behavior remains unverified until separately authorized.
+- Live gateway behavior remains unverified until separately authorized. G0-R02 exception approval from the
+  Supervisor and PO is pending.
 - Cross-store reset remains non-atomic; partial state is disclosed and retryable as described above.
-- The 13 dependency advisories remain open and unchanged by this corrective scope.
+- Five dependency findings remain, all with zero production and zero High impact: two Critical and one
+  Moderate are test-runner-only and require a Vitest 5 major upgrade; two Low are Mermaid/KaTeX math-only
+  findings that require a Mermaid 12 major upgrade. No `npm audit fix --force` was used.
 - Gate G0 is not self-approved. Supervisor and PO review is required before any `main` merge, deployment
   or Gate G1 implementation.
