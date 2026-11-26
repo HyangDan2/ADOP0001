@@ -1,7 +1,7 @@
 # G1 Regression Matrix (REG-G1-01~29)
 
-- **Status:** APPROVED — CP02-00 contract foundation
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 in progress; CP02-01 locked until the contract SHA is fixed
+- **Status:** APPROVED — CP02-00 complete
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 complete at `8ecf0aa` (tag `cp02-contract-foundation`); CP02-01 authorized; CP03 locked
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -284,6 +284,6 @@ unrelated behavior.
   authorizes inference or implementation beyond the approved scope.
 - G0 final approval and baseline freeze are recorded at `04dd2fc` (tag `g0-baseline`).
 - CP01 is approved with the C01~C06 implementation conditions.
-- CP02-01 parallel implementation starts only after the contract SHA is fixed.
+- CP02-00 is complete at `8ecf0aa`; CP02-01 started from that SHA.
 
-**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 contract foundation in progress; no G1 behavior test has run.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 complete; CP02-01 authorized; no G1 behavior test has run.**

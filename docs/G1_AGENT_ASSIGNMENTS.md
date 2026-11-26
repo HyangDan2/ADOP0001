@@ -1,7 +1,7 @@
 # G1 Agent Assignments and Collaboration Protocol
 
-- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 contract foundation
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 in progress; CP02-01 locked until the contract SHA is fixed
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 complete
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 complete at `8ecf0aa` (tag `cp02-contract-foundation`); CP02-01 authorized; CP03 locked
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -9,8 +9,8 @@
 - **Supervisor disposition:** CONDITIONAL PASS; amendments applied
 
 This document records the six-role Aomatsukan squad, the boundaries that keep
-parallel work from overlapping, and the current CP01 review state. It does not
-authorize implementation.
+parallel work from overlapping, and the current gate state. It authorizes CP02-01
+within WO-D01~D04 only; CP03 is not authorized.
 
 ---
 
@@ -20,7 +20,7 @@ authorize implementation.
 | --- | --- | --- |
 | G0 final PO approval | RECORDED 2026-11-27 | PR #12 merged at `04dd2fc`; tree identical to approved `3af2427`; tag `g0-baseline`; CI `45911307876` passed build and Pages deploy. |
 | CP01 Interface Freeze | APPROVED WITH IMPLEMENTATION CONDITIONS | C01~C06 corrections are applied in the contract foundation. |
-| G1 parallel implementation | CP02-00 only | CP02-01 waits for the fixed common contract SHA and worktrees. |
+| G1 parallel implementation | CP02-01 authorized | Contract SHA `8ecf0aa`; per-agent worktrees created from it; CP02-02 review pending. |
 | CP02 | AUTHORIZED | WO-D01~D04 only; CP03 needs separate approval. |
 
 The CP02 order is registered in `docs/G1_SUP_D01_D07.md`. The correction record is
@@ -105,8 +105,10 @@ implementation scope is inferred from an absent text.
   - `agent/g1-data`
   - `agent/g1-ui`
   - `agent/g1-qa`
-- Future integration branch: `feature/phase5d-artifact-pipeline` (not created).
-- No agent worktree is created before CP01 approval.
+- Integration branch: `feature/phase5d-artifact-pipeline` (created from
+  `04dd2fc`; contract at `8ecf0aa`).
+- Agent worktrees exist only after the CP02-00 contract SHA; no worktree may be
+  created from another SHA.
 - No agent merges into the integration branch. Qoder-00 performs integration
   after review.
 - A shared file requires the owner's review and Lead approval:
@@ -194,9 +196,10 @@ fixed contract SHA. See the freeze document §11.3.
    (tag `g0-baseline`).
 3. The SUP-D01~D07 registration is present in
    `docs/G1_SUP_D01_D07.md`.
-4. CP02-00 implements the common contract and C01~C06 corrections.
-5. After the contract SHA is fixed and worktrees exist, Qoder-00 may hand off
-   CP02-01 to Q01~Q05.
+4. CP02-00 is complete: contract `8ecf0aa`, C01~C06 corrections, contract
+   invariants 7/7, full suite 687/687.
+5. Qoder-00 handed off CP02-01 to Q01~Q05 from that SHA; the next gate is CP02-02
+   integration review.
 6. CP03 Runtime Integration remains forbidden until separate approval.
 
-**Current state: CP02-00 contract foundation in progress. CP02-01 is locked until the contract SHA is fixed.**
+**Current state: CP02-00 complete at `8ecf0aa`. CP02-01 authorized; CP02-02 review pending; CP03 locked.**

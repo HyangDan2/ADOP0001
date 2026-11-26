@@ -1,7 +1,7 @@
 # G1 File Ownership Matrix
 
-- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 contract foundation
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 in progress; CP02-01 locked until the contract SHA is fixed
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 complete
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 complete at `8ecf0aa` (tag `cp02-contract-foundation`); CP02-01 authorized; CP03 locked
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -112,9 +112,10 @@ change the implementation to make a test pass.
 ## 7. Current state
 
 All paths in sections 1-3 and 5 except the contract foundation are proposals. The
-CP02-00 contract files exist on `feature/phase5d-artifact-pipeline`; the G0
-baseline is frozen at `04dd2fc` (approved candidate `3af2427`, tag
-`g0-baseline`). CP02-01 creates the remaining modules on per-agent worktrees.
-CP01-FIX-01~06 and C01~C06 changed contracts and ownership notes only.
+CP02-00 contract files exist on `feature/phase5d-artifact-pipeline` at `8ecf0aa`
+(tag `cp02-contract-foundation`); the G0 baseline is frozen at `04dd2fc`
+(approved candidate `3af2427`, tag `g0-baseline`). CP02-01 creates the remaining
+modules on per-agent worktrees created from `8ecf0aa`. CP01-FIX-01~06 and
+C01~C06 changed contracts and ownership notes only.
 
-**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 contract foundation in progress.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 complete; CP02-01 authorized.**

@@ -1,7 +1,7 @@
 # G1-CP01 Interface Freeze Candidate
 
-- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 contract foundation
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 in progress; CP02-01 locked until the contract SHA is fixed
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 complete
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 complete at `8ecf0aa` (tag `cp02-contract-foundation`); CP02-01 authorized; CP03 locked
 - **Baseline:** `04dd2fc` (merged tree identical to approved `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Scope:** WO-D01~D04 and SUP-D01~D07 only
@@ -13,8 +13,8 @@
 This document is the Interface Freeze Candidate for Phase 5D Gate G1. It is a
 design document only. No artifact implementation, database migration, test
 change, or runtime wiring is included. G0 final approval and CP01 approval are
-recorded with the C01~C06 implementation conditions; CP02-00 is the only
-authorized work until the common contract SHA is fixed.
+recorded with the C01~C06 implementation conditions. CP02-00 fixed the common
+contract at `8ecf0aa`; CP02-01 implementation is authorized from that SHA.
 
 The amendments in CP01-FIX-01~06 are applied in place. They are not a second
 contract: they amend the types, policies, interfaces, and decision log below.
@@ -1424,7 +1424,7 @@ Work Order text.
   work after approval (B-04).
 - The existing baseline is preserved at `04dd2fc` (approved candidate `3af2427`;
   tag `g0-baseline`).
-- CP02-00 contract work is authorized. CP02-01 parallel implementation starts only
-  after the common contract SHA is fixed and the per-agent worktrees exist.
+- CP02-00 is complete at `8ecf0aa`; CP02-01 parallel implementation is authorized
+  on the per-agent worktrees created from that SHA.
 
-**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 authorized; CP02-01 locked until the contract SHA.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 complete; CP02-01 authorized; CP02-02 review pending.**
