@@ -57,6 +57,8 @@ export interface MockTransportReply {
   headers?: Record<string, string>;
   /** SSE frames delivered as the response body. */
   stream?: string[];
+  /** JSON/error body delivered in pieces, to exercise the bounded reader (INT-005). */
+  bodyChunks?: string[];
   /** Rejects the `send` call instead of replying (network / CORS / abort). */
   throw?: unknown;
   /** Aborts the request signal before replying, to exercise cancel paths. */
@@ -101,12 +103,19 @@ export function createMockTransport(replies: MockTransportReply[]): {
       if (reply.throw !== undefined) throw reply.throw;
       const headers = reply.headers ?? { 'content-type': reply.stream ? 'text/event-stream' : 'application/json' };
       const status = reply.status ?? 200;
+      const streamBody = reply.stream
+        ? streamFrom(reply.stream)
+        : reply.bodyChunks
+          ? streamFrom(reply.bodyChunks)
+          : reply.body !== undefined
+            ? streamFrom([reply.body])
+            : null;
       return {
         status,
         ok: status >= 200 && status < 300,
         headers: { get: (name) => headers[name.toLowerCase()] ?? null },
         text: async () => reply.body ?? '',
-        body: reply.stream ? streamFrom(reply.stream) : null,
+        body: streamBody,
       };
     },
   };

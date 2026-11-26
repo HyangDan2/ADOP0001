@@ -21,6 +21,11 @@ export interface StreamUsage {
 
 export type StreamEvent =
   | { type: 'delta'; text: string }
+  /** INT-004: a finish reason is not a terminal event; the stream may still send usage and [DONE]. */
+  | { type: 'finish'; finishReason: string }
+  /** Usage sent on its own final chunk (after the finish reason). */
+  | { type: 'usage'; usage: StreamUsage }
+  /** The provider's terminal marker ([DONE]). */
   | { type: 'done'; finishReason: string | null; usage?: StreamUsage }
   | { type: 'error'; error: HybridError };
 
@@ -30,11 +35,17 @@ export interface SseParser {
   /** Flushes a trailing event that was not followed by a blank line. */
   flush(): StreamEvent[];
   /**
-   * True once `[DONE]` or a `finish_reason` was seen. A stream that closes
-   * without either is an abnormal EOF, which WO-08 reports instead of
-   * accepting a possibly truncated answer.
+   * True once `[DONE]` was seen. A stream that closes without it is checked
+   * against the provider's terminal policy (INT-004); the parser itself never
+   * treats a finish reason as the end of the stream.
    */
   readonly terminated: boolean;
+  /** The last finish reason seen (may arrive before [DONE]). */
+  readonly finishReason: string | null;
+  /** True once any finish reason was seen. */
+  readonly sawFinish: boolean;
+  /** Usage seen on a finish frame or a separate usage chunk. */
+  readonly usage: StreamUsage | null;
 }
 
 interface UsageRecord {
@@ -96,14 +107,17 @@ export function parseSseData(data: string): StreamEvent[] {
       });
     }
     if (typeof choice.finish_reason === 'string' && choice.finish_reason) {
-      events.push({ type: 'done', finishReason: choice.finish_reason, usage: readUsage(record.usage) });
+      // The stream is NOT over: providers send usage and [DONE] after this.
+      events.push({ type: 'finish', finishReason: choice.finish_reason });
+      const usage = readUsage(record.usage);
+      if (usage) events.push({ type: 'usage', usage });
       return events;
     }
   }
   // Some providers send the usage block on its own final chunk.
   if (!choice && Array.isArray(record.choices) && record.choices.length === 0) {
     const usage = readUsage(record.usage);
-    if (usage) events.push({ type: 'done', finishReason: null, usage });
+    if (usage) events.push({ type: 'usage', usage });
   }
   return events;
 }
@@ -125,6 +139,9 @@ export function createSseParser(options: SseParserOptions = {}): SseParser {
     maxEventDataChars: options.maxEventDataChars,
   });
   let done = false;
+  let sawFinish = false;
+  let lastFinishReason: string | null = null;
+  let lastUsage: StreamUsage | null = null;
 
   const toEvents = (framed: SseEvent[]): StreamEvent[] => {
     const events: StreamEvent[] = [];
@@ -136,6 +153,11 @@ export function createSseParser(options: SseParserOptions = {}): SseParser {
       const parsed = parseSseData(frame.data);
       for (const event of parsed) {
         if (event.type === 'done') done = true;
+        if (event.type === 'finish') {
+          sawFinish = true;
+          lastFinishReason = event.finishReason;
+        }
+        if (event.type === 'usage') lastUsage = event.usage;
         events.push(event);
         if (event.type === 'error') break;
       }
@@ -155,6 +177,15 @@ export function createSseParser(options: SseParserOptions = {}): SseParser {
     },
     get terminated() {
       return done;
+    },
+    get finishReason() {
+      return lastFinishReason;
+    },
+    get sawFinish() {
+      return sawFinish;
+    },
+    get usage() {
+      return lastUsage;
     },
   };
 }

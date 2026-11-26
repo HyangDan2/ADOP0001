@@ -276,6 +276,23 @@ export interface DraftWriteOptions {
   epoch?: number;
 }
 
+/**
+ * Bumped by `clearDraft()`. A write that was accepted before the delete must not
+ * resurrect the draft: the write checks this generation when it finishes, and the
+ * reset's own delete runs after the queued write (INT-008).
+ */
+const toolGenerations = new Map<ToolId, number>();
+
+function generationOf(toolId: ToolId): number {
+  return toolGenerations.get(toolId) ?? 0;
+}
+
+function bumpGeneration(toolId: ToolId): number {
+  const next = generationOf(toolId) + 1;
+  toolGenerations.set(toolId, next);
+  return next;
+}
+
 function supersededResult(savedAt: string): DraftWriteResult {
   return { savedAt, storage: 'memory', error: null, idb: 'unavailable', notice: null, superseded: true };
 }
@@ -292,8 +309,11 @@ export async function writeDraft<T>(
   const savedAt = new Date().toISOString();
   const record: DraftRecord<T> = { version: DRAFT_VERSION, toolId, savedAt, data };
   const acceptedEpoch = options.epoch ?? storeEpoch;
+  const acceptedGeneration = generationOf(toolId);
   return enqueue(toolId, async () => {
     if (options.epoch !== undefined && options.epoch !== storeEpoch) return supersededResult(savedAt);
+    // A reset that was requested before this write started owns the draft now.
+    if (acceptedGeneration !== generationOf(toolId)) return supersededResult(savedAt);
     memory.set(toolId, record as DraftRecord<Record<string, unknown>>);
     const localOk = writeLocal(toolId, record as DraftRecord<unknown>);
     const opened = await openDb();
@@ -351,7 +371,7 @@ export async function writeDraft<T>(
           };
     }
     // A reset that started while this transaction was open must win.
-    if (acceptedEpoch !== storeEpoch) {
+    if (acceptedEpoch !== storeEpoch || acceptedGeneration !== generationOf(toolId)) {
       const reopened = await openDb();
       if (reopened.db) {
         await idbDelete(reopened.db, toolId);
@@ -388,6 +408,9 @@ export function writeDraftNow<T>(toolId: ToolId, data: T, options: DraftWriteOpt
  */
 export async function clearDraft(toolId: ToolId): Promise<ClearDraftResult> {
   memory.delete(toolId);
+  // INT-008: the generation moves before the delete is queued, so a write that
+  // was accepted earlier and finishes later cannot re-create the draft.
+  bumpGeneration(toolId);
   return enqueue(toolId, async () => {
     removeLocal(toolId);
     const opened = await openDb();
@@ -469,7 +492,8 @@ export interface ToolDraft<T> {
   draft: T;
   setField: <K extends keyof T>(key: K, value: T[K]) => void;
   state: DraftState;
-  reset: () => Promise<void>;
+  /** Resolves with the delete result; a refused delete is visible to the caller. */
+  reset: () => Promise<ClearDraftResult>;
 }
 
 /**
@@ -563,9 +587,25 @@ export function useToolDraft<T extends Record<string, unknown>>(toolId: ToolId, 
 
   const reset = useCallback(async () => {
     touched.current = false;
-    await clearDraft(toolId);
+    if (timer.current) {
+      window.clearTimeout(timer.current);
+      timer.current = null;
+    }
+    const cleared = await clearDraft(toolId);
     setSnapshot({ data: initial, savedAt: null, restored: false });
-    setState({ savedAt: null, storage: null, restored: false, error: null });
+    setState({
+      savedAt: null,
+      storage: null,
+      restored: false,
+      // INT-008: a refused delete is not a reset. The stored copy is still there
+      // and would come back on the next mount, so the state says so instead of
+      // pretending the draft was discarded.
+      error: cleared.ok
+        ? null
+        : (cleared.error ?? '下書きの削除に失敗しました。下書きは残っています。'),
+      idb: cleared.idb,
+    });
+    return cleared;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toolId]);
 

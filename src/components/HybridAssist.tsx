@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ToolId } from '../adapters/types';
 import type { ToolOptions, ToolOutput } from '../engine/core/contracts';
-import { applyAccepted, PROVENANCE_LABEL, runHybridPass, type HybridPassOutcome } from '../engine/hybrid/orchestrator';
-import { planHybridRequest, type HybridRequestPlan } from '../engine/hybrid/requestPlan';
+import { applyAccepted, PROVENANCE_LABEL, runHybridPass, unappliedProposals, type HybridPassOutcome } from '../engine/hybrid/orchestrator';
+import { inputsFingerprintFor, planHybridRequest, type HybridRequestPlan } from '../engine/hybrid/requestPlan';
 import { sharedLifecycleRegistry } from '../engine/hybrid/lifecycle';
-import { connectionSettingsStore, sessionApiKey } from '../engine/hybrid/settings';
+import { connectionSettingsStore, sessionApiKey, settingsFingerprint } from '../engine/hybrid/settings';
+import { sectionsOfMarkdown } from '../engine/hybrid/sourceScope';
 import { NO_PRICE_LABEL, telemetryRows } from '../engine/hybrid/telemetry';
 import type { HybridSession, HybridStatus } from '../engine/hybrid/streamEngine';
 import type { AiProposal } from '../engine/hybrid/mergePolicy';
@@ -65,9 +66,19 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
   const [error, setError] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
   const [tick, setTick] = useState(0);
+  /** INT-007 (Kotoha): sections the operator allows to be sent; null = all. */
+  const [sectionSelection, setSectionSelection] = useState<number[] | null>(null);
+  const [applying, setApplying] = useState(false);
   const sessionRef = useRef<HybridSession | null>(null);
   const revision = useRef(0);
   const startedAtRef = useRef<number | null>(null);
+  /** INT-003: a second click while the first send is starting is ignored. */
+  const startingRef = useRef(false);
+  /** INT-003: true only while a request is actually in flight (mode-switch guard). */
+  const runningRef = useRef(false);
+  runningRef.current = phase === 'running';
+  /** INT-007: proposal ids already written into the artifact by this pane. */
+  const appliedRef = useRef<Set<string>>(new Set());
   /** The artifact the running request (and its proposals) were built from. */
   const baseOutputRef = useRef<ToolOutput<K> | null>(null);
   const busy = phase === 'running';
@@ -75,6 +86,13 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
   const localOnly = mode === 'local';
 
   const spec = useMemo(() => toolHybridSpec(props.toolId), [props.toolId]);
+  /** A stable identity for the tool options (the object itself is re-created per render). */
+  const optionsKey = useMemo(() => JSON.stringify(props.options ?? null), [props.options]);
+  /** INT-007: the parts of a Kotoha document the operator can choose to send. */
+  const sourceSections = useMemo(
+    () => (props.toolId === 'kotoha' ? sectionsOfMarkdown(props.source) : []),
+    [props.toolId, props.source],
+  );
 
   // A new input makes any preview or answer stale immediately.
   useEffect(() => {
@@ -87,10 +105,23 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
     setAccepted({});
     setConsent(false);
     setError(null);
+    setSectionSelection(null);
+    appliedRef.current = new Set();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.source, props.sourceName, props.toolId]);
+  }, [props.source, props.sourceName, props.toolId, optionsKey]);
 
   useEffect(() => () => sessionRef.current?.abort('画面を離れました。'), []);
+
+  // INT-003: switching to Mode A while a request is running cancels it, so the
+  // pane cannot keep a Mode B request alive after the operator chose local-only.
+  useEffect(() => {
+    if (mode !== 'local') return;
+    if (!runningRef.current) return;
+    revision.current += 1;
+    sessionRef.current?.abort('モードA（ローカル解析）に切り替えられました。');
+    setError('モードA（ローカル解析）に切り替えたため、実行中の AI 補完を中止しました。');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
 
   useEffect(() => {
     if (phase !== 'running') return;
@@ -98,7 +129,7 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
     return () => window.clearInterval(timer);
   }, [phase]);
 
-  const open = async () => {
+  const open = async (selection: number[] | null = sectionSelection) => {
     if (!props.localOutput) return;
     if (localOnly) {
       setPhase('closed');
@@ -121,7 +152,11 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
         outputSchema: spec.outputSchema,
         targetLanguage: props.targetLanguage ?? spec.targetLanguage,
         settings,
+        // INT-007: the session key is redacted even when it has no known shape.
+        secrets: sessionApiKey.get() ? [sessionApiKey.get()!] : [],
+        sectionSelection: selection ?? undefined,
       });
+      setSectionSelection(selection);
       setPlan(next);
     } catch (cause) {
       setError(errorMessage(cause, '事前確認を作成できませんでした。'));
@@ -131,6 +166,10 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
   };
 
   const close = () => {
+    // INT-003: a close invalidates every callback of the request that was running,
+    // so a late answer cannot reopen the modal or set a result afterwards.
+    revision.current += 1;
+    startingRef.current = false;
     sessionRef.current?.abort('画面を閉じました。');
     setPhase('closed');
     setPlan(null);
@@ -141,27 +180,55 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
 
   const start = async () => {
     if (!plan || !props.localOutput) return;
+    if (startingRef.current) return;
     if (localOnly) {
       setError('モードA（ローカル解析）では送信しません。');
       return;
     }
+    startingRef.current = true;
     const startedAt = revision.current;
     startedAtRef.current = Date.now();
     baseOutputRef.current = props.localOutput;
-    setPhase('running');
     setError(null);
     setOutcome(null);
     setStatus(null);
-    const settings = connectionSettingsStore.read();
     try {
+      // INT-003: the preview is valid only for the settings and inputs it was
+      // built from. Both are checked again immediately before the send; a change
+      // in the panel, the prompt pane or the few-shot store invalidates it.
+      const current = connectionSettingsStore.read();
+      if (settingsFingerprint(current) !== plan.settingsFingerprint) {
+        setError('事前確認のあとに接続設定が変更されました。もう一度「事前確認を開く」からやり直してください。');
+        setPhase('closed');
+        setPlan(null);
+        return;
+      }
+      const fingerprint = await inputsFingerprintFor({
+        toolId: props.toolId,
+        source: props.source,
+        sourceName: props.sourceName,
+        targetLanguage: props.targetLanguage ?? spec.targetLanguage,
+        settings: current,
+        secrets: sessionApiKey.get() ? [sessionApiKey.get()!] : [],
+        sectionSelection: sectionSelection ?? undefined,
+      });
+      if (fingerprint !== plan.inputsFingerprint) {
+        setError('指示・Few-shot・ソースのいずれかが事前確認のあとに変更されました。もう一度「事前確認を開く」からやり直してください。');
+        setPhase('closed');
+        setPlan(null);
+        return;
+      }
+      setPhase('running');
       const result = await runHybridPass<K>({
         toolId: props.toolId,
         sourceName: props.sourceName,
         source: props.source,
         options: props.options,
         localOutput: props.localOutput,
-        settings,
+        // INT-001: the settings the preview was built from, not a fresh read.
+        settings: plan.settings,
         apiKey: sessionApiKey.get(),
+        credentialRevision: sessionApiKey.revision(),
         plan,
         // Read at send time: a switch to Mode A while the preview is open must
         // stop the request before it leaves the tab.
@@ -178,9 +245,9 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
           sessionRef.current = session;
         },
       });
-      if (!result.applied) {
-        // The input moved on while the answer was in flight: the answer is not
-        // the current artifact's, so it never reaches the screen.
+      if (revision.current !== startedAt || !result.applied) {
+        // The input moved on (or the pane closed) while the answer was in flight:
+        // the answer is not the current artifact's, so it never reaches the screen.
         setOutcome(null);
         setPhase('closed');
         return;
@@ -189,15 +256,18 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
       setAccepted(Object.fromEntries(result.proposals.map((proposal) => [proposal.id, true])));
       setPhase('result');
     } catch (cause) {
+      if (revision.current !== startedAt) return;
       setError(errorMessage(cause, 'AI 補完を実行できませんでした。'));
       setPhase('result');
+    } finally {
+      startingRef.current = false;
     }
   };
 
   const toggle = (id: string) => setAccepted((current) => ({ ...current, [id]: !current[id] }));
 
   const applySelected = () => {
-    if (!outcome || !props.localOutput) return;
+    if (!outcome || !props.localOutput || applying) return;
     try {
       // WO-11: the proposals were written against the artifact the request
       // started from. If the pane has produced a different one since, applying
@@ -207,11 +277,25 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
       setError(errorMessage(cause, 'ローカル結果が更新されたため、この提案は適用できません。'));
       return;
     }
-    const chosen = outcome.proposals.filter((proposal) => accepted[proposal.id]);
-    if (!chosen.length) return;
-    const next = applyAccepted(props.toolId, props.localOutput, chosen);
-    props.onApplied(next, `${chosen.length} 件の AI 補完を反映しました（ローカルの事実は変更していません）。`);
-    setPhase('closed');
+    // INT-007: neither a double click nor a re-render may write the same proposal
+    // twice into an artifact.
+    const chosen = unappliedProposals(
+      outcome.proposals.filter((proposal) => accepted[proposal.id]),
+      appliedRef.current,
+    );
+    if (!chosen.length) {
+      setError('選択した提案はすでにこの成果物に反映されています。');
+      return;
+    }
+    setApplying(true);
+    try {
+      for (const proposal of chosen) appliedRef.current.add(proposal.id);
+      const next = applyAccepted(props.toolId, props.localOutput, chosen);
+      props.onApplied(next, `${chosen.length} 件の AI 補完を反映しました（ローカルの事実は変更していません）。`);
+      setPhase('closed');
+    } finally {
+      setApplying(false);
+    }
   };
 
   const blocked = plan ? plan.preview.blockedReasons : [];
@@ -338,6 +422,47 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
                       </dd>
                     </div>
                   </dl>
+
+                  {sourceSections.length > 1 ? (
+                    <div className="hybrid-scope" data-testid="hybrid-sections">
+                      <p className="hybrid-note">送信する範囲（外したセクションは送信されません）</p>
+                      {sourceSections.map((section) => {
+                        const checked = !sectionSelection || sectionSelection.includes(section.index);
+                        return (
+                          <label key={section.index} className="hybrid-section-row">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const all = sourceSections.map((entry) => entry.index);
+                                const current = sectionSelection ?? all;
+                                const next = checked
+                                  ? current.filter((index) => index !== section.index)
+                                  : [...current, section.index].sort((a, b) => a - b);
+                                void open(next);
+                              }}
+                              data-testid={`hybrid-section-${section.index}`}
+                            />
+                            <span>
+                              {section.heading ?? '（冒頭）'} · L{section.startLine}-{section.endLine}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  <p className="hybrid-note" data-testid="hybrid-body-params">
+                    送信パラメータ: Temperature {plan.preview.body.temperature === null ? 'なし' : plan.preview.body.temperature} · 出力上限{' '}
+                    {formatCount(plan.preview.body.maxOutputTokens)} tokens ·{' '}
+                    {plan.preview.body.stream ? 'ストリーミング' : '一括受信'} · パラメータ名 {plan.preview.body.outputTokenParameter}
+                  </p>
+
+                  {plan.sendSections && plan.sendSections.excluded.length ? (
+                    <p className="hybrid-warnings" data-testid="hybrid-send-scope">
+                      送信しない範囲: {plan.sendSections.excluded.map((range) => `L${range.start}-${range.end}`).join(', ')}
+                    </p>
+                  ) : null}
 
                   {plan.preview.warnings.length ? (
                     <ul className="hybrid-warnings" data-testid="hybrid-warnings">
@@ -529,7 +654,7 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
                     type="button"
                     className="btn btn-sm btn-primary"
                     onClick={applySelected}
-                    disabled={!outcome.proposals.some((proposal) => accepted[proposal.id])}
+                    disabled={applying || !outcome.proposals.some((proposal) => accepted[proposal.id] && !appliedRef.current.has(proposal.id))}
                     data-testid="hybrid-apply"
                   >
                     選択した提案を反映

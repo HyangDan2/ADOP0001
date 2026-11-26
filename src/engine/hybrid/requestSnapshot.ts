@@ -23,6 +23,8 @@
 
 import { sha256Hex } from '../../lib/util';
 import type { ChatMessage } from './contracts';
+import { canonicalJson } from './canonical';
+import { bodyDigestMaterial, sameBodySpec, type ChatBodySpec } from './requestBody';
 import { hybridConfig } from './config';
 import { HybridError } from './errors';
 import { fingerprintPayload } from './preflight';
@@ -32,6 +34,13 @@ export interface SnapshotRedaction {
   total: number;
   byKind: Record<string, number>;
   registryFingerprint?: string;
+}
+
+export interface SnapshotCredential {
+  /** A hash of the key that authorised the request — never the key itself. */
+  fingerprint: string;
+  /** The tab's key revision at seal time (INT-001). */
+  revision: number;
 }
 
 export interface SealInput {
@@ -47,6 +56,10 @@ export interface SealInput {
   approvedAt: string;
   sourceFileName: string;
   redaction: SnapshotRedaction;
+  /** The exact HTTP parameters the approval covered (INT-001). */
+  body?: ChatBodySpec | null;
+  /** The credential that was in memory at approval time (hash only). */
+  credential?: SnapshotCredential | null;
   /** Configuration the run used, so a later request can prove which policy applied. */
   configFingerprint?: string;
 }
@@ -63,6 +76,10 @@ export interface RequestSnapshot {
   readonly messages: ReadonlyArray<Readonly<ChatMessage>>;
   readonly previewFingerprint: string;
   readonly redaction: Readonly<SnapshotRedaction>;
+  /** The exact HTTP parameters that were approved (INT-001). */
+  readonly body: Readonly<ChatBodySpec> | null;
+  /** The credential revision that authorised this payload (INT-001). */
+  readonly credential: Readonly<SnapshotCredential> | null;
   readonly configFingerprint: string;
   /** sha256 over the exact transmitted payload and its approval context. */
   readonly payloadDigest: string;
@@ -77,6 +94,9 @@ export type SnapshotProblemCode =
   | 'fingerprint-mismatch'
   | 'destination-changed'
   | 'model-changed'
+  | 'body-changed'
+  | 'credential-changed'
+  | 'already-consumed'
   | 'unredacted-secret'
   | 'empty-payload'
   | 'invalid-role';
@@ -96,29 +116,24 @@ export interface SnapshotExpectation {
   model?: string;
   destinationHost?: string;
   previewFingerprint?: string;
+  /** The parameters the caller is about to put on the wire. */
+  body?: ChatBodySpec | null;
+  /** The key that is in the tab now (hash + revision). */
+  credential?: SnapshotCredential | null;
 }
 
 /** Deterministic JSON: object keys sorted, so the digest cannot depend on order. */
-export function canonicalJson(value: unknown): string {
-  const walk = (item: unknown): unknown => {
-    if (Array.isArray(item)) return item.map(walk);
-    if (item && typeof item === 'object') {
-      const record = item as Record<string, unknown>;
-      const sorted: Record<string, unknown> = {};
-      for (const key of Object.keys(record).sort()) sorted[key] = walk(record[key]);
-      return sorted;
-    }
-    return item;
-  };
-  return JSON.stringify(walk(value));
-}
+export { canonicalJson };
 
 function digestMaterial(input: SealInput): string {
   return canonicalJson([
-    'adop0001.hybrid.payload.v2',
+    'adop0001.hybrid.payload.v3',
     input.endpoint,
     input.model,
     input.messages.map((message) => [message.role, message.content]),
+    input.body ? bodyDigestMaterial(input.body) : null,
+    input.credential?.fingerprint ?? null,
+    input.credential?.revision ?? null,
     input.approvedAt,
     input.previewFingerprint,
     input.configFingerprint ?? hybridConfig.fingerprint(),
@@ -156,7 +171,9 @@ function deepFreeze<T>(value: T): T {
 export async function sealRequestSnapshot(input: SealInput): Promise<RequestSnapshot> {
   const configFingerprint = input.configFingerprint ?? hybridConfig.fingerprint();
   const messages = deepFreeze(input.messages.map((message) => ({ role: message.role, content: message.content })));
-  const withConfig: SealInput = { ...input, configFingerprint };
+  const body = input.body ? deepFreeze({ ...input.body }) : null;
+  const credential = input.credential ? deepFreeze({ ...input.credential }) : null;
+  const withConfig: SealInput = { ...input, configFingerprint, body, credential };
   const payloadDigest = await sha256Hex(digestMaterial(withConfig));
   const consentDigest = await sha256Hex(consentMaterial(payloadDigest, withConfig, configFingerprint));
 
@@ -176,6 +193,8 @@ export async function sealRequestSnapshot(input: SealInput): Promise<RequestSnap
       byKind: { ...input.redaction.byKind },
       registryFingerprint: input.redaction.registryFingerprint,
     }),
+    body,
+    credential,
     configFingerprint,
     payloadDigest,
     consentDigest,
@@ -218,6 +237,8 @@ export async function verifyRequestSnapshot(
       approvedAt: snapshot.approvedAt,
       sourceFileName: snapshot.sourceFileName,
       redaction: snapshot.redaction,
+      body: snapshot.body ?? null,
+      credential: snapshot.credential ?? null,
       configFingerprint: snapshot.configFingerprint,
     }),
   );
@@ -240,6 +261,8 @@ export async function verifyRequestSnapshot(
       approvedAt: snapshot.approvedAt,
       sourceFileName: snapshot.sourceFileName,
       redaction: snapshot.redaction,
+      body: snapshot.body ?? null,
+      credential: snapshot.credential ?? null,
       configFingerprint: snapshot.configFingerprint,
     }, snapshot.configFingerprint),
   );
@@ -274,6 +297,30 @@ export async function verifyRequestSnapshot(
     problems.push({ code: 'model-changed', message: 'モデルが承認時と変わっています。' });
   }
 
+  // INT-001: the HTTP parameters are part of the approval. A temperature, output
+  // limit, streaming flag or profile change after consent refuses the send.
+  if (expectation.body !== undefined && !sameBodySpec(snapshot.body ?? null, expectation.body)) {
+    problems.push({
+      code: 'body-changed',
+      message: '承認した送信パラメータ（Temperature・出力上限・ストリーミング）と、送信しようとしている内容が一致しません。',
+    });
+  }
+  // INT-001: a key that was replaced after approval (or cleared) is a different
+  // credential; the approval was for the old one.
+  if (expectation.credential !== undefined) {
+    const current = expectation.credential;
+    const sealed = snapshot.credential;
+    const same =
+      (current === null && sealed === null) ||
+      (current !== null && sealed !== null && current.fingerprint === sealed.fingerprint && current.revision === sealed.revision);
+    if (!same) {
+      problems.push({
+        code: 'credential-changed',
+        message: '承認後に API キーが変更（または消去）されたため、この承認は無効です。',
+      });
+    }
+  }
+
   // A second, independent redaction pass must find nothing. This is the check
   // that catches a pattern disabled between preview and send.
   const stillSecret = messages.some((message) => containsLikelySecret(message.content));
@@ -296,4 +343,26 @@ export async function assertSnapshotIntegrity(
   if (verification.ok) return;
   const first = verification.problems[0];
   throw new HybridError('approval', first?.message ?? '送信内容の整合性を確認できませんでした。');
+}
+
+/* ------------------------------------------------------------------ */
+/* One approved request, one send (INT-001)                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A seal is a licence for exactly one transmission. The first caller to consume
+ * it wins; every later attempt is refused, so a double click, a retried send or a
+ * reused preview cannot put the same approved payload on the wire twice.
+ */
+const consumedSnapshots = new WeakSet<object>();
+
+export function consumeRequestSnapshot(snapshot: RequestSnapshot): boolean {
+  if (!snapshot || consumedSnapshots.has(snapshot)) return false;
+  consumedSnapshots.add(snapshot);
+  return true;
+}
+
+/** True when this exact snapshot was already sent once. */
+export function snapshotConsumed(snapshot: RequestSnapshot): boolean {
+  return consumedSnapshots.has(snapshot);
 }

@@ -26,6 +26,8 @@ export const CONNECTION_SETTINGS_KEY = 'adop0001.hybrid.connection';
 export interface ConnectionSettings {
   baseUrl: string;
   model: string;
+  /** INT-006: an explicit provider profile id; empty means "resolve from host/model". */
+  providerId: string;
   /** Sampling temperature, 0–2. Default 0.2 keeps generated code close to the examples. */
   temperature: number;
   /** The model's context window, used by the budget manager. */
@@ -36,12 +38,15 @@ export interface ConnectionSettings {
   fewShotTokenBudget: number;
   requestTimeoutMs: number;
   streaming: boolean;
+  /** INT-006: ask the provider for a JSON response format when the profile supports it. */
+  structuredOutput: boolean;
   promptStrategy: PromptStrategy;
 }
 
 export const DEFAULT_CONNECTION_SETTINGS: ConnectionSettings = {
   baseUrl: '',
   model: '',
+  providerId: '',
   temperature: 0.2,
   contextLimit: 32768,
   maxInputTokens: 16384,
@@ -49,6 +54,7 @@ export const DEFAULT_CONNECTION_SETTINGS: ConnectionSettings = {
   fewShotTokenBudget: 2048,
   requestTimeoutMs: 120_000,
   streaming: true,
+  structuredOutput: false,
   promptStrategy: 'zero-shot',
 };
 
@@ -63,10 +69,33 @@ export const SETTING_BOUNDS = {
 
 export type ConnectionField = keyof ConnectionSettings;
 
+/**
+ * INT-003 — the identity of the settings a preview was built from. The preview is
+ * only valid while this value is unchanged; the send path compares it instead of
+ * re-reading whatever the panel happens to hold now.
+ */
+export function settingsFingerprint(settings: ConnectionSettings): string {
+  return [
+    settings.baseUrl,
+    settings.model,
+    settings.providerId ?? '',
+    settings.temperature,
+    settings.contextLimit,
+    settings.maxInputTokens,
+    settings.maxOutputTokens,
+    settings.fewShotTokenBudget,
+    settings.requestTimeoutMs,
+    settings.streaming ? '1' : '0',
+    settings.structuredOutput ? '1' : '0',
+    settings.promptStrategy,
+  ].join('|');
+}
+
 /** The persisted shape — an explicit list, so a new field is never saved by accident. */
 const PERSISTED_FIELDS: ConnectionField[] = [
   'baseUrl',
   'model',
+  'providerId',
   'temperature',
   'contextLimit',
   'maxInputTokens',
@@ -74,6 +103,7 @@ const PERSISTED_FIELDS: ConnectionField[] = [
   'fewShotTokenBudget',
   'requestTimeoutMs',
   'streaming',
+  'structuredOutput',
   'promptStrategy',
 ];
 
@@ -89,6 +119,8 @@ export function normalizeConnectionSettings(raw: unknown): ConnectionSettings {
   return {
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl.trim() : DEFAULT_CONNECTION_SETTINGS.baseUrl,
     model: typeof record.model === 'string' ? record.model.trim() : DEFAULT_CONNECTION_SETTINGS.model,
+    providerId:
+      typeof record.providerId === 'string' ? record.providerId.trim() : DEFAULT_CONNECTION_SETTINGS.providerId,
     temperature: clampNumber(record.temperature, DEFAULT_CONNECTION_SETTINGS.temperature, SETTING_BOUNDS.temperature),
     contextLimit: clampNumber(record.contextLimit, DEFAULT_CONNECTION_SETTINGS.contextLimit, SETTING_BOUNDS.contextLimit),
     maxInputTokens: clampNumber(record.maxInputTokens, DEFAULT_CONNECTION_SETTINGS.maxInputTokens, SETTING_BOUNDS.maxInputTokens),
@@ -108,6 +140,8 @@ export function normalizeConnectionSettings(raw: unknown): ConnectionSettings {
       SETTING_BOUNDS.requestTimeoutMs,
     ),
     streaming: typeof record.streaming === 'boolean' ? record.streaming : DEFAULT_CONNECTION_SETTINGS.streaming,
+    structuredOutput:
+      typeof record.structuredOutput === 'boolean' ? record.structuredOutput : DEFAULT_CONNECTION_SETTINGS.structuredOutput,
     promptStrategy: record.promptStrategy === 'few-shot' ? 'few-shot' : 'zero-shot',
   };
 }
@@ -243,6 +277,8 @@ export interface ApiKeyHolder {
   set(value: string): void;
   clear(): void;
   present(): boolean;
+  /** INT-001: bumped on every set/clear, so a snapshot names the credential revision. */
+  revision(): number;
 }
 
 /**
@@ -251,15 +287,20 @@ export interface ApiKeyHolder {
  */
 export function createMemoryApiKey(initial: string | null = null): ApiKeyHolder {
   let value = initial?.trim() ? initial.trim() : null;
+  let revision = 0;
   return {
     get: () => value,
     set: (next: string) => {
-      value = next.trim() ? next.trim() : null;
+      const normalized = next.trim() ? next.trim() : null;
+      if (normalized !== value) revision += 1;
+      value = normalized;
     },
     clear: () => {
+      if (value !== null) revision += 1;
       value = null;
     },
     present: () => Boolean(value),
+    revision: () => revision,
   };
 }
 
@@ -281,6 +322,7 @@ export function toHybridSettings(
     temperature: settings.temperature,
     requestTimeoutMs: settings.requestTimeoutMs,
     maxOutputTokens: settings.maxOutputTokens,
+    structuredOutput: settings.structuredOutput,
   };
 }
 

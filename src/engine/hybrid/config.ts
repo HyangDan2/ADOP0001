@@ -136,6 +136,16 @@ export const HYBRID_CONFIG_DESCRIPTORS: readonly ConfigDescriptor[] = [
   numberConfig('budget.charsPerToken', '文字数→トークン換算', 4, { min: 0.5, max: 12 }),
   numberConfig('budget.sourceHeadShare', '先頭優先で配分するソース比率', 0.7, { min: 0, max: 1 }),
   numberConfig('budget.minSourceShare', 'ソースに最低限確保する入力比率', 0, { min: 0, max: 0.9 }),
+  numberConfig('budget.perMessageOverheadTokens', 'メッセージ 1 件あたりのプロトコル分 (tokens)', 4, {
+    min: 0,
+    max: 64,
+    integer: true,
+  }),
+  numberConfig('budget.replyPrimingTokens', 'チャットテンプレートの固定分 (tokens)', 3, {
+    min: 0,
+    max: 64,
+    integer: true,
+  }),
 
   // Response resource policy (C-FIX-005).
   numberConfig('resource.responseBytesPerToken', '出力 1 token あたりの受信バイト上限', 64, {
@@ -200,6 +210,8 @@ export interface HybridConfigValues {
     charsPerToken: number;
     sourceHeadShare: number;
     minSourceShare: number;
+    perMessageOverheadTokens: number;
+    replyPrimingTokens: number;
   };
   resource: {
     responseBytesPerToken: number;
@@ -262,6 +274,8 @@ export function toConfigValues(flat: Record<string, ConfigValue>): HybridConfigV
       charsPerToken: numberFrom(flat, 'budget.charsPerToken'),
       sourceHeadShare: numberFrom(flat, 'budget.sourceHeadShare'),
       minSourceShare: numberFrom(flat, 'budget.minSourceShare'),
+      perMessageOverheadTokens: numberFrom(flat, 'budget.perMessageOverheadTokens'),
+      replyPrimingTokens: numberFrom(flat, 'budget.replyPrimingTokens'),
     },
     resource: {
       responseBytesPerToken: numberFrom(flat, 'resource.responseBytesPerToken'),

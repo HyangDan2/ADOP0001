@@ -39,6 +39,12 @@ export interface BudgetSettings {
   maxInputTokens: number;
   maxOutputTokens: number;
   fewShotTokenBudget: number;
+  /**
+   * INT-002: fixed cost the section estimate does not see (protocol overhead,
+   * delimiters). It is charged against the input allowance before the source is
+   * allocated, so the assembled payload fits without blocking at the last token.
+   */
+  extraOverheadTokens?: number;
 }
 
 export interface BudgetParts {

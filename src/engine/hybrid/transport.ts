@@ -210,7 +210,7 @@ export function createFetchTransport(fetchImpl: typeof fetch = globalThis.fetch)
 export async function sendWithRedirectPolicy(
   transport: Transport,
   request: TransportRequest,
-  options: { maxRedirects?: number } = {},
+  options: { maxRedirects?: number; refuseRedirects?: boolean } = {},
 ): Promise<TransportResponse> {
   const maxRedirects = options.maxRedirects ?? MAX_REDIRECTS;
   const origin = new URL(request.url).origin;
@@ -219,6 +219,17 @@ export async function sendWithRedirectPolicy(
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
     const response = await transport.send({ ...request, url });
     if (response.status < 300 || response.status >= 400) return response;
+
+    // INT-001: an approved request names one endpoint. A redirect is a different
+    // destination (even on the same origin), so the approved request is not sent
+    // anywhere else.
+    if (options.refuseRedirects) {
+      throw new HybridError(
+        'http',
+        '承認した宛先がリダイレクトされたため送信を中止しました。Base URL を確認してください。',
+        { status: response.status },
+      );
+    }
 
     const location = response.headers.get('location');
     if (!location) {

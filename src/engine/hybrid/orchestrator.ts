@@ -29,10 +29,13 @@ import type { EngineRunResult, ToolOptions, ToolOutput } from '../core/contracts
 import { runEngine } from '../core/runner';
 import { HybridError, toHybridError } from './errors';
 import { mergeProposals, type AiProposal, type EvidenceFacts, type MergeConflict, type RejectedProposal } from './mergePolicy';
-import { OpenAiCompatibleProvider } from './openAiCompatible';
+import { OpenAiCompatibleProvider, scrubSessionSecret } from './openAiCompatible';
 import { assertApprovedPayload, createPreflightGate, type PreflightPreview } from './preflight';
 import { planHybridRequest, type HybridRequestPlan } from './requestPlan';
-import { toHybridSettings, type ConnectionSettings } from './settings';
+import { settingsFingerprint, toHybridSettings, type ConnectionSettings } from './settings';
+import { sha256Hex } from '../../lib/util';
+import { assertDataBoundary } from './dataBoundary';
+import { includedRangesOf } from './sourceScope';
 import {
   createHybridSession,
   runGatewayRequest,
@@ -53,9 +56,11 @@ import { policyForProfile } from './resourcePolicy';
 import { redactionRegistry } from './redaction';
 import {
   assertSnapshotIntegrity,
+  consumeRequestSnapshot,
   sealRequestSnapshot,
   verifyRequestSnapshot,
   type RequestSnapshot,
+  type SnapshotCredential,
   type SnapshotProblem,
 } from './requestSnapshot';
 
@@ -102,6 +107,8 @@ export interface HybridPassInput<K extends ToolId> {
   evidenceLog?: EvidenceLog;
   /** Explicit provider profile id (C-FIX-007). */
   providerId?: string;
+  /** INT-001: the key revision in memory, so a replaced key invalidates consent. */
+  credentialRevision?: number;
   onStatus?: (status: HybridStatus) => void;
   onSession?: (session: HybridSession) => void;
   onDelta?: (chunk: string, total: string) => void;
@@ -166,6 +173,15 @@ export function applyAccepted<K extends ToolId>(
 ): ToolOutput<K> {
   if (!accepted.length) return output;
   return toolHybridSpec(toolId).apply(output, accepted);
+}
+
+/**
+ * INT-007: the proposals of a run that have not already been written into the
+ * artifact. An apply is an explicit one-time event; the same proposal id must not
+ * be merged twice by a double click or a re-render.
+ */
+export function unappliedProposals(proposals: AiProposal[], applied: ReadonlySet<string>): AiProposal[] {
+  return proposals.filter((proposal) => !applied.has(proposal.id));
 }
 
 /**
@@ -309,7 +325,7 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
       toolId: input.toolId,
       engineMode,
       providerMode: provenance,
-      modelId: plan ? input.settings.model : null,
+      modelId: plan ? plan.settings.model : null,
       destinationHost: plan?.preview.destination?.host ?? null,
       stage: session.stage(),
       elapsedMs,
@@ -417,6 +433,9 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
 
   // 2–6. Prompt, redaction, budget and the preview the user will approve.
   try {
+    // INT-006: the client's own capability profile decides the effective body, so
+    // the approved parameters and the sender cannot disagree.
+    const capabilities = input.provider?.capabilitiesFor?.(input.settings.model) ?? undefined;
     plan =
       input.plan ??
       (await planHybridRequest({
@@ -427,10 +446,29 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
         outputSchema: spec.outputSchema,
         targetLanguage: input.targetLanguage ?? spec.targetLanguage,
         settings: input.settings,
+        providerId: input.providerId,
+        capabilities,
+        secrets: input.apiKey ? [input.apiKey] : [],
       }));
   } catch (cause) {
     const error = toHybridError(cause);
-    return fallback(error.message, error.failure, local, null);
+    return fallback(scrubSessionSecret(error.message, input.apiKey), error.failure, local, null);
+  }
+
+  // INT-001: a preview that was already used to send is not a second approval.
+  if (input.plan?.approvalUsed) {
+    return cancel('この承認はすでに使われました。もう一度事前確認から承認してください。', local, plan);
+  }
+
+  // INT-001/003: the preview was built from these settings. If the panel (or the
+  // stored preference) changed since, the preview no longer describes what would
+  // be sent, so it is invalidated instead of being sent with new parameters.
+  if (settingsFingerprint(plan.settings) !== settingsFingerprint(input.settings)) {
+    return cancel(
+      '事前確認のあとに接続設定が変更されたため、この承認は無効です。もう一度事前確認からやり直してください。',
+      local,
+      plan,
+    );
   }
 
   if (stale()) {
@@ -451,7 +489,7 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
     approved = await input.approve(plan.preview);
   } catch (cause) {
     const error = toHybridError(cause);
-    return fallback(error.message, error.failure, local, plan);
+    return fallback(scrubSessionSecret(error.message, input.apiKey), error.failure, local, plan);
   }
   if (stale()) {
     session.markStale();
@@ -465,19 +503,21 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
   const gate = createPreflightGate();
   gate.approve(plan.preview);
   try {
-    assertApprovedPayload(gate, plan.preview.fingerprint);
+    assertApprovedPayload(gate, plan.preview.fingerprint, plan.preview.bodyDigest);
   } catch (cause) {
     const error = toHybridError(cause);
-    return fallback(error.message, error.failure, local, plan);
+    return fallback(scrubSessionSecret(error.message, input.apiKey), error.failure, local, plan);
   }
 
-  // C-FIX-001: seal exactly what the user approved. The digest covers endpoint,
-  // model, messages, approval time and the configuration fingerprint; the copy is
-  // frozen, so a later mutation throws instead of changing the payload.
+  // C-FIX-001 / INT-001: seal exactly what the user approved, including the HTTP
+  // parameters and the credential revision that authorised them.
   const destination = plan.preview.destination;
   if (!destination) {
     return fallback('宛先が確認できないため送信できません。', 'invalid-settings', local, plan);
   }
+  const credential: SnapshotCredential | null = input.apiKey
+    ? { fingerprint: await sha256Hex(input.apiKey), revision: input.credentialRevision ?? 0 }
+    : null;
   try {
     snapshot = await sealRequestSnapshot({
       requestId: session.requestId,
@@ -489,6 +529,8 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
       previewFingerprint: plan.preview.fingerprint,
       approvedAt: new Date(clock()).toISOString(),
       sourceFileName: plan.preview.sourceFileName,
+      body: plan.body,
+      credential,
       redaction: {
         total: plan.preview.redaction.total,
         byKind: { ...plan.preview.redaction.byKind } as Record<string, number>,
@@ -500,17 +542,21 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
       model: plan.preview.model,
       destinationHost: destination.host,
       previewFingerprint: plan.preview.fingerprint,
+      body: plan.body,
+      credential,
     });
   } catch (cause) {
     const error = toHybridError(cause);
-    return fallback(error.message, error.failure, local, plan);
+    return fallback(scrubSessionSecret(error.message, input.apiKey), error.failure, local, plan);
   }
+  // The approved preview is now bound to one transmission (INT-001).
+  plan.approvalUsed = true;
 
   // 8. The gateway request, under the session (Stop, timeout, receive cap).
   const resolution = providerRegistry.resolve({
-    baseUrl: input.settings.baseUrl,
-    model: input.settings.model,
-    providerId: input.providerId,
+    baseUrl: plan.settings.baseUrl,
+    model: plan.settings.model,
+    providerId: input.providerId || plan.settings.providerId || plan.provider.profile.id,
   });
   const provider =
     input.provider ??
@@ -519,40 +565,74 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
       // timeouts (C-FIX-005/007); the user's numbers still bound the request.
       profile: resolution.profile,
       defaults: {
-        timeoutMs: input.settings.requestTimeoutMs,
-        maxOutputTokens: input.settings.maxOutputTokens,
-        temperature: input.settings.temperature,
+        timeoutMs: plan.settings.requestTimeoutMs,
+        maxOutputTokens: plan.body.maxOutputTokens,
+        temperature: plan.settings.temperature,
       },
     });
   const policy = policyForProfile(resolution.profile, {
-    requestTimeoutMs: input.settings.requestTimeoutMs,
-    maxOutputTokens: input.settings.maxOutputTokens,
-    maxInputTokens: input.settings.maxInputTokens,
+    requestTimeoutMs: plan.settings.requestTimeoutMs,
+    maxOutputTokens: plan.body.maxOutputTokens,
+    maxInputTokens: plan.settings.maxInputTokens,
   });
   const request: HybridProviderRequest = {
-    settings: toHybridSettings(input.settings, input.apiKey ?? null, true),
+    settings: toHybridSettings(
+      {
+        ...plan.settings,
+        // INT-002/006: the effective output budget and the body's temperature, not
+        // the raw user numbers.
+        maxOutputTokens: plan.body.maxOutputTokens,
+        temperature: plan.body.temperature ?? plan.settings.temperature,
+      },
+      input.apiKey ?? null,
+      true,
+    ),
     // The frozen snapshot is what leaves the tab, not the preview's array.
     messages: snapshot.messages.map((message) => ({ role: message.role, content: message.content })),
     budget: {
-      maxInputTokens: input.settings.maxInputTokens,
-      maxOutputTokens: input.settings.maxOutputTokens,
+      maxInputTokens: plan.settings.maxInputTokens,
+      maxOutputTokens: plan.body.maxOutputTokens,
       chunkOverlapTokens: 0,
-      maxFewShotTokens: input.settings.fewShotTokenBudget,
+      maxFewShotTokens: plan.settings.fewShotTokenBudget,
     },
     signal: session.signal,
+    // INT-001/006: the provider serialises this body, not its own view of settings.
+    body: plan.body,
+    expectedEndpoint: destination.endpoint,
   };
 
   // A second, independent check immediately before the socket: recompute the
-  // digest and the approval fingerprint from the payload we are holding.
+  // digest and the approval fingerprint from the payload we are holding, and
+  // check the body and credential against what is in memory now.
   const preSend = await verifyRequestSnapshot(snapshot, {
     endpoint: destination.endpoint,
     model: plan.preview.model,
     destinationHost: destination.host,
     previewFingerprint: plan.preview.fingerprint,
+    body: plan.body,
+    credential,
   });
   if (!preSend.ok) {
     const problem: SnapshotProblem = preSend.problems[0];
     return fallback(problem.message, 'approval', local, plan);
+  }
+
+  // INT-007: the payload must respect the boundary the preview described before
+  // it reaches the transport (excluded ranges, binary media, tool scope).
+  try {
+    assertDataBoundary({
+      toolId: input.toolId,
+      messages: snapshot.messages.map((message) => ({ role: message.role, content: message.content })),
+      selection: plan.budget.selection,
+    });
+  } catch (cause) {
+    const error = toHybridError(cause);
+    return fallback(scrubSessionSecret(error.message, input.apiKey), error.failure, local, plan);
+  }
+
+  // INT-001: one approved seal, one transmission.
+  if (!consumeRequestSnapshot(snapshot)) {
+    return fallback('この承認はすでに送信に使われました。', 'approval', local, plan);
   }
 
   let gateway: GatewayResult;
@@ -562,7 +642,7 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
       request,
       session,
       streaming:
-        input.settings.streaming &&
+        plan.body.stream &&
         resolution.capabilities.streaming &&
         typeof provider.completeStream === 'function',
       maxResponseChars: input.maxResponseChars ?? policy.limits.maxResponseChars,
@@ -572,7 +652,7 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
     const error = toHybridError(cause);
     if (error.kind === 'aborted' || session.stopRequested()) {
       return cancel('リクエストを中止しました。ローカル結果を表示しています。', local, plan, {
-        aiText: session.text() || null,
+        aiText: scrubSessionSecret(session.text(), input.apiKey) || null,
       });
     }
     if (stale()) {
@@ -580,7 +660,7 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
       const outcome = cancel('入力が変更されたため、この AI 実行は破棄しました。', local, plan);
       return { ...outcome, applied: false };
     }
-    return fallback(error.message, error.failure, local, plan, { aiText: session.text() || null });
+    return fallback(scrubSessionSecret(error.message, input.apiKey), error.failure, local, plan, { aiText: scrubSessionSecret(session.text(), input.apiKey) || null });
   }
   gatewayFinishReason = gateway.finishReason;
   gatewayStreamed = gateway.streamed;
@@ -592,7 +672,7 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
     // The answer describes an artifact that no longer exists on screen; record
     // the conflict so a caller that inspects the outcome sees why it was dropped.
     const outcome = cancel('入力が変更されたため、この AI 実行は破棄しました。', local, plan, {
-      aiText: gateway.raw,
+      aiText: scrubSessionSecret(gateway.raw, input.apiKey),
       conflicts: [
         {
           kind: 'local-changed',
@@ -604,7 +684,7 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
     return { ...outcome, applied: false };
   }
   if (session.stopRequested()) {
-    return cancel('リクエストを中止しました。ローカル結果を表示しています。', local, plan, { aiText: gateway.raw });
+    return cancel('リクエストを中止しました。ローカル結果を表示しています。', local, plan, { aiText: scrubSessionSecret(gateway.raw, input.apiKey) });
   }
 
   // 9–10. Validation against the tool schema and the local facts.
@@ -617,12 +697,33 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
     } catch {
       throw new HybridError('schema', 'AI 応答が JSON として読み取れませんでした。');
     }
-    const facts: EvidenceFacts = spec.facts(local.output, input.sourceName, input.source);
+    const approvedRanges = (() => {
+      const included = includedRangesOf(plan!.budget.selection);
+      const sections = plan!.sendSections?.selected;
+      if (!sections) return included;
+      // INT-007: a line is approved only when it is both inside the allocated
+      // selection and inside a section the operator ticked for transmission.
+      const ranges = included.flatMap((range) =>
+        sections
+          .map((section) => ({
+            start: Math.max(range.start, section.start),
+            end: Math.min(range.end, section.end),
+          }))
+          .filter((entry) => entry.start <= entry.end),
+      );
+      return ranges;
+    })();
+    const facts: EvidenceFacts = {
+      ...spec.facts(local.output, input.sourceName, input.source),
+      // INT-007: a proposal may only cite a line the preview approved for
+      // transmission. The ranges keep the original file's numbering.
+      approvedRanges,
+    };
     merged = mergeProposals(parsed, facts, spec.proposalKinds);
   } catch (cause) {
     const error = toHybridError(cause);
     return fallback(`${error.message} AI の内容は採用せず、ローカル結果を表示しています。`, 'schema', local, plan, {
-      aiText: gateway.raw,
+      aiText: scrubSessionSecret(gateway.raw, input.apiKey),
     });
   }
 
@@ -668,7 +769,7 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
       summary: merged.envelope.summary,
       reason,
       usage: gateway.usage,
-      aiText: gateway.raw,
+      aiText: scrubSessionSecret(gateway.raw, input.apiKey),
     });
   }
 
@@ -683,7 +784,7 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
     conflicts: merged.conflicts,
     summary: merged.envelope.summary,
     usage: gateway.usage,
-    aiText: gateway.raw,
+    aiText: scrubSessionSecret(gateway.raw, input.apiKey),
   });
 }
 

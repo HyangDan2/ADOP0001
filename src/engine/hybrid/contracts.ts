@@ -24,6 +24,8 @@ export interface HybridSettings {
   requestTimeoutMs?: number;
   /** Upper bound for the answer the provider may return. */
   maxOutputTokens?: number;
+  /** INT-006: ask for a JSON response format when the capability profile allows it. */
+  structuredOutput?: boolean;
 }
 
 export type HybridFailure =
@@ -86,6 +88,16 @@ export interface HybridProviderRequest {
   messages: ChatMessage[];
   budget: ContextBudget;
   signal?: AbortSignal;
+  /**
+   * INT-001/006: the exact body parameters the approval covered. When present the
+   * provider serialises this spec instead of rebuilding parameters from settings.
+   */
+  body?: import('./requestBody').ChatBodySpec;
+  /**
+   * INT-001: the endpoint the approval named. A redirect that would change it is
+   * refused instead of followed, and a resolved endpoint that differs is an error.
+   */
+  expectedEndpoint?: string;
 }
 
 export interface HybridProviderResponse {
@@ -105,6 +117,12 @@ export interface HybridProviderResponse {
 
 export interface HybridProvider {
   readonly id: string;
+  /**
+   * INT-006: the capabilities this client will actually apply. The orchestrator
+   * uses them to build the approved body, so a capability profile and the client
+   * that sends cannot disagree about streaming or parameter spelling.
+   */
+  capabilitiesFor?(model: string): import('./providerProfiles').ProviderCapabilities | null;
   /** Receives the already redacted, already budgeted prompt; never the raw file. */
   complete(request: HybridProviderRequest): Promise<HybridProviderResponse>;
   /** Optional streaming transport; a provider without it is still valid. */

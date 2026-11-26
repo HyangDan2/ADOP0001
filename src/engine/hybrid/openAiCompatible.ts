@@ -1,5 +1,5 @@
 /**
- * WO-03 — OpenAI-compatible provider client.
+ * WO-03 / INT-001 / INT-004 / INT-005 / INT-006 — OpenAI-compatible provider client.
  *
  * Speaks `POST {baseUrl}/chat/completions` over the transport, with:
  *
@@ -9,13 +9,29 @@
  *   `input_tokens` / `output_tokens` spelling)
  * - error classification (see `errors.ts`)
  * - endpoint policy from `transport.ts` (https, no credentials, no query, no
- *   fragment, no duplicated path, same-origin redirects only)
+ *   fragment, no duplicated path, no redirect that would leave the approved
+ *   endpoint)
  * - retry **off** by default; when a caller enables it, only 429/5xx/network
  *   failures are retried, never after a cancel, and never after a stream has
  *   already emitted text
  *
+ * Phase 5C.1 corrections that this file now enforces:
+ *
+ * - INT-001: when the orchestrator supplies the sealed `body`, that spec is the
+ *   body. Settings are not consulted again, the resolved endpoint must be the
+ *   approved one, and a redirect is refused rather than followed.
+ * - INT-004: a `finish_reason` is an event, not the end of the stream. The reader
+ *   keeps going for the usage frame and `[DONE]`, and the profile's terminal
+ *   policy decides whether EOF after a finish reason is a complete answer.
+ * - INT-005: non-streaming and error bodies are read under a byte ceiling while
+ *   they arrive, and the reader is cancelled at the limit.
+ * - INT-006: the body is built from the capability profile (parameter spelling,
+ *   temperature support, usage option, structured output), never from a model
+ *   name branch.
+ *
  * The API key only ever travels in the `Authorization` header of the request it
- * was configured for. It is not logged, not put in a URL and not persisted.
+ * was configured for. It is not logged, not put in a URL and not persisted, and
+ * any text the provider echoes back is scrubbed of it before it reaches the UI.
  */
 
 import type {
@@ -27,11 +43,13 @@ import type {
 } from './contracts';
 import { validateHybridSettings } from './contracts';
 import { hybridConfig } from './config';
-import { HybridError, classifyFetchFailure, errorForStatus, type HybridErrorKind } from './errors';
-import type { ProviderProfile } from './providerProfiles';
+import { HybridError, classifyFetchFailure, errorForStatus, scrubProviderText, type HybridErrorKind } from './errors';
+import type { ProviderCapabilities, ProviderProfile } from './providerProfiles';
 import { ResourceGuard, resolveResourcePolicy, withPhaseDeadline, type ResourcePolicy } from './resourcePolicy';
 import { createUtf8FrameDecoder } from './streamCodec';
 import { createSseParser, readCompletionJson, type StreamUsage } from './streamParser';
+import { chatBodySpecFor, serializeChatBody, type ChatBodySpec, type TerminalPolicy } from './requestBody';
+import { readBoundedText } from './boundedRead';
 import {
   createFetchTransport,
   resolveEndpoint,
@@ -106,6 +124,14 @@ function assertMessages(messages: ChatMessage[]): void {
   }
 }
 
+/** Removes the exact session key from any text the provider echoed back. */
+export function scrubSessionSecret(text: string, secret: string | null | undefined): string {
+  const scrubbed = scrubProviderText(text);
+  const value = secret?.trim();
+  if (!value || value.length < 6) return scrubbed;
+  return scrubbed.split(value).join('[redacted-key]');
+}
+
 /** Combines the caller's signal with a deadline and normalizes whatever comes out. */
 async function runWithDeadline<T>(
   signal: AbortSignal | undefined,
@@ -136,12 +162,34 @@ async function runWithDeadline<T>(
   }
 }
 
-function errorForResponse(response: TransportResponse, body: string): HybridError {
+function errorForResponse(response: TransportResponse, body: string, secret?: string | null): HybridError {
   const kind: HybridErrorKind = response.status === 0 ? 'cors' : 'http';
   if (kind === 'cors') {
     return new HybridError('cors', 'ブラウザが応答を読み取れませんでした（CORS）。プロバイダの CORS 設定を確認してください。');
   }
-  return errorForStatus(response.status, response.headers, body);
+  return errorForStatus(response.status, response.headers, scrubSessionSecret(body, secret));
+}
+
+/** INT-004: a non-streaming finish reason is handled, not ignored. */
+export function assertCompletionFinishReason(finishReason: string | null | undefined): void {
+  if (!finishReason) return;
+  if (finishReason === 'length') {
+    throw new HybridError(
+      'incomplete-stream',
+      '出力上限に達して応答が途中で切れました。出力上限を上げてから再試行してください。',
+    );
+  }
+  if (finishReason === 'content_filter' || finishReason === 'refusal') {
+    throw new HybridError(
+      'provider',
+      'プロバイダがこの内容の生成を拒否しました（content_filter / refusal）。ローカル結果を表示しています。',
+    );
+  }
+}
+
+/** The bytes an SSE stream may hold pending before it is refused (INT-005). */
+function pendingLimitFor(policy: ResourcePolicy): number {
+  return Math.max(1024, Math.min(policy.limits.maxResponseBytes, hybridConfig.read().stream.maxEventDataChars));
 }
 
 export class OpenAiCompatibleProvider implements HybridProvider {
@@ -175,6 +223,15 @@ export class OpenAiCompatibleProvider implements HybridProvider {
       timeoutMs: options.defaults?.timeoutMs ?? defaults.defaultTotalTimeoutMs,
       maxOutputTokens: options.defaults?.maxOutputTokens ?? defaults.defaultMaxOutputTokens,
     };
+  }
+
+  /** INT-006: the capabilities this client actually applies. */
+  capabilitiesFor(model: string): ProviderCapabilities | null {
+    // No profile means this client applies the neutral Phase 5C behaviour; the
+    // orchestrator then keeps the registry's capability profile, which is what an
+    // injected test client or a bare connection-test client needs.
+    if (this.profile) return this.profile.capabilitiesFor(model);
+    return null;
   }
 
   /** The timeout/response policy for a request (C-FIX-005). */
@@ -218,15 +275,52 @@ export class OpenAiCompatibleProvider implements HybridProvider {
     };
   }
 
-  private body(resolved: ResolvedRequest, messages: ChatMessage[], stream: boolean): string {
-    return JSON.stringify({
+  /**
+   * INT-001/006: the sealed spec is the body. Without one (a connection test, or a
+   * caller that predates the snapshot) a neutral body is built from settings, which
+   * is exactly the Phase 5C body.
+   */
+  private bodyFor(
+    request: HybridProviderRequest,
+    resolved: ResolvedRequest,
+    stream: boolean,
+  ): { text: string; sealed: ChatBodySpec | null } {
+    const sealed = request.body ?? null;
+    if (sealed) {
+      if (sealed.model !== resolved.model) {
+        throw new HybridError('approval', '承認したモデルと送信しようとしているモデルが一致しません。');
+      }
+      if (sealed.stream !== stream) {
+        throw new HybridError('approval', '承認したストリーミング設定と送信方法が一致しません。');
+      }
+      return { text: serializeChatBody(sealed, request.messages), sealed };
+    }
+    // INT-006: the capability profile decides the parameter spelling and which
+    // parameters exist, even for a request that was not sealed (a connection test
+    // or an injected client).
+    const capabilities = this.profile
+      ? this.profile.capabilitiesFor(resolved.model)
+      : {
+          streaming: true,
+          maxOutputTokens: Number.POSITIVE_INFINITY,
+          body: {
+            outputTokenParameter: 'max_tokens' as const,
+            temperature: true,
+            streamingUsage: true,
+            structuredOutput: true,
+            terminalPolicy: 'finish-or-done' as const,
+          },
+        };
+    const spec = chatBodySpecFor({
       model: resolved.model,
-      messages,
       temperature: resolved.temperature,
-      max_tokens: resolved.maxOutputTokens,
-      stream,
-      ...(stream ? { stream_options: { include_usage: true } } : {}),
+      maxOutputTokens: resolved.maxOutputTokens,
+      streaming: stream,
+      capabilities: capabilities as never,
+      providerId: this.profile?.id ?? 'unspecified',
+      structuredOutput: request.settings.structuredOutput === true,
     });
+    return { text: serializeChatBody(spec, request.messages), sealed: null };
   }
 
   /**
@@ -235,7 +329,7 @@ export class OpenAiCompatibleProvider implements HybridProvider {
    */
   private async sendOnce(
     resolved: ResolvedRequest,
-    messages: ChatMessage[],
+    request: HybridProviderRequest,
     stream: boolean,
     signal: AbortSignal | undefined,
     policy: ResourcePolicy,
@@ -243,6 +337,7 @@ export class OpenAiCompatibleProvider implements HybridProvider {
   ): Promise<HybridProviderResponse> {
     const retry = this.retry;
     const maxAttempts = retry ? Math.max(1, retry.maxAttempts) : 1;
+    const body = this.bodyFor(request, resolved, stream);
     let lastError: HybridError | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -255,9 +350,9 @@ export class OpenAiCompatibleProvider implements HybridProvider {
               url: resolved.endpoint,
               method: 'POST',
               headers: this.headers(resolved.apiKey, stream),
-              body: this.body(resolved, messages, stream),
+              body: body.text,
               signal: deadlineSignal,
-            }),
+            }, { refuseRedirects: Boolean(request.expectedEndpoint) }),
             policy.timeouts.connectMs,
             'connect',
             abort,
@@ -283,21 +378,30 @@ export class OpenAiCompatibleProvider implements HybridProvider {
   async complete(request: HybridProviderRequest): Promise<HybridProviderResponse> {
     const resolved = this.resolve(request.settings);
     assertMessages(request.messages);
+    if (request.expectedEndpoint && request.expectedEndpoint !== resolved.endpoint) {
+      throw new HybridError('approval', '承認した宛先と解決したエンドポイントが一致しません。');
+    }
     const policy = this.policyFor(resolved);
     this.lastPolicy = policy;
-    const result = await this.sendOnce(resolved, request.messages, false, request.signal, policy, async (response, abort) => {
-      const text = await withPhaseDeadline(response.text(), policy.timeouts.ttfbMs, 'ttfb', abort);
-      if (!response.ok) throw errorForResponse(response, text);
-      // C-FIX-005: the answer is also bounded by bytes, not only by the engine's
-      // character cap, so a multi-byte flood cannot pass the limit.
-      const guard = new ResourceGuard(policy.limits.maxResponseBytes);
-      const responseBytes = new TextEncoder().encode(text).byteLength;
-      guard.add(responseBytes);
-      const parsed = readCompletionJson(text);
+    return this.sendOnce(resolved, request, false, request.signal, policy, async (response, abort) => {
+      // INT-005: the body is read under the byte ceiling while it arrives.
+      const read = await readBoundedText(response, {
+        policy,
+        abort,
+        signal: request.signal,
+        maxChars: policy.limits.maxResponseChars,
+      });
+      if (!response.ok) throw errorForResponse(response, read.text, resolved.apiKey);
+      const parsed = readCompletionJson(scrubSessionSecret(read.text, resolved.apiKey));
+      assertCompletionFinishReason(parsed.finishReason);
       this.lastUsage = parsed.usage ?? null;
-      return { text: parsed.text, usage: parsed.usage, finishReason: parsed.finishReason, responseBytes };
+      return {
+        text: scrubSessionSecret(parsed.text, resolved.apiKey),
+        usage: parsed.usage,
+        finishReason: parsed.finishReason,
+        responseBytes: read.bytes,
+      };
     });
-    return result;
   }
 
   async completeStream(
@@ -311,25 +415,54 @@ export class OpenAiCompatibleProvider implements HybridProvider {
     }
     const resolved = this.resolve(request.settings);
     assertMessages(request.messages);
+    if (request.expectedEndpoint && request.expectedEndpoint !== resolved.endpoint) {
+      throw new HybridError('approval', '承認した宛先と解決したエンドポイントが一致しません。');
+    }
     const policy = this.policyFor(resolved);
     this.lastPolicy = policy;
-    let emitted = false;
+    const terminalPolicy: TerminalPolicy =
+      request.body?.terminalPolicy ?? this.profile?.capabilitiesFor(request.settings.model).body.terminalPolicy ?? 'finish-or-done';
 
-    return this.sendOnce(resolved, request.messages, true, request.signal, policy, async (response, abort) => {
+    return this.sendOnce(resolved, request, true, request.signal, policy, async (response, abort) => {
+      const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
       if (!response.ok) {
-        const body = await response.text();
-        throw errorForResponse(response, body);
+        const read = await readBoundedText(response, {
+          policy,
+          abort,
+          signal: request.signal,
+          maxChars: policy.limits.maxResponseChars,
+        });
+        throw errorForResponse(response, read.text, resolved.apiKey);
       }
-      // A provider that ignores `stream` returns a normal JSON body.
-      if (!response.body) {
-        const text = await withPhaseDeadline(response.text(), policy.timeouts.ttfbMs, 'ttfb', abort);
-        const parsed = readCompletionJson(text);
+
+      // INT-004: the Content-Type decides the protocol, not the presence of a body
+      // object. A provider that ignores `stream` answers with JSON; one that
+      // streams says so.
+      const isJson = contentType.includes('application/json');
+      const isSse = contentType.includes('text/event-stream');
+      if (isJson || (!isSse && !response.body)) {
+        const read = await readBoundedText(response, {
+          policy,
+          abort,
+          signal: request.signal,
+          maxChars: policy.limits.maxResponseChars,
+        });
+        const parsed = readCompletionJson(scrubSessionSecret(read.text, resolved.apiKey));
+        assertCompletionFinishReason(parsed.finishReason);
         this.lastUsage = parsed.usage ?? null;
-        if (parsed.text) {
-          emitted = true;
-          onDelta(parsed.text);
-        }
-        return { text: parsed.text, usage: parsed.usage, finishReason: parsed.finishReason };
+        const text = scrubSessionSecret(parsed.text, resolved.apiKey);
+        if (text) onDelta(text);
+        return {
+          text,
+          usage: parsed.usage,
+          finishReason: parsed.finishReason,
+          streamTerminated: true,
+          responseBytes: read.bytes,
+        };
+      }
+
+      if (!response.body) {
+        throw new HybridError('unsupported-format', 'ストリームを読み取れない応答形式です。');
       }
 
       const reader = response.body.getReader();
@@ -337,30 +470,37 @@ export class OpenAiCompatibleProvider implements HybridProvider {
       const decoder = createUtf8FrameDecoder();
       const parser = createSseParser();
       const guard = new ResourceGuard(policy.limits.maxResponseBytes);
+      const pendingLimit = pendingLimitFor(policy);
       let firstRead = true;
       let answer = '';
       let usage: StreamUsage | undefined;
-      let finishReason: string | null = null;
-      let finished = false;
+      let pendingChars = 0;
+      let completed = false;
 
-      const consume = (events: ReturnType<typeof parser.push>) => {
+      const consume = async (events: ReturnType<typeof parser.push>) => {
         for (const event of events) {
           if (event.type === 'delta') {
-            emitted = true;
             answer += event.text;
-            onDelta(event.text);
+            onDelta(scrubSessionSecret(event.text, resolved.apiKey));
+          } else if (event.type === 'finish') {
+            // INT-004: record it and keep reading — usage and [DONE] follow.
+            if (event.finishReason === 'length' || event.finishReason === 'content_filter' || event.finishReason === 'refusal') {
+              assertCompletionFinishReason(event.finishReason);
+            }
+          } else if (event.type === 'usage') {
+            usage = event.usage;
           } else if (event.type === 'done') {
-            finished = true;
-            finishReason = event.finishReason;
+            completed = true;
             if (event.usage) usage = event.usage;
           } else {
             throw event.error;
           }
         }
+        await Promise.resolve();
       };
 
       try {
-        while (!finished) {
+        while (!completed) {
           // C-FIX-005: the first token and the gap between chunks have their own
           // deadlines, so a stalled stream is named instead of waiting for the
           // whole-request timer.
@@ -373,15 +513,23 @@ export class OpenAiCompatibleProvider implements HybridProvider {
           );
           firstRead = false;
           if (done) break;
+          if (!value) continue;
           // The byte ceiling is enforced before the text reaches the engine.
           guard.add(value.byteLength);
-          consume(parser.push(decoder.push(value)));
+          const decoded = decoder.push(value);
+          pendingChars += decoded.length;
+          if (pendingChars > pendingLimit) {
+            throw new HybridError('response-too-long', 'ストリームの未処理データが上限を超えたため受信を中止しました。');
+          }
+          const events = parser.push(decoded);
+          pendingChars = 0;
+          await consume(events);
         }
-        if (!finished) {
+        if (!completed) {
           // Flush the decoder first: a trailing partial sequence must not be lost,
           // and the last event may not have been followed by a blank line.
-          consume(parser.push(decoder.flush()));
-          consume(parser.flush());
+          await consume(parser.push(decoder.flush()));
+          await consume(parser.flush());
         }
       } catch (cause) {
         // A cancel keeps escaping as a cancel even mid-stream.
@@ -389,21 +537,36 @@ export class OpenAiCompatibleProvider implements HybridProvider {
         throw cause instanceof HybridError ? cause : classifyFetchFailure(cause, resolved.timeoutMs);
       } finally {
         try {
+          if (!completed) await reader.cancel();
+        } catch {
+          /* already closed */
+        }
+        try {
           reader.releaseLock();
         } catch {
           /* already released */
         }
       }
 
-      if (!answer && !emitted) {
+      if (!answer) {
         throw new HybridError('empty-choices', 'ストリームから本文を受け取れませんでした。');
       }
-      this.lastUsage = usage ?? null;
+      this.lastUsage = usage ?? parser.usage ?? null;
+      const finishReason = parser.finishReason;
+      const sawDone = parser.terminated || completed;
+      // INT-004: termination is decided by the profile's terminal policy, not by
+      // the first finish reason. EOF without the required marker is abnormal.
+      const terminated =
+        terminalPolicy === 'done'
+          ? sawDone
+          : terminalPolicy === 'finish'
+            ? parser.sawFinish
+            : sawDone || parser.sawFinish;
       return {
-        text: answer,
+        text: scrubSessionSecret(answer, resolved.apiKey),
         usage,
         finishReason,
-        streamTerminated: parser.terminated,
+        streamTerminated: terminated,
         responseBytes: guard.used(),
       };
     });

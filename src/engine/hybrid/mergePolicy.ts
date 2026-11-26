@@ -63,14 +63,20 @@ export interface EvidenceFacts {
   symbols: Map<string, number[]>;
   /** When true, an evidence entry without a symbol is rejected (diagram tools). */
   requireSymbol?: boolean;
+  /**
+   * INT-007: the line ranges the operator approved for transmission. A proposal
+   * that cites a line outside them is about content that was not sent.
+   */
+  approvedRanges?: Array<{ start: number; end: number }>;
 }
 
-export type EvidenceFailure = 'no-evidence' | 'unknown-symbol' | 'line-out-of-range' | 'wrong-file' | 'quote-not-found';
+export type EvidenceFailure = 'no-evidence' | 'unknown-symbol' | 'line-out-of-range' | 'line-out-of-scope' | 'wrong-file' | 'quote-not-found';
 
 export const EVIDENCE_FAILURE_LABEL: Record<EvidenceFailure, string> = {
   'no-evidence': '根拠（行番号またはシンボル）が指定されていません',
   'unknown-symbol': 'ローカル解析に存在しないシンボルを参照しています',
   'line-out-of-range': 'ファイルの範囲外の行を参照しています',
+  'line-out-of-scope': '送信範囲に含まれていない行を参照しています',
   'wrong-file': '対象ファイル以外を参照しています',
   'quote-not-found': '引用が元のソースと一致しません',
 };
@@ -217,6 +223,13 @@ export function checkEvidence(evidence: ProposalEvidence, facts: EvidenceFacts):
   if (facts.requireSymbol && !evidence.symbol) return 'no-evidence';
   if (evidence.line !== undefined) {
     if (evidence.line > facts.lines.length || evidence.line < 1) return 'line-out-of-range';
+    // INT-007: the approved source scope is part of the evidence contract. A
+    // proposal about a line that was excluded from the payload is not evidence
+    // for this run, however real the line is in the file.
+    const ranges = facts.approvedRanges;
+    if (ranges && ranges.length && !ranges.some((range) => evidence.line! >= range.start && evidence.line! <= range.end)) {
+      return 'line-out-of-scope';
+    }
   }
   if (evidence.symbol) {
     const owned = facts.symbols.get(evidence.symbol);

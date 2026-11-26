@@ -130,8 +130,9 @@ export function allocateContext(
 
   const inputAllowance = Math.max(0, Math.min(settings.maxInputTokens, contextLimit - maxOutputTokens - safetyMargin));
   const requested = requestedSections(parts);
+  const extraOverhead = Math.max(0, settings.extraOverheadTokens ?? 0);
   const requestedOverhead =
-    requested.system + requested.operatorInstruction + requested.localAnalysis + requested.schema + requested.fewShot;
+    requested.system + requested.operatorInstruction + requested.localAnalysis + requested.schema + requested.fewShot + extraOverhead;
 
   const sourceShare = profile?.sourceShare === undefined ? null : clamp01(profile.sourceShare);
   const headShare = clamp01(profile?.headShare ?? config.sourceHeadShare);
@@ -152,7 +153,7 @@ export function allocateContext(
   }
 
   const overheadTokens =
-    allowed.system + allowed.operatorInstruction + allowed.localAnalysis + allowed.schema + allowed.fewShot;
+    allowed.system + allowed.operatorInstruction + allowed.localAnalysis + allowed.schema + allowed.fewShot + extraOverhead;
   let sourceBudget = Math.max(0, inputAllowance - overheadTokens);
   if (sourceFloor > 0 && sourceBudget < sourceFloor && overheadTokens <= inputAllowance) {
     // Nothing left to trim without cutting a section the model needs; the file

@@ -12,6 +12,19 @@ import {
   type ConnectionSettings,
   type ConnectionTestResult,
 } from '../engine/hybrid/settings';
+import { providerRegistry } from '../engine/hybrid/providerProfiles';
+import {
+  profilesToJson,
+  readStoredProfiles,
+  validateProfiles,
+  writeStoredProfiles,
+} from '../engine/hybrid/providerConfig';
+import {
+  patternFromLine,
+  patternToLine,
+  redactionPolicyStore,
+  validateRedactionPolicy,
+} from '../engine/hybrid/redactionPolicy';
 
 /**
  * WO-04 — AI connection settings (Japanese UI).
@@ -53,6 +66,11 @@ export function ConnectionSettingsModal({ onClose, onSaved }: Props) {
   const [saveState, setSaveState] = useState<{ ok: boolean; message: string } | null>(null);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [testing, setTesting] = useState(false);
+  const [profilesJson, setProfilesJson] = useState(() => profilesToJson(readStoredProfiles()));
+  const [policyText, setPolicyText] = useState(() =>
+    redactionPolicyStore.read().customPatterns.map(patternToLine).join('\n'),
+  );
+  const [advancedError, setAdvancedError] = useState<string | null>(null);
   const validation = validateConnectionSettings(settings);
 
   const patch = <K extends ConnectionField>(field: K, value: ConnectionSettings[K]) => {
@@ -66,15 +84,48 @@ export function ConnectionSettingsModal({ onClose, onSaved }: Props) {
       setSaveState({ ok: false, message: '入力を確認してください。' });
       return;
     }
+    // INT-006/007: profiles and the redaction policy are validated before either
+    // is stored; an invalid one blocks the save instead of being half-applied.
+    let profiles: unknown = [];
+    try {
+      profiles = profilesJson.trim() ? JSON.parse(profilesJson) : [];
+    } catch {
+      setAdvancedError('プロファイル JSON を読み取れません（配列で指定してください）。');
+      setSaveState({ ok: false, message: 'プロファイル JSON を確認してください。' });
+      return;
+    }
+    const profileCheck = validateProfiles(profiles);
+    if (!profileCheck.ok) {
+      setAdvancedError(profileCheck.errors.join(' '));
+      setSaveState({ ok: false, message: 'プロファイル定義を確認してください。' });
+      return;
+    }
+    const customPatterns = policyText
+      .split('\n')
+      .map(patternFromLine)
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+    const policyCheck = validateRedactionPolicy({ customPatterns, disabled: redactionPolicyStore.read().disabled });
+    if (!policyCheck.ok) {
+      setAdvancedError(policyCheck.problems.map((problem) => problem.message).join(' '));
+      setSaveState({ ok: false, message: '伏字ポリシーを確認してください。' });
+      return;
+    }
+    setAdvancedError(null);
     sessionApiKey.set(apiKey);
     const written = connectionSettingsStore.write(settings);
+    const profilesWritten = writeStoredProfiles(profileCheck.profiles);
+    if (profilesWritten.ok) {
+      for (const profile of profileCheck.profiles) providerRegistry.register(profile);
+    }
+    const policyWritten = redactionPolicyStore.write(policyCheck.policy);
     const next = normalizeConnectionSettings(settings);
+    const problems = [written.error, profilesWritten.error, policyWritten.error].filter(Boolean);
     setSaveState(
-      written.ok
-        ? { ok: true, message: '接続設定を保存しました。API キーはこのタブのメモリにのみ保持しています。' }
-        : { ok: false, message: written.error ?? '保存できませんでした。' },
+      problems.length === 0
+        ? { ok: true, message: '接続設定・プロファイル・伏字ポリシーを保存しました。API キーはこのタブのメモリにのみ保持しています。' }
+        : { ok: false, message: problems.join(' ') },
     );
-    if (written.ok) onSaved?.(next);
+    if (problems.length === 0) onSaved?.(next);
   };
 
   const clearKey = () => {
@@ -157,6 +208,23 @@ export function ConnectionSettingsModal({ onClose, onSaved }: Props) {
             />
             <small>プロバイダのモデル名をそのまま入力します。</small>
             {fieldError('model') ? <em className="field-error">{fieldError('model')}</em> : null}
+          </label>
+
+          <label className="connection-field">
+            <span>プロバイダープロファイル</span>
+            <select
+              value={settings.providerId}
+              data-testid="connection-provider"
+              onChange={(event) => patch('providerId', event.target.value)}
+            >
+              <option value="">自動（ホスト / モデルから判定）</option>
+              {providerRegistry.list().map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.label}（{profile.id}）
+                </option>
+              ))}
+            </select>
+            <small>出力トークンのパラメータ名・Temperature 対応・ストリーミング終了条件はこのプロファイルに従います。</small>
           </label>
 
           <div className="connection-field connection-key">
@@ -249,6 +317,22 @@ export function ConnectionSettingsModal({ onClose, onSaved }: Props) {
             <small>受け取った順に表示します。OFF では応答をまとめて受け取ります。</small>
           </label>
 
+          <label className="connection-field connection-toggle">
+            <span>JSON 応答モード</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.structuredOutput}
+              className={`switch ${settings.structuredOutput ? 'on' : ''}`}
+              data-testid="connection-structured-output"
+              onClick={() => patch('structuredOutput', !settings.structuredOutput)}
+            >
+              <span className="switch-knob" />
+              <span className="switch-label">{settings.structuredOutput ? 'ON' : 'OFF'}</span>
+            </button>
+            <small>プロファイルが対応している場合、応答を JSON 形式で要求します（response_format）。</small>
+          </label>
+
           <label className="connection-field">
             <span>プロンプト戦略</span>
             <select
@@ -262,6 +346,41 @@ export function ConnectionSettingsModal({ onClose, onSaved }: Props) {
             <small>Few-shot は、有効にした例だけを対象ツール・対象言語で絞り込んで使います。</small>
           </label>
         </div>
+
+        <h3>詳細ポリシー（任意）</h3>
+        <div className="connection-grid">
+          <label className="connection-field">
+            <span>カスタムプロバイダープロファイル（JSON 配列）</span>
+            <textarea
+              value={profilesJson}
+              spellCheck={false}
+              rows={5}
+              data-testid="connection-profiles"
+              onChange={(event) => setProfilesJson(event.target.value)}
+              placeholder='[{"id":"my-gateway","label":"社内GW","hosts":["gw.example.com"],"capabilities":{"body":{"outputTokenParameter":"max_completion_tokens"}}}]'
+            />
+            <small>ソースを変更せずに、ゲートウェイのパス・モデル上限・パラメータ名を登録できます。</small>
+          </label>
+
+          <label className="connection-field">
+            <span>カスタム伏字パターン（1 行に 1 つ: 名前=正規表現）</span>
+            <textarea
+              value={policyText}
+              spellCheck={false}
+              rows={4}
+              data-testid="connection-redaction-policy"
+              onChange={(event) => setPolicyText(event.target.value)}
+              placeholder="employee-id=EMP-\\d{6}"
+            />
+            <small>組み込みの伏字に加えて、この端末の要求すべてに適用されます。危険な（入れ子の量指定子を含む）正規表現は拒否されます。</small>
+          </label>
+        </div>
+
+        {advancedError ? (
+          <p className="connection-status err" role="alert" data-testid="connection-advanced-error">
+            {advancedError}
+          </p>
+        ) : null}
 
         <div className="connection-test-row">
           <button

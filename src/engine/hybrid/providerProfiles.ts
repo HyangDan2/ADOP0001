@@ -22,6 +22,7 @@
  */
 
 import type { ContextProfile } from './contextAllocator';
+import { NEUTRAL_BODY_POLICY, type ProviderBodyPolicy } from './requestBody';
 
 export interface ProviderTimeoutPolicy {
   /** Time until response headers arrive. `null` = bounded by the total only. */
@@ -44,6 +45,8 @@ export interface ProviderResponsePolicy {
 export interface ProviderCapabilities {
   streaming: boolean;
   usageReporting: boolean;
+  /** INT-006: how the HTTP body is built for this model family. */
+  body: ProviderBodyPolicy;
   /** Real context ceiling; `Number.POSITIVE_INFINITY` when unknown. */
   maxContextTokens: number;
   /** Real output ceiling; `Number.POSITIVE_INFINITY` when unknown. */
@@ -74,6 +77,8 @@ export interface ModelCapabilityOverride {
   maxOutputTokens?: number;
   streaming?: boolean;
   charsPerToken?: number;
+  /** Partial body policy for this family (parameter spelling, temperature, terminal). */
+  body?: Partial<ProviderBodyPolicy>;
 }
 
 export interface ProviderProfileInput {
@@ -82,10 +87,11 @@ export interface ProviderProfileInput {
   /** Hostnames this profile owns. `*` matches any host (the fallback profile). */
   hosts: string[];
   models?: ModelCapabilityOverride[];
-  capabilities?: Partial<Omit<ProviderCapabilities, 'timeout' | 'response' | 'endpoints'>> & {
+  capabilities?: Partial<Omit<ProviderCapabilities, 'timeout' | 'response' | 'endpoints' | 'body'>> & {
     timeout?: Partial<ProviderTimeoutPolicy>;
     response?: Partial<ProviderResponsePolicy>;
     endpoints?: Partial<ProviderCapabilities['endpoints']>;
+    body?: Partial<ProviderBodyPolicy>;
   };
 }
 
@@ -102,6 +108,7 @@ export interface ProviderProfile {
 const DEFAULT_CAPABILITIES: ProviderCapabilities = {
   streaming: true,
   usageReporting: true,
+  body: { ...NEUTRAL_BODY_POLICY },
   maxContextTokens: Number.POSITIVE_INFINITY,
   maxOutputTokens: Number.POSITIVE_INFINITY,
   charsPerToken: 4,
@@ -118,6 +125,7 @@ export function createProviderProfile(input: ProviderProfileInput): ProviderProf
     timeout: { ...NEUTRAL_TIMEOUT, ...(input.capabilities?.timeout ?? {}) },
     response: { ...NEUTRAL_RESPONSE, ...(input.capabilities?.response ?? {}) },
     endpoints: { ...DEFAULT_CAPABILITIES.endpoints, ...(input.capabilities?.endpoints ?? {}) },
+    body: { ...NEUTRAL_BODY_POLICY, ...(input.capabilities?.body ?? {}) },
   };
   const models = [...(input.models ?? [])].sort((left, right) => right.prefix.length - left.prefix.length);
 
@@ -136,6 +144,7 @@ export function createProviderProfile(input: ProviderProfileInput): ProviderProf
         maxOutputTokens: matched.maxOutputTokens ?? capabilities.maxOutputTokens,
         streaming: matched.streaming ?? capabilities.streaming,
         charsPerToken: matched.charsPerToken ?? capabilities.charsPerToken,
+        body: matched.body ? { ...capabilities.body, ...matched.body } : capabilities.body,
       };
     },
   };
@@ -153,8 +162,18 @@ export const BUILTIN_PROVIDER_PROFILES: readonly ProviderProfileInput[] = [
     models: [
       { prefix: 'gpt-4.1', maxContextTokens: 1_000_000, maxOutputTokens: 32_768 },
       { prefix: 'gpt-4o', maxContextTokens: 128_000, maxOutputTokens: 16_384 },
-      { prefix: 'o4', maxContextTokens: 200_000, maxOutputTokens: 100_000 },
-      { prefix: 'o3', maxContextTokens: 200_000, maxOutputTokens: 100_000 },
+      {
+        prefix: 'o4',
+        maxContextTokens: 200_000,
+        maxOutputTokens: 100_000,
+        body: { outputTokenParameter: 'max_completion_tokens', temperature: false },
+      },
+      {
+        prefix: 'o3',
+        maxContextTokens: 200_000,
+        maxOutputTokens: 100_000,
+        body: { outputTokenParameter: 'max_completion_tokens', temperature: false },
+      },
       { prefix: 'gpt-3.5', maxContextTokens: 16_385, maxOutputTokens: 4_096 },
     ],
     capabilities: {

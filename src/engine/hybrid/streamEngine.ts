@@ -30,6 +30,7 @@ import { hybridConfig } from './config';
 import { HybridError, toHybridError } from './errors';
 import { responseCharCapFor as policyCharCap } from './resourcePolicy';
 import type { StreamUsage } from './streamParser';
+import { assertCompletionFinishReason } from './openAiCompatible';
 import { newRequestId } from './telemetry';
 
 export type HybridStage =
@@ -360,6 +361,10 @@ export async function runGatewayRequest(params: GatewayRequestParams): Promise<G
           '出力上限に達して応答が途中で切れました。出力上限を上げてから再試行してください。',
         );
       }
+    } else {
+      // INT-004: a non-streaming answer is checked for the same terminal reasons
+      // (a cut-off answer or a provider refusal never becomes a result).
+      assertCompletionFinishReason(response.finishReason ?? null);
     }
 
     const usage = response.usage ? { inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens } : null;

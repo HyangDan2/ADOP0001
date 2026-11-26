@@ -204,6 +204,27 @@ export interface CompiledPatterns {
 }
 
 /**
+ * INT-007 — a custom pattern is executed against every payload, in the tab, on
+ * the operator's own text. A pattern that backtracks catastrophically would hang
+ * the tab before a request is even made, so dangerous shapes are refused before
+ * the expression is compiled.
+ */
+export function unsafePatternReason(source: string): string | null {
+  if (!source.trim()) return 'カスタム伏字パターンが空です。';
+  if (source.length > 200) return 'カスタム伏字パターンが長すぎます（200 文字まで）。';
+  // Nested quantifiers — (a+)+, (.*)* , (\s+){2,} — are the classic
+  // catastrophic-backtracking shape and have no place in a redaction rule.
+  if (/\([^)]*[+*][^)]*\)\s*(?:[+*]|\{\d*,\d*\})/.test(source)) {
+    return '入れ子の量指定子を含む正規表現は使用できません（伏字処理が停止する恐れがあります）。';
+  }
+  // Backreferences make the match depend on capture state and are hard to bound.
+  if (/\\[1-9]/.test(source)) return '後方参照を含む正規表現は使用できません。';
+  // An unanchored unbounded wildcard over the whole payload is a memory hazard.
+  if (/^\.\*$/.test(source)) return '全一致のワイルドカードだけのパターンは使用できません。';
+  return null;
+}
+
+/**
  * A custom pattern that cannot be compiled must block the request: the user asked
  * for that text to be removed, and it would otherwise be sent verbatim.
  */
@@ -213,6 +234,11 @@ export function compileCustomPatterns(patterns: CustomRedactionPattern[] = []): 
   for (const entry of patterns) {
     if (!entry || typeof entry.pattern !== 'string' || !entry.pattern.trim()) {
       errors.push({ id: entry?.id ?? '(no id)', message: 'カスタム伏字パターンが空です。' });
+      continue;
+    }
+    const unsafe = unsafePatternReason(entry.pattern);
+    if (unsafe) {
+      errors.push({ id: entry.id, message: unsafe });
       continue;
     }
     try {
@@ -249,10 +275,34 @@ export interface RedactionOptions {
   disabled?: string[];
   /** Registry to use instead of the app-wide one (tests, per-request policy). */
   registry?: RedactionRegistry;
+  /**
+   * INT-007: literal secrets held by this session (the API key in memory). They
+   * are removed even when they do not look like a known key format, because the
+   * tab knows the exact string it was given.
+   */
+  secrets?: Array<string | null | undefined>;
+}
+
+/**
+ * Builds an exact-match rule for a session secret. Short or empty values are
+ * ignored (redacting a 3-character string would shred the payload), and the
+ * replacement never contains the value.
+ */
+export function secretRule(secret: string): RedactionRule | null {
+  const value = secret.trim();
+  if (value.length < 8) return null;
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    id: 'runtime:session-secret',
+    kind: 'api-key',
+    label: 'セッションの認証情報',
+    pattern: new RegExp(escaped, 'g'),
+    replacement: '[REDACTED_API_KEY]',
+  };
 }
 
 export interface ResolvedRedaction {
-  /** Builtin rules in priority order, then the custom rules. */
+  /** Session secrets, then builtin rules in priority order, then custom rules. */
   rules: RedactionRule[];
   custom: RedactionRule[];
   errors: CompiledPatterns['errors'];
@@ -260,16 +310,24 @@ export interface ResolvedRedaction {
   registryFingerprint: string;
 }
 
-/**
- * The one place that decides which patterns run for a request: builtin rules from
- * the registry (minus disabled ones), then the caller's custom rules.
- */
 export function resolveRedaction(options: RedactionOptions = {}): ResolvedRedaction {
   const registry = options.registry ?? redactionRegistry;
   const builtin = registry.resolve({ disabled: options.disabled });
   const compiledCustom = options.compiled ? { ok: true, rules: options.compiled, errors: [] } : compileCustomPatterns(options.customPatterns ?? []);
+  const secrets: RedactionRule[] = [];
+  const seen = new Set<string>();
+  for (const value of options.secrets ?? []) {
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    const rule = secretRule(trimmed);
+    if (rule) secrets.push(rule);
+  }
   return {
-    rules: [...builtin.rules, ...compiledCustom.rules],
+    // The session's own secrets run before every generic pattern, so a key that
+    // also looks like a password assignment is replaced as one whole value.
+    rules: [...secrets, ...builtin.rules, ...compiledCustom.rules],
     custom: compiledCustom.rules,
     // A custom pattern that cannot compile is an error the caller must handle, not
     // a silent skip (Phase 5C rule, kept by C-FIX-006).

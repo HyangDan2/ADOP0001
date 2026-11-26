@@ -20,6 +20,7 @@ import { sha256Hex } from '../../lib/util';
 import type { ToolId } from '../../adapters/types';
 import type { ChatMessage } from './contracts';
 import type { BudgetPlan } from './budget';
+import { hybridConfig } from './config';
 import { inspectDataBoundary, type BoundaryViolation } from './dataBoundary';
 import { HybridError } from './errors';
 import type { BuiltPrompt } from './promptBuilder';
@@ -32,6 +33,8 @@ import {
 } from './redaction';
 import { validateConnectionSettings, type ConnectionSettings } from './settings';
 import { resolveEndpoint } from './transport';
+import { bodyDigestMaterial, neutralBodySpec, type ChatBodySpec } from './requestBody';
+import { countMessageTokens } from './tokenAccounting';
 
 export interface PreflightInput {
   settings: ConnectionSettings;
@@ -40,6 +43,10 @@ export interface PreflightInput {
   redaction?: RedactionOptions;
   /** Needed for the tool-scope boundary rule (C-FIX-006). */
   toolId?: ToolId;
+  /** INT-001: the body parameters this preview approves (defaults to neutral). */
+  body?: ChatBodySpec;
+  /** INT-002: the model family's characters-per-token ratio, for the final count. */
+  tokenProfile?: { charsPerToken?: number };
 }
 
 export interface PreflightScope {
@@ -68,7 +75,17 @@ export interface PreflightPreview {
   scope: PreflightScope;
   redaction: RedactionCounts;
   estimatedInputTokens: number;
+  /** INT-002: the final redacted payload's content tokens. */
+  finalContentTokens: number;
+  /** INT-002: role/separator/priming overhead the provider charges. */
+  protocolTokens: number;
+  /** The input allowance this payload was checked against. */
+  inputAllowance: number;
   maxOutputTokens: number;
+  /** INT-001: the exact HTTP parameters this approval covers. */
+  body: ChatBodySpec;
+  /** sha256 of the canonical body spec. */
+  bodyDigest: string;
   /** The exact messages that would be transmitted, after redaction. */
   messages: ChatMessage[];
   /** Price is unknown until the provider states one. */
@@ -112,12 +129,33 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
     blockedReasons.push(...compiled.errors.map((error) => error.message));
   }
 
-  const redacted = redactMessages(input.built.messages, { compiled: compiled.rules });
+  const redacted = redactMessages(input.built.messages, { compiled: compiled.rules, secrets: input.redaction?.secrets, disabled: input.redaction?.disabled });
 
   // Redaction is only trusted when a second pass changes nothing. If it does, a
   // secret would still be visible in the payload, so the request is blocked.
-  const unstable = redacted.messages.some((message) => redactText(message.content, { compiled: compiled.rules }).text !== message.content);
+  const unstable = redacted.messages.some(
+    (message) => redactText(message.content, { compiled: compiled.rules, secrets: input.redaction?.secrets, disabled: input.redaction?.disabled }).text !== message.content,
+  );
   if (unstable) blockedReasons.push('伏字を適用しても秘匿情報が残っています。送信を中止しました。');
+
+  // INT-002: the final redacted messages are counted again, with the protocol
+  // overhead, against the allowance the allocation granted. The first estimate
+  // described the sections before assembly; this one describes the payload.
+  const finalCount = countMessageTokens(redacted.messages, {
+    charsPerToken: input.tokenProfile?.charsPerToken,
+  });
+  if (finalCount.total > input.budget.inputAllowance) {
+    blockedReasons.push(
+      `最終的な送信内容（${finalCount.total.toLocaleString('ja-JP')} tokens、プロトコル分 ${finalCount.protocolTokens.toLocaleString('ja-JP')} を含む）が入力上限（${input.budget.inputAllowance.toLocaleString('ja-JP')} tokens）を超えています。Few-shot を減らすか入力上限を上げてください。`,
+    );
+  }
+
+  // A payload larger than the redaction scan ceiling cannot be fully redacted;
+  // sending the unscanned tail would be a leak, so it is refused instead.
+  const scanLimit = hybridConfig.read().redaction.maxScanChars;
+  if (redacted.messages.some((message) => message.content.length > scanLimit)) {
+    blockedReasons.push('送信内容が伏字スキャンの上限を超えているため送信できません。ファイルを分割してください。');
+  }
 
   // Metadata travels too: a file name can carry a secret (a staff number, a token
   // pasted into a name). The preview must never display one the payload removed
@@ -176,6 +214,15 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
   const fingerprint = endpoint.ok
     ? await fingerprintPayload(endpoint.endpoint, input.settings.model, redacted.messages)
     : '';
+  const body =
+    input.body ??
+    neutralBodySpec({
+      model: input.settings.model,
+      temperature: input.settings.temperature,
+      maxOutputTokens: input.budget.maxOutputTokens,
+      streaming: input.settings.streaming,
+    });
+  const bodyDigest = await sha256Hex(bodyDigestMaterial(body));
 
   return {
     allowed: blockedReasons.length === 0,
@@ -187,8 +234,13 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
     sourceFileName: displayName,
     scope,
     redaction: redacted.counts,
-    estimatedInputTokens: input.budget.overheadTokens + input.budget.selection.tokens,
-    maxOutputTokens: input.settings.maxOutputTokens,
+    estimatedInputTokens: finalCount.total,
+    finalContentTokens: finalCount.contentTokens,
+    protocolTokens: finalCount.protocolTokens,
+    inputAllowance: input.budget.inputAllowance,
+    maxOutputTokens: input.budget.maxOutputTokens,
+    body,
+    bodyDigest,
     messages: redacted.messages,
     estimatedCostUsd: null,
     budget: input.budget,
@@ -210,6 +262,8 @@ export interface ApprovalRecord {
   sourceFileName: string;
   redactions: number;
   estimatedInputTokens: number;
+  /** INT-001: the body parameters this approval covers. */
+  bodyDigest: string;
 }
 
 export type ApprovalFailure = 'not-approved' | 'payload-changed' | 'already-used';
@@ -225,7 +279,7 @@ export interface PreflightGate {
   /** Drops the approval (input, settings or consent changed). */
   invalidate(): void;
   /** Verifies and consumes the single approval for this payload hash. */
-  claim(fingerprint: string): ApprovalClaim;
+  claim(fingerprint: string, bodyDigest?: string): ApprovalClaim;
 }
 
 const APPROVAL_MESSAGES: Record<ApprovalFailure, string> = {
@@ -249,6 +303,7 @@ export function createPreflightGate(): PreflightGate {
         sourceFileName: preview.sourceFileName,
         redactions: preview.redaction.total,
         estimatedInputTokens: preview.estimatedInputTokens,
+        bodyDigest: preview.bodyDigest,
       };
       used = false;
       return current;
@@ -258,11 +313,14 @@ export function createPreflightGate(): PreflightGate {
       current = null;
       used = false;
     },
-    claim(fingerprint) {
+    claim(fingerprint, bodyDigest) {
       if (!current) return { ok: false, reason: 'not-approved', message: APPROVAL_MESSAGES['not-approved'] };
       if (used) return { ok: false, reason: 'already-used', message: APPROVAL_MESSAGES['already-used'] };
       if (current.fingerprint !== fingerprint) {
         return { ok: false, reason: 'payload-changed', message: APPROVAL_MESSAGES['payload-changed'] };
+      }
+      if (bodyDigest !== undefined && current.bodyDigest !== bodyDigest) {
+        return { ok: false, reason: 'payload-changed', message: '承認した生成パラメータと送信内容が一致しません。' };
       }
       used = true;
       return { ok: true, approval: current };
@@ -274,8 +332,12 @@ export function createPreflightGate(): PreflightGate {
  * The check a send path runs with the payload it is about to transmit. It throws
  * rather than returning, so a caller cannot forget to handle the refusal.
  */
-export function assertApprovedPayload(gate: PreflightGate, fingerprint: string): ApprovalRecord {
-  const claim = gate.claim(fingerprint);
+export function assertApprovedPayload(
+  gate: PreflightGate,
+  fingerprint: string,
+  bodyDigest?: string,
+): ApprovalRecord {
+  const claim = gate.claim(fingerprint, bodyDigest);
   if (!claim.ok) throw new HybridError('approval', claim.message);
   return claim.approval;
 }
