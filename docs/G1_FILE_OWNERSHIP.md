@@ -1,8 +1,9 @@
 # G1 File Ownership Matrix
 
-- **Status:** REVIEW REQUESTED
+- **Status:** REVIEW REQUESTED — CP01-FIX-01~06 applied
 - **Gate:** G0 PO approval not recorded; G1 implementation locked
 - **Baseline:** `3af2427`
+- **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
 
 This matrix assigns proposed G1 paths to one owner. Paths marked "proposed" do not
@@ -28,9 +29,9 @@ file requires the owner's review and Qoder-00's approval.
 | Path | Owner | Purpose |
 | --- | --- | --- |
 | `src/lib/idb.ts` | Q03 Data (Lead approval) | Shared IndexedDB open/transaction driver |
-| `src/lib/artifacts/hash.ts` | Q03 Data | Canonical text/binary/JSON/manifest SHA-256 |
-| `src/lib/artifacts/schema.ts` | Q03 Data | `adop0001-artifacts` v1 schema and version gate |
-| `src/lib/artifacts/repository.ts` | Q03 Data | Slot identity, append, CAS, validation commit |
+| `src/lib/artifacts/hash.ts` | Q03 Data | Content digest, content-set digest, revision integrity hash |
+| `src/lib/artifacts/schema.ts` | Q03 Data | `adop0001-artifacts` v1 schema, version gate, central resource policy |
+| `src/lib/artifacts/repository.ts` | Q03 Data | Slot identity, append/restore/reset, CAS + epoch, validation/export history, deletion/retention |
 | `src/lib/artifacts/index.ts` | Q03 Data | Public repository exports |
 
 ## 3. New integration modules
@@ -50,7 +51,7 @@ file requires the owner's review and Qoder-00's approval.
 | `src/adapters/types.ts` | Q01 Core | No change planned; type-only imports |
 | `src/engine/core/contracts.ts` | Q01 Core | No change planned; capture layer consumes `ExecutionContext` |
 | `src/engine/core/runner.ts` | Q01 Core | No change planned; no new cache behavior |
-| `src/lib/artifactRevision.ts` | Q04 UI (Q01 review) | Replace reference equality with ID/hash identity; preserve messages |
+| `src/lib/artifactRevision.ts` | Q04 UI (Q01/Q03 review) | Add `inputFingerprint` composition; replace reference equality with ID/revision/fingerprint identity; preserve existing inputRevision guard and messages |
 | `src/lib/drafts.ts` | Q04 UI (Lead approval) | Optional draft link field; no change to DB name/version/store |
 | `src/components/ExportModal.tsx` | Q04 UI | **No change**; guard is applied outside the modal |
 | `src/components/HybridAssist.tsx` | Q04 UI (Lead approval) | One central AI Apply registration point |
@@ -68,7 +69,9 @@ file requires the owner's review and Qoder-00's approval.
 | Path/area | Owner | Rule |
 | --- | --- | --- |
 | `tests/artifacts/**` unit tests | Q01/Q02/Q03 by module | Owner writes tests for its own module; Q05 reviews independence |
-| `tests/lib/artifactCapture.test.ts` | Q04 UI | Integration unit tests; no expected-value change for existing tests |
+| `tests/artifacts/contract/reg-g1-contract.test.ts` | Q01 Core | Content digest / revision integrity / validator identity vectors |
+| `tests/artifacts/repository/reg-g1-*.test.ts` | Q03 Data | Epoch, abort, quota, migration, retention, export history |
+| `tests/lib/artifactCapture.test.ts` | Q04 UI | Integration unit tests; inputFingerprint and async export guard; no expected-value change for existing tests |
 | `tests/e2e/artifacts/reg-g1-*.spec.ts` | Q05 QA | Independent E2E; no implementation edits |
 | `tests/e2e/artifacts/helpers/**` | Q05 QA | Context request log, IDB dump, two-tab harness |
 | `docs/G1_REGRESSION_MATRIX.md` | Q05 QA | Evidence matrix; maintained by QA |
@@ -93,10 +96,23 @@ change the implementation to make a test pass.
    it is assigned to the owner.
 7. Only Qoder-00 merges into the integration branch after G0/CP01 approval.
 8. No agent creates a worktree before approval.
+9. Q01 owns `inputFingerprint` semantics; Q04 composes it from the actual tool
+   options. No tool may substitute `sourceHash` for freshness.
+10. Q03 owns content digest vs revision integrity separation. No agent may add a
+    random UUID or timestamp to the content digest, or embed validation history in
+    the immutable revision payload.
+11. Q03 owns epoch/pointer checks inside one readwrite transaction. No agent adds
+    a post-commit delete of a successfully committed revision.
+12. Q02/Q01 own validator identity and policy fingerprint. A validator version or
+    configuration change invalidates old validation; it does not silently reuse it.
+13. Normal delete is a tombstone that retains payload; only
+    `resetArtifactHistory` deletes one artifact's history, under the Q03 contract
+    and an explicit UI confirmation.
 
 ## 7. Current state
 
 All paths in sections 1-3 and 5 are proposals. Only this documentation set exists
-on the review branch. The baseline `3af2427` is unchanged.
+on the review branch. The amendment commit supersedes `c5d2221`; the baseline
+`3af2427` is unchanged. CP01-FIX-01~06 changed contracts and ownership notes only.
 
-**CP01 state: REVIEW REQUESTED.**
+**CP01 state: REVIEW REQUESTED — amendments applied.**

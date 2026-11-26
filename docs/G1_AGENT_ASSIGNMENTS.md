@@ -1,10 +1,12 @@
 # G1 Agent Assignments and Collaboration Protocol
 
-- **Status:** REVIEW REQUESTED
+- **Status:** REVIEW REQUESTED — CP01-FIX-01~06 applied
 - **Gate:** G0 PO approval not recorded; G1 implementation locked
 - **Baseline:** `3af2427`
+- **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
 - **Scope:** WO-D01~D04 and SUP-D01~D07
+- **Supervisor disposition:** CONDITIONAL PASS; amendments applied
 
 This document records the six-role Aomatsukan squad, the boundaries that keep
 parallel work from overlapping, and the current CP01 review state. It does not
@@ -17,12 +19,13 @@ authorize implementation.
 | Gate | State | Meaning |
 | --- | --- | --- |
 | G0 final PO approval | Not recorded | PR #12 is `OPEN`; no G1 code may be written. |
-| CP01 Interface Freeze | REVIEW REQUESTED | This document set is the evidence under review. |
+| CP01 Interface Freeze | REVIEW REQUESTED — amendments applied | CP01-FIX-01~06 are applied to the document set for re-review. |
 | G1 parallel implementation | Locked | No branch, worktree, source, test, or DB schema work. |
-| CP02 | Forbidden | Cannot start before CP01 approval. |
+| CP02 | Forbidden | Cannot start before CP01 final approval and G0 approval. |
 
 The only permitted work in this state is documentation submission. The
-document-only branch is `docs/g1-cp01-interface-freeze`, based on `3af2427`.
+document-only branch is `docs/g1-cp01-interface-freeze`, based on `3af2427`; the
+amendment commit supersedes `c5d2221`.
 
 ---
 
@@ -35,21 +38,41 @@ document-only branch is `docs/g1-cp01-interface-freeze`, based on `3af2427`.
 | Intelligence | Qoder-02 | WO-D03 validator contract and policy | Validator registry, validation policy, REQUIRED/OPTIONAL semantics |
 | Data | Qoder-03 | WO-D04 repository, schema, transaction | Hash, schema, repository, IndexedDB driver, recovery |
 | UI | Qoder-04 | Six-tool runtime integration and export guard | Capture points, AI Apply, Stale, Kotoha paths, ExportGuard |
-| QA | Qoder-05 | Independent regression and release evidence | REG-G1-01~20, invariants, E2E harness, PASS/FAIL evidence |
+| QA | Qoder-05 | Independent regression and release evidence | REG-G1-01~29, INV-01~34, E2E harness, PASS/FAIL evidence |
 
 ### 2.1 Role boundaries
 
-- Qoder-01 owns the contract vocabulary and type definitions. It does not define
-  the repository or validator implementation.
-- Qoder-02 owns validator selection and policy. It imports the contract; it does
-  not define a parallel `ArtifactType` or repository.
-- Qoder-03 owns persistence and transaction mechanics. It does not own export UX
-  or tool execution.
-- Qoder-04 owns the integration points and export wrapping. It does not redefine
-  the contract or write another agent's module.
-- Qoder-05 owns independent verification. It does not edit implementation to make
-  a test pass and does not change expected values.
+- Qoder-01 owns the contract vocabulary and type definitions, including
+  `inputFingerprint` semantics and content/revision hash field lists. It does not
+  define the repository or validator implementation.
+- Qoder-02 owns validator selection, validator identity/version/config, and policy
+  fingerprint. It imports the contract; it does not define a parallel
+  `ArtifactType` or repository.
+- Qoder-03 owns persistence and transaction mechanics, content-digest/revision-
+  integrity separation, epoch/pointer checks, resource policy, and migration. It
+  does not own export UX or tool execution.
+- Qoder-04 owns the integration points and export wrapping, including composing
+  the fingerprint from actual tool options and rechecking revision identity at
+  export click. It does not redefine the contract or write another agent's module.
+- Qoder-05 owns independent verification, including options-only Stale, digest
+  identity, restore vs duplicate, validator-version invalidation, and epoch races.
+  It does not edit implementation to make a test pass and does not change expected
+  values.
 - Qoder-00 owns integration and the only merge into the integration branch.
+
+### 2.2 CP01-FIX amendment ownership
+
+| Amendment | Owner | Review partner | Contract area |
+| --- | --- | --- | --- |
+| CP01-FIX-01 Input Identity | Q01 Core / Q04 UI | Q03 Data (binary/cache identity) | `SourceRevision`, `inputFingerprint`, Kotoha slots, existing `artifactRevision.ts` guard |
+| CP01-FIX-02 Hash Semantics | Q01 Core / Q03 Data | Q02 (validation binding) | content digest, revision integrity hash, provenance/dependency/source policy, restore vs duplicate |
+| CP01-FIX-03 Atomic Concurrency | Q03 Data | Q01 (contract), Q04 (UI surface) | persisted epoch + pointer checks, pre-commit abort, reset/delete/append/validation races |
+| CP01-FIX-04 Validator Identity | Q02 Intelligence / Q01 Core | Q04 (tool formats) | validator id/version/config, effective set, policy fingerprint, format coverage |
+| CP01-FIX-05 Repository Completion | Q03 Data / Q01 Core | Q04 (UI surface) | list/restore/reset, export history, deletion/retention, persistence reasons, resource policy, migration |
+| CP01-FIX-06 Integration & QA | Q04 UI / Q05 QA | Q01/Q02/Q03 | six-tool mapping, Kotoha two paths, export/revision match, async guard, regression matrix |
+
+No amendment owner may introduce an additional contract type. The amended
+contract in `docs/G1_CP01_INTERFACE_FREEZE.md` remains the single source.
 
 ---
 
@@ -57,15 +80,18 @@ document-only branch is `docs/g1-cp01-interface-freeze`, based on `3af2427`.
 
 | Work order | Owner | Scope | Status |
 | --- | --- | --- | --- |
-| WO-D01 | Qoder-01 | Artifact contract and type/interface definitions | Contract draft submitted; CP01 review |
-| WO-D02 | Qoder-01 | Lifecycle, validation, freshness, persistence state separation | Contract draft submitted; CP01 review |
-| WO-D03 | Qoder-02 | Validator contract, registry, policy, export rules | Compatibility review submitted; CP01 review |
-| WO-D04 | Qoder-03 | Repository, hash, IndexedDB transaction, recovery | Compatibility review submitted; CP01 review |
-| SUP-D06 | Qoder-04 | Six-tool runtime integration path | Runtime review submitted; SUP-D06 text absent |
-| REG-G1 | Qoder-05 | Independent regression matrix and evidence | Matrix submitted; CP01 review |
+| WO-D01 | Qoder-01 | Artifact contract and type/interface definitions | Contract draft + CP01-FIX-01/02 amendments; CP01 re-review |
+| WO-D02 | Qoder-01 | Lifecycle, validation, freshness, persistence state separation | Contract draft + CP01-FIX-02/04 amendments; CP01 re-review |
+| WO-D03 | Qoder-02 | Validator contract, registry, policy, export rules | Compatibility review + CP01-FIX-04 amendments; CP01 re-review |
+| WO-D04 | Qoder-03 | Repository, hash, IndexedDB transaction, recovery | Compatibility review + CP01-FIX-02/03/05 amendments; CP01 re-review |
+| SUP-D06 | Qoder-04 | Six-tool runtime integration path | Runtime review + CP01-FIX-01/06 amendments; SUP-D01~D07 registration required before CP02 |
+| REG-G1 | Qoder-05 | Independent regression matrix and evidence | Matrix + CP01-FIX-06 cases; CP01 re-review |
 
-SUP-D01~D07 are not present in the repository or delivered materials. SUP-D06
-cannot be scoped until the Supervisor provides its text. No agent may infer it.
+SUP-D01~D07 source of record is the existing G1 integrated Work Order PART B and
+Supervisor Addendum. B-03 is resolved as a registration action: the full text is
+registered as a repository-managed document before CP02. That source text is not
+present in this workspace, so no agent reproduces or infers it here. No
+implementation scope is inferred from an absent text.
 
 ---
 
@@ -111,6 +137,14 @@ cannot be scoped until the Supervisor provides its text. No agent may infer it.
    edit that owner's implementation or expected values.
 10. A claim of completion requires a real commit, test evidence, and a review URL.
     A session callback or a plan is not evidence.
+11. Freshness is based on `inputFingerprint` (source, source name, options, binary
+    input, engine configuration), never `sourceHash` alone. Options-only changes
+    are Stale.
+12. No agent adds a post-commit "cleanup" that deletes a successfully committed
+    revision because an epoch changed later. Epoch and pointer checks happen
+    before commit in the same transaction.
+13. Security tests use virtual credentials only. No real key, token, or account is
+    stored or transmitted.
 
 ---
 
@@ -122,34 +156,42 @@ cannot be scoped until the Supervisor provides its text. No agent may infer it.
 | Qoder-02 | Validator Registry compatibility | 8-type projection, capability preservation, 1:N validation, REQUIRED-empty UNSUPPORTED |
 | Qoder-03 | Repository/Transaction compatibility | Slot unique index, opaque ID, store schema, abort/CAS/multi-tab review |
 | Qoder-04 | Runtime integration | Six-tool insertion points, export wrapper, Kotoha/Takane/Kozue special paths |
-| Qoder-05 | Independent regression | INV-01~26, REG-G1-01~20 mapping, evidence and limitations |
+| Qoder-05 | Independent regression | INV-01~34, REG-G1-01~29 mapping, evidence and limitations |
+| Supervisor | CP01 design review | CONDITIONAL PASS; CP01-FIX-01~06 required and applied |
 
 ### 6.1 Resolved cross-review issues
 
 - Q02's format-level types are projected into the eight coarse types; no
   capability loss.
 - Q03's source-hash-derived key is withdrawn in favor of the slot-based opaque ID.
-- Q05's INV-01~26 are the independent verification baseline.
+- Q05's INV-01~26 are the independent verification baseline; INV-27~34 and
+  CP01-FIX-06 add fingerprint, hash, validator-identity, epoch, retention, and
+  export checks.
 - Q04's export wrapper preserves the existing `ExportFormat` signature and
-  testids.
+  testids, and now rechecks revision identity at click time.
 - Validation records are 1:N append-only history; the effective record is bound to
-  the current revision hash and policy.
+  the current revision hash, content digest, validator identity, and policy
+  fingerprint.
+- CP01-FIX-01~06 are applied in the freeze document; no implementation was
+  started.
 
 ### 6.2 Unresolved decisions
 
-See `docs/G1_CP01_INTERFACE_FREEZE.md` §11.2 and §11.3. The highest-priority
-blockers are G0 approval (B-01), CP01 approval (B-02), missing SUP-D01~D07
-(B-03), and the absence of Q01/Q03 source files on disk (B-04).
+The Supervisor resolved B-03~B-06, B-09, and B-10. B-03 remains a registration
+action before CP02: the full SUP text is registered from the existing Work Order
+PART B and Supervisor Addendum. Only B-01 (G0 approval) and B-02 (CP01 final
+approval) remain blockers. See the freeze document §11.3.
 
 ---
 
 ## 7. Handoff and next allowed action
 
-1. Supervisor reviews the four CP01 documents.
+1. Supervisor re-reviews the four CP01 documents with CP01-FIX-01~06 applied.
 2. Supervisor records Interface Freeze approval.
 3. PO records G0 final approval and baseline freeze.
-4. Only then may Qoder-00 create the integration branch/worktrees and hand off
+4. The SUP-D01~D07 registration document is present before CP02 starts.
+5. Only then may Qoder-00 create the integration branch/worktrees and hand off
    implementation to Q01~Q05.
-5. CP02 parallel implementation remains forbidden until step 3 is recorded.
+6. CP02 parallel implementation remains forbidden until steps 2 and 3 are recorded.
 
-**Current state: CP01 REVIEW REQUESTED. No implementation is authorized.**
+**Current state: CP01 REVIEW REQUESTED — amendments applied. No implementation is authorized.**
