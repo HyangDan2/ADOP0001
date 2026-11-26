@@ -1,8 +1,8 @@
 # G1 Regression Matrix (REG-G1-01~29)
 
 - **Status:** REVIEW REQUESTED — CP01-FIX-06 cases added
-- **Gate:** G0 PO approval not recorded; G1 implementation locked
-- **Baseline:** `3af2427`
+- **Gate:** G0 PO approval recorded (2026-11-27); CP01 final approval pending; G1 implementation locked
+- **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
 - **Owner:** Qoder-05 Independent QA
@@ -24,6 +24,7 @@ counts are the baseline inventory; the new test paths are proposals.
 | Build | `tsc --noEmit` → Vitest → `qa:generated` → `vite build` → Playwright | preview `http://127.0.0.1:4173/ADOP0001/` |
 | Browser | `PW_CHROMIUM` override | Local Chromium cache stops at 1254; Google Chrome is used |
 | Network | paid-key-free | `api.example.invalid` route interception or loopback server |
+| Frozen G0 baseline | `04dd2fc` | Approved candidate `3af2427`; tag `g0-baseline`; CI `45911307876`: 66 files / 680 tests, 70 E2E, generated QA PASS 59 / FAIL 0 / SKIP 5, build and Pages deploy pass |
 
 Baseline commands:
 
@@ -281,7 +282,8 @@ unrelated behavior.
 - CP01-FIX-06 cases (REG-G1-21~29) are added for re-review; INV-27~34 bind them.
 - B-03 is a registration action; B-04 is CP02 work; neither authorizes inference or
   implementation now.
-- G0 final approval and CP01 final approval are still required.
-- CP02 parallel implementation is forbidden until both approvals are recorded.
+- G0 final approval and baseline freeze are recorded at `04dd2fc` (tag `g0-baseline`).
+- CP01 final approval is still required.
+- CP02 parallel implementation is forbidden until CP01 approval is recorded.
 
 **CP01 state: REVIEW REQUESTED — amendments applied.**

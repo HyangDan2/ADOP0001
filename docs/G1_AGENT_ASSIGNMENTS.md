@@ -1,8 +1,8 @@
 # G1 Agent Assignments and Collaboration Protocol
 
 - **Status:** REVIEW REQUESTED — CP01-FIX-01~06 applied
-- **Gate:** G0 PO approval not recorded; G1 implementation locked
-- **Baseline:** `3af2427`
+- **Gate:** G0 PO approval recorded (2026-11-27); CP01 final approval pending; G1 implementation locked
+- **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
 - **Scope:** WO-D01~D04 and SUP-D01~D07
@@ -18,12 +18,12 @@ authorize implementation.
 
 | Gate | State | Meaning |
 | --- | --- | --- |
-| G0 final PO approval | Not recorded | PR #12 is `OPEN`; no G1 code may be written. |
+| G0 final PO approval | RECORDED 2026-11-27 | PR #12 merged at `04dd2fc`; tree identical to approved `3af2427`; tag `g0-baseline`; CI `45911307876` passed build and Pages deploy. |
 | CP01 Interface Freeze | REVIEW REQUESTED — amendments applied | CP01-FIX-01~06 are applied to the document set for re-review. |
-| G1 parallel implementation | Locked | No branch, worktree, source, test, or DB schema work. |
-| CP02 | Forbidden | Cannot start before CP01 final approval and G0 approval. |
+| G1 parallel implementation | Locked | No branch, worktree, source, test, or DB schema work before CP01 final approval. |
+| CP02 | Forbidden | Cannot start before CP01 final approval. |
 
-The only permitted work in this state is documentation submission. The
+The only permitted work in this state is CP01 documentation re-review. The
 document-only branch is `docs/g1-cp01-interface-freeze`, based on `3af2427`; the
 amendment commit supersedes `c5d2221`.
 
@@ -105,7 +105,7 @@ implementation scope is inferred from an absent text.
   - `agent/g1-ui`
   - `agent/g1-qa`
 - Future integration branch: `feature/phase5d-artifact-pipeline` (not created).
-- No agent worktree is created before G0 approval and CP01 approval.
+- No agent worktree is created before CP01 approval.
 - No agent merges into the integration branch. Qoder-00 performs integration
   after review.
 - A shared file requires the owner's review and Lead approval:
@@ -179,8 +179,9 @@ implementation scope is inferred from an absent text.
 
 The Supervisor resolved B-03~B-06, B-09, and B-10. B-03 remains a registration
 action before CP02: the full SUP text is registered from the existing Work Order
-PART B and Supervisor Addendum. Only B-01 (G0 approval) and B-02 (CP01 final
-approval) remain blockers. See the freeze document §11.3.
+PART B and Supervisor Addendum. B-01 (G0 approval) is recorded at `04dd2fc`;
+only B-02 (CP01 final approval) remains a blocker. See the freeze document
+§11.3.
 
 ---
 
@@ -188,10 +189,11 @@ approval) remain blockers. See the freeze document §11.3.
 
 1. Supervisor re-reviews the four CP01 documents with CP01-FIX-01~06 applied.
 2. Supervisor records Interface Freeze approval.
-3. PO records G0 final approval and baseline freeze.
+3. G0 final approval and baseline freeze are recorded at `04dd2fc`
+   (tag `g0-baseline`).
 4. The SUP-D01~D07 registration document is present before CP02 starts.
 5. Only then may Qoder-00 create the integration branch/worktrees and hand off
    implementation to Q01~Q05.
-6. CP02 parallel implementation remains forbidden until steps 2 and 3 are recorded.
+6. CP02 parallel implementation remains forbidden until step 2 is recorded.
 
 **Current state: CP01 REVIEW REQUESTED — amendments applied. No implementation is authorized.**
