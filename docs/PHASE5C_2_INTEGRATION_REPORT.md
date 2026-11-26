@@ -238,6 +238,17 @@ an environment note, not a repository change.
 | Deployment provider profiles | `src/engine/hybrid/providerConfig.ts` |
 | Last-read-wins guard | `src/lib/latestOnly.ts` |
 
+## Release evidence
+
+- Implementation commit: `7e17dda` on `feature/phase5c-hybrid-gateway` (parent `4fecb94`).
+- `git diff 4fecb945..7e17dda --stat`: 43 files changed, 3917 insertions(+), 196 deletions(-).
+- PR #12 CI (`ADOP0001 quality gate`): success —
+  https://github.com/HyangDan2/ADOP0001/actions/runs/45818444659 (build job 4m17s; `deploy` skipped on a
+  pull request, as designed).
+- `npm ci` was attempted in this container but the shell's 300 s limit ended it during linking; the tree
+  was completed with `npm install --prefer-offline` from the unchanged `package-lock.json`, and the CI job
+  runs the real `npm ci` on Node 22 (green).
+
 ## Not verified / open
 
 - **No live gateway was called** (the work order forbids it before separate approval). The wire
