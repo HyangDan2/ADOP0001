@@ -19,7 +19,7 @@
 import { sha256Hex } from '../../lib/util';
 import type { ToolId } from '../../adapters/types';
 import type { ChatMessage } from './contracts';
-import type { BudgetPlan } from './budget';
+import type { BudgetPlan, SourceSelection, SourceUnit } from './budget';
 import { hybridConfig } from './config';
 import { inspectDataBoundary, type BoundaryViolation } from './dataBoundary';
 import { HybridError } from './errors';
@@ -35,6 +35,7 @@ import { validateConnectionSettings, type ConnectionSettings } from './settings'
 import { resolveEndpoint } from './transport';
 import { bodyDigestMaterial, neutralBodySpec, type ChatBodySpec } from './requestBody';
 import { countMessageTokens } from './tokenAccounting';
+import type { ProviderProfile } from './providerProfiles';
 
 export interface PreflightInput {
   settings: ConnectionSettings;
@@ -47,6 +48,8 @@ export interface PreflightInput {
   body?: ChatBodySpec;
   /** INT-002: the model family's characters-per-token ratio, for the final count. */
   tokenProfile?: { charsPerToken?: number };
+  /** C-FIX-007: the effective profile decides the endpoint path as well as the body. */
+  provider?: ProviderProfile;
 }
 
 export interface PreflightScope {
@@ -65,6 +68,13 @@ export interface PreflightScope {
   strategy: 'zero-shot' | 'few-shot';
   streaming: boolean;
 }
+
+export type PreflightBudget = Omit<BudgetPlan, 'selection'> & {
+  selection: Omit<SourceSelection, 'text' | 'included' | 'excluded'> & {
+    included: Array<Omit<SourceUnit, 'text'>>;
+    excluded: Array<Omit<SourceUnit, 'text'>>;
+  };
+};
 
 export interface PreflightPreview {
   allowed: boolean;
@@ -90,7 +100,8 @@ export interface PreflightPreview {
   messages: ChatMessage[];
   /** Price is unknown until the provider states one. */
   estimatedCostUsd: number | null;
-  budget: BudgetPlan;
+  /** Budget metadata without raw source text. */
+  budget: PreflightBudget;
   warnings: string[];
   /** Data-boundary violations found on the payload (C-FIX-006). */
   boundary: BoundaryViolation[];
@@ -100,6 +111,18 @@ export interface PreflightPreview {
 
 function fingerprintMaterial(endpoint: string, model: string, messages: ChatMessage[]): string {
   return JSON.stringify(['adop0001.hybrid.payload.v1', endpoint, model, messages]);
+}
+
+function previewBudgetOf(budget: BudgetPlan): PreflightBudget {
+  const { text: _selectionText, included, excluded, ...selection } = budget.selection;
+  return {
+    ...budget,
+    selection: {
+      ...selection,
+      included: included.map(({ text: _text, ...unit }) => unit),
+      excluded: excluded.map(({ text: _text, ...unit }) => unit),
+    },
+  };
 }
 
 export async function fingerprintPayload(
@@ -121,7 +144,8 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
   const validation = validateConnectionSettings(input.settings);
   if (!validation.ok) blockedReasons.push(...validation.messages);
 
-  const endpoint = resolveEndpoint(input.settings.baseUrl);
+  const endpointPath = input.provider?.capabilitiesFor(input.settings.model).endpoints.chatCompletions;
+  const endpoint = resolveEndpoint(input.settings.baseUrl, endpointPath);
   if (!endpoint.ok) blockedReasons.push(endpoint.message);
 
   const compiled = compileCustomPatterns(input.redaction?.customPatterns ?? []);
@@ -129,12 +153,17 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
     blockedReasons.push(...compiled.errors.map((error) => error.message));
   }
 
-  const redacted = redactMessages(input.built.messages, { compiled: compiled.rules, secrets: input.redaction?.secrets, disabled: input.redaction?.disabled });
+  const redactionOptions: RedactionOptions = {
+    compiled: compiled.rules,
+    secrets: input.redaction?.secrets,
+    disabled: input.redaction?.disabled,
+  };
+  const redacted = redactMessages(input.built.messages, redactionOptions);
 
   // Redaction is only trusted when a second pass changes nothing. If it does, a
   // secret would still be visible in the payload, so the request is blocked.
   const unstable = redacted.messages.some(
-    (message) => redactText(message.content, { compiled: compiled.rules, secrets: input.redaction?.secrets, disabled: input.redaction?.disabled }).text !== message.content,
+    (message) => redactText(message.content, redactionOptions).text !== message.content,
   );
   if (unstable) blockedReasons.push('伏字を適用しても秘匿情報が残っています。送信を中止しました。');
 
@@ -160,7 +189,7 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
   // Metadata travels too: a file name can carry a secret (a staff number, a token
   // pasted into a name). The preview must never display one the payload removed
   // (C-FIX-006: schema and metadata).
-  const displayName = redactText(input.built.sections.source.name, { compiled: compiled.rules }).text;
+  const displayName = redactText(input.built.sections.source.name, redactionOptions).text;
 
   if (!input.budget.fits) {
     blockedReasons.push(
@@ -195,7 +224,7 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
     includesOutputSchema: Boolean(input.built.sections.schema),
     fewShot: {
       count: input.built.selectedExamples.length,
-      titles: input.built.selectedExamples.map((example) => example.title),
+      titles: input.built.selectedExamples.map((example) => redactText(example.title, redactionOptions).text),
       tokens: input.built.tokens.fewShot,
     },
     strategy: input.built.strategy,
@@ -243,7 +272,7 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
     bodyDigest,
     messages: redacted.messages,
     estimatedCostUsd: null,
-    budget: input.budget,
+    budget: previewBudgetOf(input.budget),
     warnings,
     boundary,
     fingerprint,

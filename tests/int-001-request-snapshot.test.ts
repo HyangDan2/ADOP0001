@@ -141,6 +141,7 @@ describe('INT-001 — request snapshot covers the HTTP body', () => {
       sourceName: 'payment.ts',
       settings: base,
       localAnalysis: 'contracts: 1',
+      secrets: ['test-key-0123456789'],
     });
     const transport = createMockTransport([
       { body: JSON.stringify({ choices: [{ message: { content: ENVELOPE }, finish_reason: 'stop' }] }) },

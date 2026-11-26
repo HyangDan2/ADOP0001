@@ -22,6 +22,7 @@
  */
 
 import type { ContextProfile } from './contextAllocator';
+import { stableFingerprint } from './canonical';
 import { NEUTRAL_BODY_POLICY, type ProviderBodyPolicy } from './requestBody';
 
 export interface ProviderTimeoutPolicy {
@@ -222,10 +223,22 @@ export interface ProviderRegistry {
   register(profile: ProviderProfile | ProviderProfileInput): ProviderProfile;
   get(id: string): ProviderProfile | undefined;
   list(): ProviderProfile[];
+  /** Monotonic identity for registry mutations, including same-id replacements. */
+  revision(): number;
   /** Explicit id, then exact host, then model prefix, then the `*` fallback. */
   resolve(target: ProviderTarget): ProviderResolution;
   /** The profile a real model id resolves to inside an already-chosen profile. */
   capabilitiesFor(id: string, model: string): ProviderCapabilities;
+}
+
+export function providerProfileFingerprint(profile: ProviderProfile, model: string): string {
+  return stableFingerprint({
+    id: profile.id,
+    label: profile.label,
+    hosts: profile.hosts,
+    models: profile.models,
+    capabilities: profile.capabilitiesFor(model),
+  });
 }
 
 function hostnameOf(baseUrl: string): string | null {
@@ -238,16 +251,19 @@ function hostnameOf(baseUrl: string): string | null {
 
 export function createProviderRegistry(profiles: readonly ProviderProfileInput[] = []): ProviderRegistry {
   const entries = new Map<string, ProviderProfile>();
+  let currentRevision = 0;
   const registry: ProviderRegistry = {
     register(profile) {
       const normalized = 'capabilities' in profile && 'capabilitiesFor' in profile
         ? (profile as ProviderProfile)
         : createProviderProfile(profile as ProviderProfileInput);
       entries.set(normalized.id, normalized);
+      currentRevision += 1;
       return normalized;
     },
     get: (id) => entries.get(id),
     list: () => [...entries.values()],
+    revision: () => currentRevision,
     resolve(target) {
       const fallback = [...entries.values()].find((profile) => profile.hosts.includes('*'));
       if (target.providerId) {

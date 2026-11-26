@@ -93,6 +93,8 @@ export interface HybridProviderRequest {
    * provider serialises this spec instead of rebuilding parameters from settings.
    */
   body?: import('./requestBody').ChatBodySpec;
+  /** INT-001: exact canonical JSON bytes the approval covered. */
+  serializedBody?: string;
   /**
    * INT-001: the endpoint the approval named. A redirect that would change it is
    * refused instead of followed, and a resolved endpoint that differs is an error.

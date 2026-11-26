@@ -31,7 +31,8 @@ import { HybridError, toHybridError } from './errors';
 import { mergeProposals, type AiProposal, type EvidenceFacts, type MergeConflict, type RejectedProposal } from './mergePolicy';
 import { OpenAiCompatibleProvider, scrubSessionSecret } from './openAiCompatible';
 import { assertApprovedPayload, createPreflightGate, type PreflightPreview } from './preflight';
-import { planHybridRequest, type HybridRequestPlan } from './requestPlan';
+import { inputsFingerprintFor, planHybridRequest, type HybridRequestPlan } from './requestPlan';
+import { serializeChatBody } from './requestBody';
 import { settingsFingerprint, toHybridSettings, type ConnectionSettings } from './settings';
 import { sha256Hex } from '../../lib/util';
 import { assertDataBoundary } from './dataBoundary';
@@ -97,6 +98,8 @@ export interface HybridPassInput<K extends ToolId> {
   signal?: AbortSignal;
   /** The caller's freshness check (input revision, unmount, tool switch). */
   isCurrent?: () => boolean;
+  /** Re-reads live credentials and connection settings across awaited checks. */
+  revalidateLiveState?: () => boolean | Promise<boolean>;
   targetLanguage?: string;
   now?: () => number;
   /** Shared single-flight registry: one active request per scope (C-FIX-003). */
@@ -303,6 +306,32 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
   const stale = () => Boolean(input.isCurrent && !input.isCurrent());
   /** Known once the preview exists; the telemetry reads it for host/model/redactions. */
   let plan: HybridRequestPlan | null = null;
+  const planIsCurrent = async (candidate: HybridRequestPlan): Promise<boolean> => {
+    const liveIsCurrent = async (): Promise<boolean> => {
+      if (!input.revalidateLiveState) return true;
+      try {
+        return await input.revalidateLiveState();
+      } catch {
+        return false;
+      }
+    };
+    if (!(await liveIsCurrent())) return false;
+    const capabilities = input.provider?.capabilitiesFor?.(input.settings.model) ?? candidate.identityInput.capabilities;
+    const fingerprint = await inputsFingerprintFor({
+      toolId: input.toolId,
+      source: input.source,
+      sourceName: input.sourceName,
+      targetLanguage: input.targetLanguage ?? candidate.identityInput.targetLanguage ?? spec.targetLanguage,
+      settings: input.settings,
+      secrets: input.apiKey ? [input.apiKey] : [],
+      credentialRevision: input.credentialRevision ?? candidate.credentialRevision,
+      sectionSelection: candidate.identityInput.sectionSelection,
+      providerId: input.providerId ?? candidate.identityInput.providerId,
+      capabilities,
+      redaction: candidate.identityInput.redaction,
+    });
+    return fingerprint === candidate.inputsFingerprint && (await liveIsCurrent());
+  };
   let gatewayFinishReason: string | null = null;
   /** Actual transport facts, recorded for the evidence (C-FIX-009). */
   let gatewayStreamed: boolean | null = null;
@@ -449,16 +478,19 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
         providerId: input.providerId,
         capabilities,
         secrets: input.apiKey ? [input.apiKey] : [],
+        credentialRevision: input.credentialRevision,
       }));
   } catch (cause) {
     const error = toHybridError(cause);
     return fallback(scrubSessionSecret(error.message, input.apiKey), error.failure, local, null);
   }
 
-  // INT-001: a preview that was already used to send is not a second approval.
+  // INT-001: reserve a supplied preview before the first await so concurrent runs
+  // cannot both authorize the same approval.
   if (input.plan?.approvalUsed) {
     return cancel('この承認はすでに使われました。もう一度事前確認から承認してください。', local, plan);
   }
+  if (input.plan) input.plan.approvalUsed = true;
 
   // INT-001/003: the preview was built from these settings. If the panel (or the
   // stored preference) changed since, the preview no longer describes what would
@@ -482,6 +514,10 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
     return fallback(reason, null, local, plan);
   }
 
+  if (!(await planIsCurrent(plan))) {
+    return cancel('承認前に入力・認証情報・伏字ポリシー・Provider Profile・実行時設定のいずれかが変更されました。もう一度事前確認からやり直してください。', local, plan);
+  }
+
   // 7. Approval. The gate consumes exactly one approval for this payload hash.
   session.enter('awaiting-consent');
   let approved = false;
@@ -498,6 +534,9 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
   }
   if (!approved) {
     return cancel('送信の承認がなかったため、ローカル結果のままにしました。', local, plan);
+  }
+  if (!(await planIsCurrent(plan))) {
+    return cancel('承認後に入力・認証情報・伏字ポリシー・Provider Profile・実行時設定のいずれかが変更されました。この承認は無効です。', local, plan);
   }
 
   const gate = createPreflightGate();
@@ -531,6 +570,13 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
       sourceFileName: plan.preview.sourceFileName,
       body: plan.body,
       credential,
+      configFingerprint: plan.configFingerprint,
+      serializedBody: serializeChatBody(plan.body, plan.preview.messages),
+      inputsFingerprint: plan.inputsFingerprint,
+      redactionPolicyRevision: plan.redactionPolicyRevision,
+      redactionPolicyFingerprint: plan.redactionPolicyFingerprint,
+      providerProfileRevision: plan.providerProfileRevision,
+      providerProfileFingerprint: plan.providerProfileFingerprint,
       redaction: {
         total: plan.preview.redaction.total,
         byKind: { ...plan.preview.redaction.byKind } as Record<string, number>,
@@ -543,7 +589,14 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
       destinationHost: destination.host,
       previewFingerprint: plan.preview.fingerprint,
       body: plan.body,
+      serializedBody: snapshot.serializedBody ?? undefined,
       credential,
+      configFingerprint: plan.configFingerprint,
+      inputsFingerprint: plan.inputsFingerprint,
+      redactionPolicyRevision: plan.redactionPolicyRevision,
+      redactionPolicyFingerprint: plan.redactionPolicyFingerprint,
+      providerProfileRevision: plan.providerProfileRevision,
+      providerProfileFingerprint: plan.providerProfileFingerprint,
     });
   } catch (cause) {
     const error = toHybridError(cause);
@@ -598,6 +651,7 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
     signal: session.signal,
     // INT-001/006: the provider serialises this body, not its own view of settings.
     body: plan.body,
+    serializedBody: snapshot.serializedBody ?? undefined,
     expectedEndpoint: destination.endpoint,
   };
 
@@ -610,7 +664,14 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
     destinationHost: destination.host,
     previewFingerprint: plan.preview.fingerprint,
     body: plan.body,
+    serializedBody: snapshot.serializedBody ?? undefined,
     credential,
+    configFingerprint: plan.configFingerprint,
+    inputsFingerprint: plan.inputsFingerprint,
+    redactionPolicyRevision: plan.redactionPolicyRevision,
+    redactionPolicyFingerprint: plan.redactionPolicyFingerprint,
+    providerProfileRevision: plan.providerProfileRevision,
+    providerProfileFingerprint: plan.providerProfileFingerprint,
   });
   if (!preSend.ok) {
     const problem: SnapshotProblem = preSend.problems[0];
@@ -628,6 +689,10 @@ async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): P
   } catch (cause) {
     const error = toHybridError(cause);
     return fallback(scrubSessionSecret(error.message, input.apiKey), error.failure, local, plan);
+  }
+
+  if (!(await planIsCurrent(plan))) {
+    return fallback('送信直前に承認対象の入力・認証情報・伏字ポリシー・Provider Profile・実行時設定が変更されました。外部への送信は行いません。', 'approval', local, plan);
   }
 
   // INT-001: one approved seal, one transmission.

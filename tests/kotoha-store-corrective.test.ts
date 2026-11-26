@@ -10,9 +10,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { decomposeDocx } from '../src/tools/kotoha/read';
 import {
+  clearBundles,
   clearKotohaDocument,
   loadDocumentDraft,
   loadLatestBundle,
+  kotohaResetEpoch,
+  saveDocumentDraft,
   saveDocumentSnapshot,
 } from '../src/tools/kotoha/store';
 import { reportDocx } from './fixtures/docx-fixtures';
@@ -20,6 +23,8 @@ import { reportDocx } from './fixtures/docx-fixtures';
 interface FakeOptions {
   abortWrites?: boolean;
   openDelayMs?: number;
+  failOpen?: boolean;
+  blockOpen?: boolean;
 }
 
 /**
@@ -91,8 +96,12 @@ function installFakeIndexedDb(options: FakeOptions = {}) {
         onblocked: null as (() => void) | null,
       };
       setTimeout(() => {
-        request.result = makeDb();
-        request.onsuccess?.();
+        if (options.failOpen) request.onerror?.();
+        else if (options.blockOpen) request.onblocked?.();
+        else {
+          request.result = makeDb();
+          request.onsuccess?.();
+        }
       }, options.openDelayMs ?? 0);
       return request;
     },
@@ -197,5 +206,53 @@ describe('Kotoha persistence integrity (FIX-008)', () => {
     const again = await saveDocumentSnapshot({ markdown: '# after clear', attributes: bundle.attributes, bundle });
     expect(again.storage).toBe('indexeddb');
     expect([...fake.store.keys()].sort()).toEqual(['draft', 'latest', bundle.sourceHash].sort());
+  });
+
+  it('reports an IndexedDB open failure instead of claiming a memory-only reset', async () => {
+    fake = installFakeIndexedDb({ failOpen: true });
+    expect(await clearKotohaDocument()).toEqual({ ok: false, storage: 'indexeddb' });
+    expect(await clearBundles()).toEqual({ ok: false, storage: 'indexeddb' });
+
+    fake = installFakeIndexedDb({ blockOpen: true });
+    expect(await clearKotohaDocument()).toEqual({ ok: false, storage: 'indexeddb' });
+  });
+
+  it('rejects autosave and snapshot writes carrying a pre-reset epoch', async () => {
+    const bundle = await sampleBundle();
+    const staleEpoch = kotohaResetEpoch();
+    await clearKotohaDocument();
+    expect(kotohaResetEpoch()).toBeGreaterThan(staleEpoch);
+
+    const draft = await saveDocumentDraft({
+      markdown: '# stale autosave',
+      attributes: bundle.attributes,
+      bundle,
+    }, staleEpoch);
+    const snapshot = await saveDocumentSnapshot({
+      markdown: '# stale snapshot',
+      attributes: bundle.attributes,
+      bundle,
+    }, staleEpoch);
+
+    expect(draft.superseded).toBe(true);
+    expect(snapshot.superseded).toBe(true);
+    expect(await loadLatestBundle()).toBeNull();
+    expect(await loadDocumentDraft()).toBeNull();
+  });
+
+  it('orders a restore started during reset behind the clear transaction', async () => {
+    fake = installFakeIndexedDb();
+    const bundle = await sampleBundle();
+    await saveDocumentSnapshot({ markdown: '# saved', attributes: bundle.attributes, bundle });
+
+    const clearing = clearKotohaDocument();
+    const latest = loadLatestBundle();
+    const draft = loadDocumentDraft();
+    const [cleared, restoredBundle, restoredDraft] = await Promise.all([clearing, latest, draft]);
+
+    expect(cleared).toEqual({ ok: true, storage: 'indexeddb' });
+    expect(restoredBundle).toBeNull();
+    expect(restoredDraft).toBeNull();
+    expect(fake.store.size).toBe(0);
   });
 });

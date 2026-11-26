@@ -46,6 +46,7 @@ test.describe('Phase 5C.2 — runtime integration', () => {
       ['export function charge(amount: number) {', '  // employee EMP-123456 approved this', '  return amount > 0;', '}', ''].join('\n'),
     );
     await expect(page.getByTestId('shiori-preview')).toBeVisible();
+    await expect(page.getByTestId('shiori-preview')).toContainText('charge(amount: number)');
 
     let sent: { temperature?: number; max_tokens?: number; messages?: Array<{ content: string }> } | null = null;
     await page.route(ENDPOINT, async (route) => {

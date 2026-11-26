@@ -14,9 +14,9 @@
  * - it is a preference, not a secret: no key material is accepted here, and the
  *   stored record is an explicit field list.
  */
+import { stableFingerprint } from './canonical';
 import { hybridConfig } from './config';
-import { redactText, unsafePatternReason, type CustomRedactionPattern, type RedactionOptions } from './redaction';
-import { redactionRegistry } from './redaction';
+import { redactText, redactionRegistry, unsafePatternReason, type CustomRedactionPattern, type RedactionOptions } from './redaction';
 
 export const REDACTION_POLICY_KEY = 'adop0001.hybrid.redaction.v1';
 
@@ -134,12 +134,23 @@ function defaultStorage(): StorageLike | null {
   }
 }
 
+export function redactionPolicyFingerprint(policy: RedactionPolicy): string {
+  return stableFingerprint({
+    customPatterns: policy.customPatterns,
+    disabled: policy.disabled,
+    registryFingerprint: redactionRegistry.fingerprint(),
+  });
+}
+
 export interface RedactionPolicyStore {
   read(): RedactionPolicy;
+  revision(): number;
+  fingerprint(): string;
   write(policy: RedactionPolicy): { ok: boolean; error: string | null; problems: RedactionPolicyProblem[] };
 }
 
 export function createRedactionPolicyStore(storage: StorageLike | null = defaultStorage()): RedactionPolicyStore {
+  let currentRevision = 0;
   return {
     read() {
       if (!storage) return { ...DEFAULT_REDACTION_POLICY };
@@ -150,6 +161,10 @@ export function createRedactionPolicyStore(storage: StorageLike | null = default
       } catch {
         return { ...DEFAULT_REDACTION_POLICY };
       }
+    },
+    revision: () => currentRevision,
+    fingerprint() {
+      return redactionPolicyFingerprint(this.read());
     },
     write(policy) {
       const validation = validateRedactionPolicy(policy);
@@ -165,6 +180,7 @@ export function createRedactionPolicyStore(storage: StorageLike | null = default
             disabled: validation.policy.disabled,
           }),
         );
+        currentRevision += 1;
         return { ok: true, error: null, problems: [] };
       } catch {
         return { ok: false, error: '伏字ポリシーを保存できませんでした（保存領域がいっぱいか、書き込みが拒否されました）。', problems: [] };

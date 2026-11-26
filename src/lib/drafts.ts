@@ -47,6 +47,8 @@ export type DraftStorage = 'indexeddb' | 'localstorage' | 'memory';
  * - `failed`: access was attempted and refused (blocked, opaque origin, open error).
  */
 export type IdbStatus = 'ok' | 'unavailable' | 'failed';
+export type LocalStorageStatus = IdbStatus;
+export type MemoryClearStatus = 'ok' | 'failed';
 
 export interface DraftRecord<T> {
   version: number;
@@ -83,6 +85,10 @@ export interface ClearDraftResult {
   /** False when a stored copy could not be removed. */
   ok: boolean;
   idb: IdbStatus;
+  localStorage: LocalStorageStatus;
+  memory: MemoryClearStatus;
+  /** True when some storage was cleared but another store refused. */
+  partial: boolean;
   error: string | null;
 }
 
@@ -90,6 +96,10 @@ export interface ResetDraftsResult {
   ok: boolean;
   failed: ToolId[];
   idb: IdbStatus;
+  localStorage: LocalStorageStatus;
+  memory: MemoryClearStatus;
+  partial: boolean;
+  results: Array<{ toolId: ToolId; result: ClearDraftResult }>;
   error: string | null;
 }
 
@@ -209,13 +219,19 @@ function writeLocal(toolId: ToolId, record: DraftRecord<unknown>): boolean {
   }
 }
 
-function removeLocal(toolId: ToolId): boolean {
+function removeLocal(toolId: ToolId): LocalStorageStatus {
   try {
-    if (typeof localStorage === 'undefined') return false;
-    localStorage.removeItem(`${LOCAL_PREFIX}${toolId}`);
-    return true;
+    if (typeof localStorage === 'undefined') return 'unavailable';
+    const key = `${LOCAL_PREFIX}${toolId}`;
+    localStorage.removeItem(key);
+    try {
+      return localStorage.getItem(key) === null ? 'ok' : 'failed';
+    } catch {
+      // removeItem completed; a failed readback cannot prove the record survived.
+      return 'ok';
+    }
   } catch {
-    return false;
+    return 'failed';
   }
 }
 
@@ -388,13 +404,17 @@ export async function writeDraft<T>(
 /** Synchronous best-effort write for `pagehide`/unmount. */
 export function writeDraftNow<T>(toolId: ToolId, data: T, options: DraftWriteOptions = {}): void {
   if (options.epoch !== undefined && options.epoch !== storeEpoch) return;
+  const acceptedGeneration = generationOf(toolId);
   const savedAt = new Date().toISOString();
   const record: DraftRecord<T> = { version: DRAFT_VERSION, toolId, savedAt, data };
   memory.set(toolId, record as DraftRecord<Record<string, unknown>>);
   writeLocal(toolId, record as DraftRecord<unknown>);
   // The durable copy still goes through the queue so a reset can order itself after it.
   void enqueue(toolId, async () => {
-    if (options.epoch !== undefined && options.epoch !== storeEpoch) return;
+    if (
+      (options.epoch !== undefined && options.epoch !== storeEpoch) ||
+      acceptedGeneration !== generationOf(toolId)
+    ) return;
     const opened = await openDb();
     if (!opened.db) return;
     await idbPut(opened.db, record as DraftRecord<unknown>);
@@ -412,25 +432,26 @@ export async function clearDraft(toolId: ToolId): Promise<ClearDraftResult> {
   // was accepted earlier and finishes later cannot re-create the draft.
   bumpGeneration(toolId);
   return enqueue(toolId, async () => {
-    removeLocal(toolId);
+    const localStorageStatus = removeLocal(toolId);
     const opened = await openDb();
-    if (!opened.db) {
-      if (opened.status === 'failed') {
-        return {
-          ok: false,
-          idb: 'failed' as const,
-          error: 'このブラウザの IndexedDB にアクセスできず、下書きを削除できませんでした。',
-        };
-      }
-      return { ok: true, idb: 'unavailable' as const, error: null };
-    }
-    const removed = await idbDelete(opened.db, toolId);
-    opened.db.close();
+    const idb = opened.db ? (await idbDelete(opened.db, toolId) ? 'ok' as const : 'failed' as const) : opened.status;
+    opened.db?.close();
     memory.delete(toolId);
-    if (!removed) {
-      return { ok: false, idb: 'failed' as const, error: '下書きの削除に失敗しました。' };
-    }
-    return { ok: true, idb: 'ok' as const, error: null };
+    const ok = idb !== 'failed' && localStorageStatus !== 'failed';
+    const failedStores = [
+      ...(idb === 'failed' ? ['IndexedDB'] : []),
+      ...(localStorageStatus === 'failed' ? ['localStorage'] : []),
+    ];
+    return {
+      ok,
+      idb,
+      localStorage: localStorageStatus,
+      memory: 'ok',
+      partial: !ok,
+      error: ok
+        ? null
+        : `${failedStores.join(' と ')} から下書きを削除できませんでした。メモリ上は破棄済みです。再試行してください。`,
+    };
   });
 }
 
@@ -444,16 +465,26 @@ export async function resetAllDrafts(toolIds: ToolId[]): Promise<ResetDraftsResu
   await Promise.all([...writeChains.values()]);
   const results = await Promise.all(toolIds.map(async (toolId) => ({ toolId, result: await clearDraft(toolId) })));
   const failed = results.filter((entry) => !entry.result.ok).map((entry) => entry.toolId);
-  const idb: IdbStatus = results.some((entry) => entry.result.idb === 'failed')
-    ? 'failed'
-    : results.every((entry) => entry.result.idb === 'unavailable')
-      ? 'unavailable'
-      : 'ok';
+  const aggregate = (key: 'idb' | 'localStorage'): IdbStatus =>
+    results.some((entry) => entry.result[key] === 'failed')
+      ? 'failed'
+      : results.every((entry) => entry.result[key] === 'unavailable')
+        ? 'unavailable'
+        : 'ok';
+  const partial = results.some((entry) => entry.result.partial);
   return {
     ok: failed.length === 0,
     failed,
-    idb,
-    error: failed.length ? '下書きの削除に失敗しました。下書きは残っています。' : null,
+    idb: aggregate('idb'),
+    localStorage: aggregate('localStorage'),
+    memory: results.some((entry) => entry.result.memory === 'failed') ? 'failed' : 'ok',
+    partial,
+    results,
+    error: failed.length
+      ? partial
+        ? '下書きの一部は削除されましたが、削除できなかった保存領域があります。再試行してください。'
+        : '下書きを削除できませんでした。再試行してください。'
+      : null,
   };
 }
 

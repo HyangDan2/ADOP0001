@@ -50,6 +50,7 @@ import { createUtf8FrameDecoder } from './streamCodec';
 import { createSseParser, readCompletionJson, type StreamUsage } from './streamParser';
 import { chatBodySpecFor, serializeChatBody, type ChatBodySpec, type TerminalPolicy } from './requestBody';
 import { readBoundedText } from './boundedRead';
+import { createStreamingSecretScrubber } from './redaction';
 import {
   createFetchTransport,
   resolveEndpoint,
@@ -126,10 +127,21 @@ function assertMessages(messages: ChatMessage[]): void {
 
 /** Removes the exact session key from any text the provider echoed back. */
 export function scrubSessionSecret(text: string, secret: string | null | undefined): string {
-  const scrubbed = scrubProviderText(text);
-  const value = secret?.trim();
-  if (!value || value.length < 6) return scrubbed;
-  return scrubbed.split(value).join('[redacted-key]');
+  const scrubber = createStreamingSecretScrubber(secret);
+  return scrubber.push(scrubProviderText(text)) + scrubber.flush();
+}
+
+function scrubHybridError(error: HybridError, secret: string | null | undefined): HybridError {
+  return new HybridError(error.kind, scrubSessionSecret(error.message, secret), {
+    status: error.status,
+    retryable: error.retryable,
+    retryAfterMs: error.retryAfterMs,
+    detail: error.detail === undefined ? undefined : scrubSessionSecret(error.detail, secret),
+  });
+}
+
+function scrubFinishReason(finishReason: string | null, secret: string | null | undefined): string | null {
+  return finishReason === null ? null : scrubSessionSecret(finishReason, secret);
 }
 
 /** Combines the caller's signal with a deadline and normalizes whatever comes out. */
@@ -293,7 +305,11 @@ export class OpenAiCompatibleProvider implements HybridProvider {
       if (sealed.stream !== stream) {
         throw new HybridError('approval', '承認したストリーミング設定と送信方法が一致しません。');
       }
-      return { text: serializeChatBody(sealed, request.messages), sealed };
+      const text = serializeChatBody(sealed, request.messages);
+      if (request.serializedBody !== undefined && request.serializedBody !== text) {
+        throw new HybridError('approval', '承認した HTTP Body と実際に送信する Body が一致しません。');
+      }
+      return { text, sealed };
     }
     // INT-006: the capability profile decides the parameter spelling and which
     // parameters exist, even for a request that was not sealed (a connection test
@@ -360,7 +376,8 @@ export class OpenAiCompatibleProvider implements HybridProvider {
           return onResponse(response, abort);
         });
       } catch (cause) {
-        const error = cause instanceof HybridError ? cause : classifyFetchFailure(cause, resolved.timeoutMs);
+        const classified = cause instanceof HybridError ? cause : classifyFetchFailure(cause, resolved.timeoutMs);
+        const error = scrubHybridError(classified, resolved.apiKey);
         lastError = error;
         const retryable = error.retryable && error.kind !== 'aborted' && error.kind !== 'timeout';
         if (!retry || !retryable || attempt >= maxAttempts) throw error;
@@ -392,13 +409,13 @@ export class OpenAiCompatibleProvider implements HybridProvider {
         maxChars: policy.limits.maxResponseChars,
       });
       if (!response.ok) throw errorForResponse(response, read.text, resolved.apiKey);
-      const parsed = readCompletionJson(scrubSessionSecret(read.text, resolved.apiKey));
+      const parsed = readCompletionJson(read.text);
       assertCompletionFinishReason(parsed.finishReason);
       this.lastUsage = parsed.usage ?? null;
       return {
         text: scrubSessionSecret(parsed.text, resolved.apiKey),
         usage: parsed.usage,
-        finishReason: parsed.finishReason,
+        finishReason: scrubFinishReason(parsed.finishReason, resolved.apiKey),
         responseBytes: read.bytes,
       };
     });
@@ -447,7 +464,7 @@ export class OpenAiCompatibleProvider implements HybridProvider {
           signal: request.signal,
           maxChars: policy.limits.maxResponseChars,
         });
-        const parsed = readCompletionJson(scrubSessionSecret(read.text, resolved.apiKey));
+        const parsed = readCompletionJson(read.text);
         assertCompletionFinishReason(parsed.finishReason);
         this.lastUsage = parsed.usage ?? null;
         const text = scrubSessionSecret(parsed.text, resolved.apiKey);
@@ -455,7 +472,7 @@ export class OpenAiCompatibleProvider implements HybridProvider {
         return {
           text,
           usage: parsed.usage,
-          finishReason: parsed.finishReason,
+          finishReason: scrubFinishReason(parsed.finishReason, resolved.apiKey),
           streamTerminated: true,
           responseBytes: read.bytes,
         };
@@ -471,6 +488,16 @@ export class OpenAiCompatibleProvider implements HybridProvider {
       const parser = createSseParser();
       const guard = new ResourceGuard(policy.limits.maxResponseBytes);
       const pendingLimit = pendingLimitFor(policy);
+      const scrubberOptions = {
+        maxHoldbackChars: Math.max(
+          policy.limits.maxResponseChars,
+          hybridConfig.read().stream.maxDecodedChunkChars,
+          resolved.apiKey.trim().length,
+        ),
+      };
+      const secretScrubber = createStreamingSecretScrubber(resolved.apiKey, scrubberOptions);
+      // Generic provider redaction can itself create a prefix of the exact key.
+      const renderedScrubber = createStreamingSecretScrubber(resolved.apiKey, scrubberOptions);
       let firstRead = true;
       let answer = '';
       let usage: StreamUsage | undefined;
@@ -480,8 +507,11 @@ export class OpenAiCompatibleProvider implements HybridProvider {
       const consume = async (events: ReturnType<typeof parser.push>) => {
         for (const event of events) {
           if (event.type === 'delta') {
-            answer += event.text;
-            onDelta(scrubSessionSecret(event.text, resolved.apiKey));
+            const safe = renderedScrubber.push(scrubSessionSecret(secretScrubber.push(event.text), resolved.apiKey));
+            if (safe) {
+              answer += safe;
+              onDelta(safe);
+            }
           } else if (event.type === 'finish') {
             // INT-004: record it and keep reading — usage and [DONE] follow.
             if (event.finishReason === 'length' || event.finishReason === 'content_filter' || event.finishReason === 'refusal') {
@@ -532,9 +562,12 @@ export class OpenAiCompatibleProvider implements HybridProvider {
           await consume(parser.flush());
         }
       } catch (cause) {
+        secretScrubber.discard();
+        renderedScrubber.discard();
         // A cancel keeps escaping as a cancel even mid-stream.
         if (request.signal?.aborted) throw new HybridError('aborted', 'リクエストはキャンセルされました。');
-        throw cause instanceof HybridError ? cause : classifyFetchFailure(cause, resolved.timeoutMs);
+        const classified = cause instanceof HybridError ? cause : classifyFetchFailure(cause, resolved.timeoutMs);
+        throw scrubHybridError(classified, resolved.apiKey);
       } finally {
         try {
           if (!completed) await reader.cancel();
@@ -548,9 +581,6 @@ export class OpenAiCompatibleProvider implements HybridProvider {
         }
       }
 
-      if (!answer) {
-        throw new HybridError('empty-choices', 'ストリームから本文を受け取れませんでした。');
-      }
       this.lastUsage = usage ?? parser.usage ?? null;
       const finishReason = parser.finishReason;
       const sawDone = parser.terminated || completed;
@@ -562,10 +592,23 @@ export class OpenAiCompatibleProvider implements HybridProvider {
           : terminalPolicy === 'finish'
             ? parser.sawFinish
             : sawDone || parser.sawFinish;
+      if (!terminated) {
+        secretScrubber.discard();
+        renderedScrubber.discard();
+        throw new HybridError('incomplete-stream', 'ストリームが終了マーカーなしで途切れました。未出力の末尾は破棄しました。');
+      }
+      const tail = renderedScrubber.push(scrubSessionSecret(secretScrubber.flush(), resolved.apiKey)) + renderedScrubber.flush();
+      if (tail) {
+        answer += tail;
+        onDelta(tail);
+      }
+      if (!answer) {
+        throw new HybridError('empty-choices', 'ストリームから本文を受け取れませんでした。');
+      }
       return {
         text: scrubSessionSecret(answer, resolved.apiKey),
         usage,
-        finishReason,
+        finishReason: scrubFinishReason(finishReason, resolved.apiKey),
         streamTerminated: terminated,
         responseBytes: guard.used(),
       };

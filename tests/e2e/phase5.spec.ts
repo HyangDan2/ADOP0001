@@ -332,9 +332,51 @@ test.describe('Phase 5A — stabilization', () => {
     // A refused IndexedDB clear must not look like a reset and must not reload.
     const resetError = page.getByTestId('reset-error');
     await expect(resetError).toBeVisible();
-    await expect(resetError).toContainText('初期化できませんでした');
+    await expect(resetError).toContainText('保存領域の削除を確認できませんでした');
+    await expect(resetError).toContainText('他の下書きは変更していません');
+    await expect(page.getByTestId('reset-drafts')).toContainText('下書きの破棄を再試行');
     await expect(page.getByTestId('source-editor')).toHaveValue(/# Kotoha Round-Trip Sample/);
     await expect(page.getByTestId('kebab-menu')).toBeVisible();
+  });
+
+  test('PATCH-002: a partial global reset leaves the remounted draft autosave working', async ({ page }) => {
+    watch(page);
+    await page.addInitScript(() => {
+      const scope = window as unknown as { __failDrafts?: boolean };
+      scope.__failDrafts = false;
+      const original = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (this: IDBDatabase, storeNames: string, mode?: IDBTransactionMode) {
+        if (scope.__failDrafts && storeNames === 'drafts') throw new DOMException('forced draft failure', 'InvalidStateError');
+        return original.call(this, storeNames, mode);
+      };
+    });
+    await page.goto('#/shiori');
+    const source = page.getByTestId('source-editor');
+    await source.fill('export function beforeReset() { return 1; }');
+    await expect.poll(() => page.evaluate(() => {
+      const raw = localStorage.getItem('adop0001.draft.shiori');
+      return raw ? (JSON.parse(raw) as { data?: { source?: string } }).data?.source : null;
+    })).toContain('beforeReset');
+
+    await page.evaluate(() => {
+      (window as unknown as { __failDrafts?: boolean }).__failDrafts = true;
+    });
+    await page.getByTestId('kebab-button').click();
+    await page.getByTestId('reset-drafts').click();
+    await expect(page.getByTestId('reset-error')).toBeVisible();
+    await expect(page.getByTestId('reset-error')).toContainText('Kotoha 文書は削除済みです');
+    await expect(page.getByTestId('reset-error')).toContainText('下書きの一部');
+
+    await page.evaluate(() => {
+      (window as unknown as { __failDrafts?: boolean }).__failDrafts = false;
+    });
+    await source.fill('export function afterReset() { return 2; }');
+    await expect.poll(() => page.evaluate(() => {
+      const raw = localStorage.getItem('adop0001.draft.shiori');
+      return raw ? (JSON.parse(raw) as { data?: { source?: string } }).data?.source : null;
+    })).toContain('afterReset');
+    await page.reload();
+    await expect(source).toHaveValue('export function afterReset() { return 2; }');
   });
 
   test('PATCH-002: a failed bundle save keeps the failure message, not a success one', async ({ page }) => {

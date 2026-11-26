@@ -94,6 +94,7 @@ describe('INT-007 — data boundary & evidence', () => {
       sourceName: 'many.ts',
       settings: tight,
       localAnalysis: 'contracts: 40',
+      secrets: ['test-key-0123456789'],
     });
     expect(plan.budget.selection.truncated).toBe(true);
     const excluded = plan.budget.selection.excluded[0];

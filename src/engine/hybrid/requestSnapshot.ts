@@ -24,7 +24,7 @@
 import { sha256Hex } from '../../lib/util';
 import type { ChatMessage } from './contracts';
 import { canonicalJson } from './canonical';
-import { bodyDigestMaterial, sameBodySpec, type ChatBodySpec } from './requestBody';
+import { bodyDigestMaterial, sameBodySpec, serializeChatBody, type ChatBodySpec } from './requestBody';
 import { hybridConfig } from './config';
 import { HybridError } from './errors';
 import { fingerprintPayload } from './preflight';
@@ -62,6 +62,14 @@ export interface SealInput {
   credential?: SnapshotCredential | null;
   /** Configuration the run used, so a later request can prove which policy applied. */
   configFingerprint?: string;
+  /** Exact canonical JSON bytes approved for transmission. */
+  serializedBody?: string | null;
+  /** Preview-time input/policy/profile identities. */
+  inputsFingerprint?: string;
+  redactionPolicyRevision?: number;
+  redactionPolicyFingerprint?: string;
+  providerProfileRevision?: number;
+  providerProfileFingerprint?: string;
 }
 
 export interface RequestSnapshot {
@@ -81,6 +89,12 @@ export interface RequestSnapshot {
   /** The credential revision that authorised this payload (INT-001). */
   readonly credential: Readonly<SnapshotCredential> | null;
   readonly configFingerprint: string;
+  readonly serializedBody: string | null;
+  readonly inputsFingerprint: string;
+  readonly redactionPolicyRevision: number;
+  readonly redactionPolicyFingerprint: string;
+  readonly providerProfileRevision: number;
+  readonly providerProfileFingerprint: string;
   /** sha256 over the exact transmitted payload and its approval context. */
   readonly payloadDigest: string;
   /** sha256 over the payload digest and the consent record. */
@@ -96,6 +110,10 @@ export type SnapshotProblemCode =
   | 'model-changed'
   | 'body-changed'
   | 'credential-changed'
+  | 'config-changed'
+  | 'inputs-changed'
+  | 'policy-changed'
+  | 'profile-changed'
   | 'already-consumed'
   | 'unredacted-secret'
   | 'empty-payload'
@@ -120,23 +138,41 @@ export interface SnapshotExpectation {
   body?: ChatBodySpec | null;
   /** The key that is in the tab now (hash + revision). */
   credential?: SnapshotCredential | null;
+  configFingerprint?: string;
+  serializedBody?: string;
+  inputsFingerprint?: string;
+  redactionPolicyRevision?: number;
+  redactionPolicyFingerprint?: string;
+  providerProfileRevision?: number;
+  providerProfileFingerprint?: string;
 }
 
 /** Deterministic JSON: object keys sorted, so the digest cannot depend on order. */
 export { canonicalJson };
 
+function serializedBodyOf(input: SealInput): string | null {
+  if (input.serializedBody !== undefined) return input.serializedBody;
+  return input.body ? serializeChatBody(input.body, input.messages) : null;
+}
+
 function digestMaterial(input: SealInput): string {
   return canonicalJson([
-    'adop0001.hybrid.payload.v3',
+    'adop0001.hybrid.payload.v4',
     input.endpoint,
     input.model,
     input.messages.map((message) => [message.role, message.content]),
     input.body ? bodyDigestMaterial(input.body) : null,
+    serializedBodyOf(input),
     input.credential?.fingerprint ?? null,
     input.credential?.revision ?? null,
     input.approvedAt,
     input.previewFingerprint,
     input.configFingerprint ?? hybridConfig.fingerprint(),
+    input.inputsFingerprint ?? '',
+    input.redactionPolicyRevision ?? 0,
+    input.redactionPolicyFingerprint ?? '',
+    input.providerProfileRevision ?? 0,
+    input.providerProfileFingerprint ?? '',
     input.redaction.total,
   ]);
 }
@@ -173,7 +209,8 @@ export async function sealRequestSnapshot(input: SealInput): Promise<RequestSnap
   const messages = deepFreeze(input.messages.map((message) => ({ role: message.role, content: message.content })));
   const body = input.body ? deepFreeze({ ...input.body }) : null;
   const credential = input.credential ? deepFreeze({ ...input.credential }) : null;
-  const withConfig: SealInput = { ...input, configFingerprint, body, credential };
+  const serializedBody = serializedBodyOf({ ...input, body });
+  const withConfig: SealInput = { ...input, configFingerprint, body, credential, serializedBody };
   const payloadDigest = await sha256Hex(digestMaterial(withConfig));
   const consentDigest = await sha256Hex(consentMaterial(payloadDigest, withConfig, configFingerprint));
 
@@ -196,6 +233,12 @@ export async function sealRequestSnapshot(input: SealInput): Promise<RequestSnap
     body,
     credential,
     configFingerprint,
+    serializedBody,
+    inputsFingerprint: input.inputsFingerprint ?? '',
+    redactionPolicyRevision: input.redactionPolicyRevision ?? 0,
+    redactionPolicyFingerprint: input.redactionPolicyFingerprint ?? '',
+    providerProfileRevision: input.providerProfileRevision ?? 0,
+    providerProfileFingerprint: input.providerProfileFingerprint ?? '',
     payloadDigest,
     consentDigest,
     sealed: true as const,
@@ -240,6 +283,12 @@ export async function verifyRequestSnapshot(
       body: snapshot.body ?? null,
       credential: snapshot.credential ?? null,
       configFingerprint: snapshot.configFingerprint,
+      serializedBody: snapshot.serializedBody,
+      inputsFingerprint: snapshot.inputsFingerprint,
+      redactionPolicyRevision: snapshot.redactionPolicyRevision,
+      redactionPolicyFingerprint: snapshot.redactionPolicyFingerprint,
+      providerProfileRevision: snapshot.providerProfileRevision,
+      providerProfileFingerprint: snapshot.providerProfileFingerprint,
     }),
   );
   if (recomputed !== snapshot.payloadDigest) {
@@ -304,6 +353,31 @@ export async function verifyRequestSnapshot(
       code: 'body-changed',
       message: '承認した送信パラメータ（Temperature・出力上限・ストリーミング）と、送信しようとしている内容が一致しません。',
     });
+  }
+  const serializedBody = snapshot.body ? serializeChatBody(snapshot.body, messages.map((message) => ({ role: message.role, content: message.content }))) : null;
+  if (snapshot.serializedBody !== serializedBody || (expectation.serializedBody !== undefined && expectation.serializedBody !== serializedBody)) {
+    problems.push({
+      code: 'body-changed',
+      message: '承認した HTTP Body と送信しようとしている Body が一致しません。',
+    });
+  }
+  if (expectation.configFingerprint !== undefined && expectation.configFingerprint !== snapshot.configFingerprint) {
+    problems.push({ code: 'config-changed', message: '承認後に実行時設定が変更されたため、この承認は無効です。' });
+  }
+  if (expectation.inputsFingerprint !== undefined && expectation.inputsFingerprint !== snapshot.inputsFingerprint) {
+    problems.push({ code: 'inputs-changed', message: '承認後に入力内容が変更されたため、この承認は無効です。' });
+  }
+  if (
+    (expectation.redactionPolicyRevision !== undefined && expectation.redactionPolicyRevision !== snapshot.redactionPolicyRevision) ||
+    (expectation.redactionPolicyFingerprint !== undefined && expectation.redactionPolicyFingerprint !== snapshot.redactionPolicyFingerprint)
+  ) {
+    problems.push({ code: 'policy-changed', message: '承認後に伏字ポリシーが変更されたため、この承認は無効です。' });
+  }
+  if (
+    (expectation.providerProfileRevision !== undefined && expectation.providerProfileRevision !== snapshot.providerProfileRevision) ||
+    (expectation.providerProfileFingerprint !== undefined && expectation.providerProfileFingerprint !== snapshot.providerProfileFingerprint)
+  ) {
+    problems.push({ code: 'profile-changed', message: '承認後に Provider Profile が変更されたため、この承認は無効です。' });
   }
   // INT-001: a key that was replaced after approval (or cleared) is a different
   // credential; the approval was for the old one.

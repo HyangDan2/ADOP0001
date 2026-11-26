@@ -283,26 +283,125 @@ export interface RedactionOptions {
   secrets?: Array<string | null | undefined>;
 }
 
-/**
- * Builds an exact-match rule for a session secret. Short or empty values are
- * ignored (redacting a 3-character string would shred the payload), and the
- * replacement never contains the value.
- */
+function isIsolatingReplacement(value: string, replacement: string): boolean {
+  if (!replacement || replacement.includes(value) || value.includes(replacement)) return false;
+  for (let length = 1; length < value.length; length += 1) {
+    if (replacement.startsWith(value.slice(value.length - length))) return false;
+  }
+  for (let length = 1; length < replacement.length; length += 1) {
+    if (value.startsWith(replacement.slice(replacement.length - length))) return false;
+  }
+  return true;
+}
+
+function replacementForSecret(value: string, preferred: string): string {
+  for (const candidate of [preferred, '[REDACTED]', '[redacted]', '\uFFFC', '\uFFFD']) {
+    if (isIsolatingReplacement(value, candidate)) return candidate;
+  }
+
+  const used = new Set<number>();
+  for (let index = 0; index < value.length; index += 1) used.add(value.charCodeAt(index));
+  for (let code = 0xe000; code <= 0xf8ff; code += 1) {
+    if (!used.has(code)) return String.fromCharCode(code);
+  }
+  for (let code = 0; code <= 0xffff; code += 1) {
+    if (!used.has(code)) return String.fromCharCode(code);
+  }
+
+  const pairs = new Set<number>();
+  for (let index = 0; index + 1 < value.length; index += 1) {
+    pairs.add(value.charCodeAt(index) * 0x10000 + value.charCodeAt(index + 1));
+  }
+  const first = value.charCodeAt(0);
+  const last = value.charCodeAt(value.length - 1);
+  for (let left = 0; left <= 0xffff; left += 1) {
+    if (left === last) continue;
+    for (let right = 0; right <= 0xffff; right += 1) {
+      if (right === first || pairs.has(left * 0x10000 + right)) continue;
+      return String.fromCharCode(left, right);
+    }
+  }
+  throw new Error('安全な伏字置換文字列を生成できませんでした。');
+}
+
+/** Builds an exact-match rule with replacement text isolated from the secret. */
 export function secretRule(secret: string): RedactionRule | null {
   const value = secret.trim();
-  if (value.length < 8) return null;
+  if (!value) return null;
   const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return {
     id: 'runtime:session-secret',
     kind: 'api-key',
     label: 'セッションの認証情報',
     pattern: new RegExp(escaped, 'g'),
-    replacement: '[REDACTED_API_KEY]',
+    replacement: replacementForSecret(value, REPLACEMENT_FOR['api-key']),
+  };
+}
+
+export interface StreamingSecretScrubber {
+  push(chunk: string): string;
+  flush(): string;
+  discard(): void;
+}
+
+/** Holds only a suffix that may still become the exact secret on the next delta. */
+export function createStreamingSecretScrubber(
+  secret: string | null | undefined,
+  options: { maxHoldbackChars?: number } = {},
+): StreamingSecretScrubber {
+  const value = secret?.trim() ?? '';
+  const replacement = replacementForSecret(value, '[redacted-key]');
+  const holdbackLimit = Math.max(
+    1,
+    options.maxHoldbackChars ?? hybridConfig.read().stream.maxDecodedChunkChars,
+    value.length,
+  );
+  let pending = '';
+
+  const scrubComplete = (text: string): string => {
+    if (!value) return text;
+    return text.split(value).join(replacement);
+  };
+
+  return {
+    push(chunk) {
+      if (!chunk) return '';
+      if (!value) return chunk;
+      pending += chunk;
+      let output = '';
+      let cursor = 0;
+      for (;;) {
+        const index = pending.indexOf(value, cursor);
+        if (index < 0) break;
+        output += pending.slice(cursor, index) + replacement;
+        cursor = index + value.length;
+      }
+      const remainder = pending.slice(cursor);
+      const longest = Math.min(holdbackLimit, value.length - 1, remainder.length);
+      let held = 0;
+      for (let length = longest; length > 0; length -= 1) {
+        if (value.startsWith(remainder.slice(-length))) {
+          held = length;
+          break;
+        }
+      }
+      output += remainder.slice(0, remainder.length - held);
+      pending = held ? remainder.slice(-held) : '';
+      return output;
+    },
+    flush() {
+      const output = scrubComplete(pending);
+      pending = '';
+      return output;
+    },
+    discard() {
+      pending = '';
+    },
   };
 }
 
 export interface ResolvedRedaction {
-  /** Session secrets, then builtin rules in priority order, then custom rules. */
+  /** Session secrets, builtin/custom rules, then session secrets again. */
   rules: RedactionRule[];
   custom: RedactionRule[];
   errors: CompiledPatterns['errors'];
@@ -325,9 +424,9 @@ export function resolveRedaction(options: RedactionOptions = {}): ResolvedRedact
     if (rule) secrets.push(rule);
   }
   return {
-    // The session's own secrets run before every generic pattern, so a key that
-    // also looks like a password assignment is replaced as one whole value.
-    rules: [...secrets, ...builtin.rules, ...compiledCustom.rules],
+    // Exact secrets run first as whole values and again after generic/custom
+    // replacements, which can themselves synthesize a session secret.
+    rules: [...secrets, ...builtin.rules, ...compiledCustom.rules, ...secrets],
     custom: compiledCustom.rules,
     // A custom pattern that cannot compile is an error the caller must handle, not
     // a silent skip (Phase 5C rule, kept by C-FIX-006).

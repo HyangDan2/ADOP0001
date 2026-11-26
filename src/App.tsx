@@ -60,6 +60,7 @@ export default function App() {
   const [fewShotVersion, setFewShotVersion] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [resetBusy, setResetBusy] = useState(false);
   /** Bumped after an explicit draft reset so the open tool re-reads empty storage. */
   const [draftEpoch, setDraftEpoch] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -169,32 +170,31 @@ export default function App() {
   };
 
   const resetDrafts = async () => {
+    if (resetBusy) return;
+    setResetBusy(true);
     setResetError(null);
-    // Kotoha keeps its document draft in its own store, so the generic draft
-    // reset alone would let the cleared document return after the reload.
-    // Its reset is awaited first: when IndexedDB refuses the transaction the
-    // drafts are left untouched and nothing is announced as cleared
-    // (PATCH-002).
-    const kotohaReset = await clearKotohaDocument();
-    if (!kotohaReset.ok) {
-      setResetError('保存領域を初期化できませんでした。下書きと文書は削除されていません。');
-      return;
+    try {
+      const kotohaReset = await clearKotohaDocument();
+      if (!kotohaReset.ok) {
+        setResetError('Kotoha のメモリ上の文書は破棄しましたが、保存領域の削除を確認できませんでした。他の下書きは変更していません。再試行してください。');
+        return;
+      }
+      const resetAll = await resetAllDrafts(TOOLS.map((item) => item.id));
+      // Remount after the global epoch advances so partial failures retain working autosaves.
+      setDraftEpoch((value) => value + 1);
+      if (!resetAll.ok) {
+        setResetError(`Kotoha 文書は削除済みです。${resetAll.error ?? '下書きの一部を削除できませんでした。'}`);
+        return;
+      }
+      clearEngineCache();
+      setMenuOpen(false);
+      // Remounting is not enough: a tool that still holds its document in memory
+      // re-saves it on unmount, so "init" could keep showing the old file. A hard
+      // reload starts every tool from the cleared store; the hash keeps the tool.
+      window.location.reload();
+    } finally {
+      setResetBusy(false);
     }
-    const resetAll = await resetAllDrafts(TOOLS.map((item) => item.id));
-    if (!resetAll.ok) {
-      // WO-02: a refused deletion is not a success. The drafts are still there,
-      // so the app keeps them and does not reload as if the reset had happened.
-      setResetError('下書きの削除に失敗しました。下書きは残っています。');
-      return;
-    }
-    // Completed analyses belong to the drafts that were just discarded.
-    clearEngineCache();
-    setDraftEpoch((value) => value + 1);
-    setMenuOpen(false);
-    // Remounting is not enough: a tool that still holds its document in memory
-    // re-saves it on unmount, so "init" could keep showing the old file. A hard
-    // reload starts every tool from the cleared store; the hash keeps the tool.
-    window.location.reload();
   };
 
   const openFromWorkspace = (targetTool: ToolId, payload: OpenedFile) => {
@@ -337,9 +337,9 @@ export default function App() {
                 </button>
                 <div className="menu-sep" />
                 <div className="menu-group">作業データ</div>
-                <button type="button" role="menuitem" onClick={() => void resetDrafts()} data-testid="reset-drafts">
+                <button type="button" role="menuitem" onClick={() => void resetDrafts()} disabled={resetBusy} data-testid="reset-drafts">
                   <span className="menu-jp">初期化</span>
-                  <span>下書きをすべて破棄</span>
+                  <span>{resetBusy ? '初期化しています…' : resetError ? '下書きの破棄を再試行' : '下書きをすべて破棄'}</span>
                 </button>
                 {resetError ? (
                   <p className="menu-error" role="alert" data-testid="reset-error">

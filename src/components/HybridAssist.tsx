@@ -6,6 +6,8 @@ import { inputsFingerprintFor, planHybridRequest, type HybridRequestPlan } from 
 import { sharedLifecycleRegistry } from '../engine/hybrid/lifecycle';
 import { connectionSettingsStore, sessionApiKey, settingsFingerprint } from '../engine/hybrid/settings';
 import { sectionsOfMarkdown } from '../engine/hybrid/sourceScope';
+import { redactText } from '../engine/hybrid/redaction';
+import { redactionPolicyStore } from '../engine/hybrid/redactionPolicy';
 import { NO_PRICE_LABEL, telemetryRows } from '../engine/hybrid/telemetry';
 import type { HybridSession, HybridStatus } from '../engine/hybrid/streamEngine';
 import type { AiProposal } from '../engine/hybrid/mergePolicy';
@@ -69,18 +71,20 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
   /** INT-007 (Kotoha): sections the operator allows to be sent; null = all. */
   const [sectionSelection, setSectionSelection] = useState<number[] | null>(null);
   const [applying, setApplying] = useState(false);
+  const [starting, setStarting] = useState(false);
   const sessionRef = useRef<HybridSession | null>(null);
   const revision = useRef(0);
   const startedAtRef = useRef<number | null>(null);
-  /** INT-003: a second click while the first send is starting is ignored. */
-  const startingRef = useRef(false);
-  /** INT-003: true only while a request is actually in flight (mode-switch guard). */
-  const runningRef = useRef(false);
-  runningRef.current = phase === 'running';
+  /** INT-003: the request that owns the single-flight send guard. */
+  const startRequestRef = useRef<number | null>(null);
+  /** The request identity allowed to update the visible result or apply it. */
+  const resultRequestRef = useRef<number | null>(null);
   /** INT-007: proposal ids already written into the artifact by this pane. */
   const appliedRef = useRef<Set<string>>(new Set());
-  /** The artifact the running request (and its proposals) were built from. */
+  /** The artifact the preview, running request and its proposals were built from. */
   const baseOutputRef = useRef<ToolOutput<K> | null>(null);
+  const currentOutputRef = useRef<ToolOutput<K> | null>(props.localOutput);
+  currentOutputRef.current = props.localOutput;
   const busy = phase === 'running';
   const mode = useEngineMode();
   const localOnly = mode === 'local';
@@ -89,14 +93,26 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
   /** A stable identity for the tool options (the object itself is re-created per render). */
   const optionsKey = useMemo(() => JSON.stringify(props.options ?? null), [props.options]);
   /** INT-007: the parts of a Kotoha document the operator can choose to send. */
-  const sourceSections = useMemo(
-    () => (props.toolId === 'kotoha' ? sectionsOfMarkdown(props.source) : []),
-    [props.toolId, props.source],
-  );
+  const sourceSections = useMemo(() => {
+    if (props.toolId !== 'kotoha') return [];
+    const policy = redactionPolicyStore.read();
+    const secret = sessionApiKey.get();
+    const options = {
+      customPatterns: policy.customPatterns,
+      disabled: policy.disabled,
+      secrets: secret ? [secret] : [],
+    };
+    return sectionsOfMarkdown(props.source).map((section) => ({
+      ...section,
+      heading: section.heading === null ? null : redactText(section.heading, options).text,
+    }));
+  }, [props.toolId, props.source, sessionApiKey.revision(), redactionPolicyStore.revision()]);
 
   // A new input makes any preview or answer stale immediately.
   useEffect(() => {
     revision.current += 1;
+    startRequestRef.current = null;
+    resultRequestRef.current = null;
     sessionRef.current?.abort('入力が変更されました。');
     setPhase('closed');
     setPlan(null);
@@ -105,23 +121,36 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
     setAccepted({});
     setConsent(false);
     setError(null);
+    setPreparing(false);
+    setStarting(false);
     setSectionSelection(null);
     appliedRef.current = new Set();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.source, props.sourceName, props.toolId, optionsKey]);
 
-  useEffect(() => () => sessionRef.current?.abort('画面を離れました。'), []);
-
-  // INT-003: switching to Mode A while a request is running cancels it, so the
-  // pane cannot keep a Mode B request alive after the operator chose local-only.
-  useEffect(() => {
-    if (mode !== 'local') return;
-    if (!runningRef.current) return;
+  useEffect(() => () => {
     revision.current += 1;
+    startRequestRef.current = null;
+    resultRequestRef.current = null;
+    sessionRef.current?.abort('画面を離れました。');
+  }, []);
+
+  // Mode A invalidates previews and sends, including work that has not reached
+  // the gateway session yet.
+  useEffect(() => {
+    if (mode !== 'local' || phase === 'closed') return;
+    revision.current += 1;
+    startRequestRef.current = null;
+    resultRequestRef.current = null;
     sessionRef.current?.abort('モードA（ローカル解析）に切り替えられました。');
-    setError('モードA（ローカル解析）に切り替えたため、実行中の AI 補完を中止しました。');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+    setPhase('closed');
+    setPlan(null);
+    setOutcome(null);
+    setStatus(null);
+    setPreparing(false);
+    setStarting(false);
+    setError('モードA（ローカル解析）に切り替えたため、AI 補完を中止しました。');
+  }, [mode, phase]);
 
   useEffect(() => {
     if (phase !== 'running') return;
@@ -130,13 +159,17 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
   }, [phase]);
 
   const open = async (selection: number[] | null = sectionSelection) => {
-    if (!props.localOutput) return;
+    if (!props.localOutput || startRequestRef.current !== null) return;
     if (localOnly) {
       setPhase('closed');
       setError('モードA（ローカル解析）では AI 補完を行いません。上部の解析モードを Mode B に切り替えてください。');
       return;
     }
+    const requestId = ++revision.current;
+    resultRequestRef.current = null;
+    baseOutputRef.current = props.localOutput;
     setPhase('preview');
+    setPlan(null);
     setPreparing(true);
     setError(null);
     setOutcome(null);
@@ -154,14 +187,17 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
         settings,
         // INT-007: the session key is redacted even when it has no known shape.
         secrets: sessionApiKey.get() ? [sessionApiKey.get()!] : [],
+        credentialRevision: sessionApiKey.revision(),
         sectionSelection: selection ?? undefined,
       });
+      if (revision.current !== requestId || getEngineMode() === 'local') return;
       setSectionSelection(selection);
       setPlan(next);
     } catch (cause) {
+      if (revision.current !== requestId || getEngineMode() === 'local') return;
       setError(errorMessage(cause, '事前確認を作成できませんでした。'));
     } finally {
-      setPreparing(false);
+      if (revision.current === requestId) setPreparing(false);
     }
   };
 
@@ -169,51 +205,77 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
     // INT-003: a close invalidates every callback of the request that was running,
     // so a late answer cannot reopen the modal or set a result afterwards.
     revision.current += 1;
-    startingRef.current = false;
+    startRequestRef.current = null;
+    resultRequestRef.current = null;
     sessionRef.current?.abort('画面を閉じました。');
     setPhase('closed');
     setPlan(null);
     setOutcome(null);
     setStatus(null);
+    setPreparing(false);
+    setStarting(false);
     setError(null);
   };
 
   const start = async () => {
-    if (!plan || !props.localOutput) return;
-    if (startingRef.current) return;
-    if (localOnly) {
+    const approvedOutput = baseOutputRef.current;
+    if (!plan || !approvedOutput || !currentOutputRef.current || startRequestRef.current !== null) return;
+    if (localOnly || getEngineMode() === 'local') {
       setError('モードA（ローカル解析）では送信しません。');
       return;
     }
-    startingRef.current = true;
-    const startedAt = revision.current;
+    const requestId = ++revision.current;
+    const isCurrent = () => revision.current === requestId && getEngineMode() !== 'local';
+    startRequestRef.current = requestId;
+    resultRequestRef.current = null;
     startedAtRef.current = Date.now();
-    baseOutputRef.current = props.localOutput;
+    setStarting(true);
     setError(null);
     setOutcome(null);
     setStatus(null);
     try {
-      // INT-003: the preview is valid only for the settings and inputs it was
-      // built from. Both are checked again immediately before the send; a change
-      // in the panel, the prompt pane or the few-shot store invalidates it.
       const current = connectionSettingsStore.read();
       if (settingsFingerprint(current) !== plan.settingsFingerprint) {
+        if (!isCurrent()) return;
         setError('事前確認のあとに接続設定が変更されました。もう一度「事前確認を開く」からやり直してください。');
         setPhase('closed');
         setPlan(null);
         return;
       }
+      const apiKey = sessionApiKey.get();
+      const credentialRevision = sessionApiKey.revision();
+      const revalidateLiveState = () =>
+        settingsFingerprint(connectionSettingsStore.read()) === plan.settingsFingerprint &&
+        sessionApiKey.get() === apiKey &&
+        sessionApiKey.revision() === credentialRevision;
       const fingerprint = await inputsFingerprintFor({
         toolId: props.toolId,
         source: props.source,
         sourceName: props.sourceName,
         targetLanguage: props.targetLanguage ?? spec.targetLanguage,
         settings: current,
-        secrets: sessionApiKey.get() ? [sessionApiKey.get()!] : [],
+        secrets: apiKey ? [apiKey] : [],
+        credentialRevision,
         sectionSelection: sectionSelection ?? undefined,
       });
+      if (!revalidateLiveState()) {
+        if (!isCurrent()) return;
+        setError('事前確認のあとに接続設定か認証情報が変更されました。もう一度「事前確認を開く」からやり直してください。');
+        setPhase('closed');
+        setPlan(null);
+        return;
+      }
+      if (!isCurrent()) return;
       if (fingerprint !== plan.inputsFingerprint) {
-        setError('指示・Few-shot・ソースのいずれかが事前確認のあとに変更されました。もう一度「事前確認を開く」からやり直してください。');
+        setError('指示・Few-shot・ソース・認証情報・伏字ポリシー・Provider Profile・実行時設定のいずれかが事前確認のあとに変更されました。もう一度「事前確認を開く」からやり直してください。');
+        setPhase('closed');
+        setPlan(null);
+        return;
+      }
+      try {
+        assertSameArtifact(approvedOutput, currentOutputRef.current);
+      } catch {
+        setError('ローカル結果が更新されたため、この事前確認は送信できません。もう一度事前確認から実行してください。');
         setPhase('closed');
         setPlan(null);
         return;
@@ -224,55 +286,58 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
         sourceName: props.sourceName,
         source: props.source,
         options: props.options,
-        localOutput: props.localOutput,
-        // INT-001: the settings the preview was built from, not a fresh read.
-        settings: plan.settings,
-        apiKey: sessionApiKey.get(),
-        credentialRevision: sessionApiKey.revision(),
+        localOutput: approvedOutput,
+        settings: current,
+        apiKey,
+        credentialRevision,
+        revalidateLiveState,
         plan,
-        // Read at send time: a switch to Mode A while the preview is open must
-        // stop the request before it leaves the tab.
         engineMode: getEngineMode(),
-        // One request per tool: a second start is refused by the registry instead
-        // of racing the first one (C-FIX-003).
         lifecycleRegistry: sharedLifecycleRegistry,
         lifecycleScope: props.toolId,
-        approve: () => true, // the consent box below is the approval of this payload
-        isCurrent: () => revision.current === startedAt,
+        approve: () => true,
+        isCurrent,
         targetLanguage: props.targetLanguage ?? spec.targetLanguage,
-        onStatus: setStatus,
+        onStatus: (next) => {
+          if (isCurrent()) setStatus(next);
+        },
         onSession: (session) => {
-          sessionRef.current = session;
+          if (isCurrent()) sessionRef.current = session;
         },
       });
-      if (revision.current !== startedAt || !result.applied) {
-        // The input moved on (or the pane closed) while the answer was in flight:
-        // the answer is not the current artifact's, so it never reaches the screen.
+      if (!isCurrent()) return;
+      if (!result.applied) {
         setOutcome(null);
         setPhase('closed');
         return;
       }
+      resultRequestRef.current = requestId;
       setOutcome(result);
       setAccepted(Object.fromEntries(result.proposals.map((proposal) => [proposal.id, true])));
       setPhase('result');
     } catch (cause) {
-      if (revision.current !== startedAt) return;
+      if (!isCurrent()) return;
       setError(errorMessage(cause, 'AI 補完を実行できませんでした。'));
       setPhase('result');
     } finally {
-      startingRef.current = false;
+      if (startRequestRef.current === requestId) {
+        startRequestRef.current = null;
+        setStarting(false);
+      }
     }
   };
 
   const toggle = (id: string) => setAccepted((current) => ({ ...current, [id]: !current[id] }));
 
   const applySelected = () => {
-    if (!outcome || !props.localOutput || applying) return;
+    const currentOutput = currentOutputRef.current;
+    if (!outcome || !currentOutput || applying || resultRequestRef.current === null || resultRequestRef.current !== revision.current) return;
+    if (getEngineMode() === 'local') return;
     try {
       // WO-11: the proposals were written against the artifact the request
       // started from. If the pane has produced a different one since, applying
       // them would describe a result the user is no longer looking at.
-      assertSameArtifact(baseOutputRef.current, props.localOutput);
+      assertSameArtifact(baseOutputRef.current, currentOutput);
     } catch (cause) {
       setError(errorMessage(cause, 'ローカル結果が更新されたため、この提案は適用できません。'));
       return;
@@ -290,7 +355,7 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
     setApplying(true);
     try {
       for (const proposal of chosen) appliedRef.current.add(proposal.id);
-      const next = applyAccepted(props.toolId, props.localOutput, chosen);
+      const next = applyAccepted(props.toolId, currentOutput, chosen);
       props.onApplied(next, `${chosen.length} 件の AI 補完を反映しました（ローカルの事実は変更していません）。`);
       setPhase('closed');
     } finally {
@@ -299,7 +364,7 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
   };
 
   const blocked = plan ? plan.preview.blockedReasons : [];
-  const canSend = Boolean(plan?.preview.allowed) && consent && !busy;
+  const canSend = Boolean(plan?.preview.allowed) && consent && !busy && !starting && startRequestRef.current === null;
   // `tick` re-renders the clock while a request is in flight, even when the
   // provider has not sent a delta yet (the connecting stage).
   const liveElapsed = (() => {
@@ -346,7 +411,7 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
       ) : null}
 
       {phase !== 'closed' ? (
-        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && close()}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && close()}>
           <div
             className="modal hybrid-modal"
             role="dialog"
@@ -355,7 +420,7 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
             data-testid="hybrid-modal"
             data-phase={phase}
           >
-            <button type="button" className="icon-btn modal-close" aria-label="閉じる" onClick={close} disabled={busy}>
+            <button type="button" className="icon-btn modal-close" aria-label="閉じる" onClick={close}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M5 5l14 14M19 5 5 19" strokeLinecap="round" />
               </svg>

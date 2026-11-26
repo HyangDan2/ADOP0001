@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { createLatestGuard } from '../src/lib/latestOnly';
-import { clearDraft, resetAllDrafts, useToolDraft } from '../src/lib/drafts';
+import { clearDraft, readDraft, resetAllDrafts, useToolDraft } from '../src/lib/drafts';
 import type { ToolId } from '../src/adapters/types';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -103,6 +103,47 @@ describe('INT-008 — draft reset and autosave', () => {
       vi.advanceTimersByTime(600);
     });
     expect(localStorage.getItem('adop0001.draft.shiori')).toBeNull();
+  });
+
+  it('resumes autosave on a fresh mount after a partial global reset', async () => {
+    await act(async () => {
+      root!.render(createElement(Harness));
+    });
+    const oldDraft = (globalThis as unknown as { __draft: DraftHandle }).__draft;
+    await act(async () => {
+      oldDraft.setField('source', 'before failed reset');
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+
+    const removeItem = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => {
+      throw new Error('localStorage delete denied');
+    });
+    try {
+      const reset = await resetAllDrafts(['shiori']);
+      expect(reset).toMatchObject({ ok: false, failed: ['shiori'], localStorage: 'failed' });
+    } finally {
+      removeItem.mockRestore();
+    }
+
+    await act(async () => {
+      root!.render(null);
+    });
+    await act(async () => {
+      root!.render(createElement(Harness));
+    });
+    const freshDraft = (globalThis as unknown as { __draft: DraftHandle }).__draft;
+    await act(async () => {
+      freshDraft.setField('source', 'after failed reset');
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+
+    await expect(readDraft<{ source: string }>('shiori')).resolves.toMatchObject({
+      data: { source: 'after failed reset' },
+    });
   });
 
   it('reports a refused draft delete instead of pretending the draft is gone', async () => {

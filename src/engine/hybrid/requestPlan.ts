@@ -21,18 +21,20 @@
 import type { ToolId } from '../../adapters/types';
 import { listExamples } from '../../lib/fewShotStore';
 import { readPrompt } from '../../lib/promptStore';
+import { sha256Hex } from '../../lib/util';
 import { planBudget, type BudgetPlan, type BudgetSettings } from './budget';
+import { stableFingerprint } from './canonical';
+import { hybridConfig } from './config';
 import { focusTermsFrom, type ContextProfile } from './contextAllocator';
 import { chatBodySpecFor, type ChatBodySpec } from './requestBody';
 import { buildPreflight, type PreflightPreview } from './preflight';
 import { buildPrompt, type BuiltPrompt } from './promptBuilder';
-import { contextProfileFor, providerRegistry, type ProviderCapabilities, type ProviderResolution } from './providerProfiles';
-import type { RedactionOptions } from './redaction';
-import { redactionPolicyStore } from './redactionPolicy';
+import { contextProfileFor, providerProfileFingerprint, providerRegistry, type ProviderCapabilities, type ProviderResolution } from './providerProfiles';
+import { redactionRegistry, type RedactionOptions } from './redaction';
+import { redactionPolicyFingerprint, redactionPolicyStore } from './redactionPolicy';
 import { connectionSettingsStore, settingsFingerprint, type ConnectionSettings } from './settings';
 import { scopeAnalysisToSelection, scopeAnalysisToExcluded, sectionsOfMarkdown, type LineRange } from './sourceScope';
 import { countMessageTokens } from './tokenAccounting';
-import { stableFingerprint } from './canonical';
 
 export interface HybridRequestPlanInput {
   toolId: ToolId;
@@ -59,6 +61,8 @@ export interface HybridRequestPlanInput {
   providerId?: string;
   /** INT-006: the capabilities of the client that will send (overrides the registry). */
   capabilities?: ProviderCapabilities;
+  /** INT-001: the session credential revision when this preview was created. */
+  credentialRevision?: number;
 }
 
 export interface HybridRequestPlan {
@@ -78,6 +82,23 @@ export interface HybridRequestPlan {
   settingsFingerprint: string;
   /** INT-003: identity of every input the preview was built from. */
   inputsFingerprint: string;
+  /** Preview-time credential identity; the raw key is never retained here. */
+  credentialRevision: number;
+  credentialFingerprint: string | null;
+  /** Preview-time policy/profile/config identities, rechecked before transmission. */
+  redactionPolicyRevision: number;
+  redactionPolicyFingerprint: string;
+  providerProfileRevision: number;
+  providerProfileFingerprint: string;
+  configFingerprint: string;
+  /** Non-secret arguments needed to recompute the same identity before send. */
+  identityInput: {
+    targetLanguage?: string;
+    sectionSelection?: number[];
+    providerId?: string;
+    capabilities?: ProviderCapabilities;
+    redaction?: Omit<RedactionOptions, 'secrets'>;
+  };
   /** INT-001: set once this approved preview was used for a send. */
   approvalUsed?: boolean;
   /** INT-007: the sections the operator allowed (Kotoha). */
@@ -239,6 +260,7 @@ export async function planHybridRequest(input: HybridRequestPlanInput): Promise<
     secrets: input.secrets ?? input.redaction?.secrets,
   };
 
+  const configFingerprint = hybridConfig.fingerprint();
   const preview = await buildPreflight({
     settings,
     built,
@@ -247,7 +269,20 @@ export async function planHybridRequest(input: HybridRequestPlanInput): Promise<
     toolId: input.toolId,
     body,
     tokenProfile: { charsPerToken: capabilities.charsPerToken },
+    provider: provider.profile,
   });
+
+  const identity = await requestIdentityOf({
+    input,
+    settings,
+    operatorInstruction,
+    examples,
+    provider,
+    capabilities,
+    savedPolicy,
+    configFingerprint,
+  });
+  const credentialSecret = input.secrets?.[0] ?? input.redaction?.secrets?.find((secret) => typeof secret === 'string' && secret.trim());
 
   return {
     settings,
@@ -259,48 +294,166 @@ export async function planHybridRequest(input: HybridRequestPlanInput): Promise<
     preview,
     body,
     settingsFingerprint: settingsFingerprint(settings),
-    inputsFingerprint: inputsFingerprintOf({
-      input,
-      settings,
-      operatorInstruction,
-      examples,
-    }),
+    inputsFingerprint: identity.fingerprint,
+    credentialRevision: input.credentialRevision ?? 0,
+    credentialFingerprint: credentialSecret ? await sha256Hex(credentialSecret) : null,
+    redactionPolicyRevision: identity.redactionPolicyRevision,
+    redactionPolicyFingerprint: identity.redactionPolicyFingerprint,
+    providerProfileRevision: identity.providerProfileRevision,
+    providerProfileFingerprint: identity.providerProfileFingerprint,
+    configFingerprint,
+    identityInput: {
+      targetLanguage: input.targetLanguage,
+      sectionSelection: input.sectionSelection,
+      providerId: input.providerId,
+      capabilities: input.capabilities,
+      redaction: input.redaction
+        ? {
+            customPatterns: input.redaction.customPatterns,
+            disabled: input.redaction.disabled,
+            compiled: input.redaction.compiled,
+            registry: input.redaction.registry,
+          }
+        : undefined,
+    },
     sendSections: limited ? { selected: limited.selected, excluded: limited.excluded } : undefined,
   };
 }
 
+type FingerprintInput = Pick<
+  HybridRequestPlanInput,
+  | 'toolId'
+  | 'source'
+  | 'sourceName'
+  | 'targetLanguage'
+  | 'sectionSelection'
+  | 'secrets'
+  | 'settings'
+  | 'redaction'
+  | 'providerId'
+  | 'capabilities'
+  | 'credentialRevision'
+>;
+
 interface FingerprintArgs {
-  input: Pick<HybridRequestPlanInput, 'toolId' | 'source' | 'sourceName' | 'targetLanguage' | 'sectionSelection' | 'secrets'>;
+  input: FingerprintInput;
   settings: ConnectionSettings;
   operatorInstruction: string;
   examples: Awaited<ReturnType<typeof listExamples>>;
+  provider: ProviderResolution;
+  capabilities: ProviderCapabilities;
+  savedPolicy: ReturnType<typeof redactionPolicyStore.read>;
+  configFingerprint: string;
 }
 
-/** The identity of every input that shaped a preview (INT-003). */
-function inputsFingerprintOf(args: FingerprintArgs): string {
-  return stableFingerprint({
+interface RequestIdentity {
+  fingerprint: string;
+  redactionPolicyRevision: number;
+  redactionPolicyFingerprint: string;
+  providerProfileRevision: number;
+  providerProfileFingerprint: string;
+}
+
+function exampleIdentity(example: Awaited<ReturnType<typeof listExamples>>[number]) {
+  return [
+    example.id,
+    example.toolId,
+    example.title,
+    example.role,
+    example.inputFileName ?? '',
+    example.inputText ?? '',
+    example.outputFileName ?? '',
+    example.outputText,
+    example.targetLanguage ?? '',
+    example.enabled,
+    example.estimatedTokens,
+  ];
+}
+
+function redactionIdentity(input: FingerprintArgs['input'], savedPolicy: FingerprintArgs['savedPolicy']) {
+  return {
+    customPatterns: [...savedPolicy.customPatterns, ...(input.redaction?.customPatterns ?? [])],
+    disabled: [...new Set([...savedPolicy.disabled, ...(input.redaction?.disabled ?? [])])],
+    compiled: (input.redaction?.compiled ?? []).map((rule) => ({
+      id: rule.id,
+      kind: rule.kind,
+      label: rule.label,
+      source: rule.pattern.source,
+      flags: rule.pattern.flags,
+      replacement: rule.replacement,
+    })),
+    registryFingerprint: input.redaction?.registry?.fingerprint() ?? redactionRegistry.fingerprint(),
+  };
+}
+
+async function requestIdentityOf(args: FingerprintArgs): Promise<RequestIdentity> {
+  const secrets = [...new Set((args.input.secrets ?? args.input.redaction?.secrets ?? [])
+    .filter((secret): secret is string => typeof secret === 'string' && secret.trim().length > 0)
+    .map((secret) => secret.trim()))];
+  const secretFingerprints = await Promise.all(secrets.map((secret) => sha256Hex(secret)));
+  const policyFingerprint = redactionPolicyFingerprint(args.savedPolicy);
+  const profileFingerprint = providerProfileFingerprint(args.provider.profile, args.settings.model);
+  const identity = {
     toolId: args.input.toolId,
     source: args.input.source,
     sourceName: args.input.sourceName,
     targetLanguage: args.input.targetLanguage ?? '',
     sectionSelection: args.input.sectionSelection ?? null,
     operatorInstruction: args.operatorInstruction,
-    examples: args.examples.filter((example) => example.enabled).map((example) => [example.id, example.estimatedTokens]),
+    examples: args.examples.map(exampleIdentity).sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
     settings: settingsFingerprint(args.settings),
-    secrets: (args.input.secrets ?? []).map((secret) => secret.length),
-  });
+    secrets: secretFingerprints,
+    credentialRevision: args.input.credentialRevision ?? 0,
+    redactionPolicyRevision: redactionPolicyStore.revision(),
+    redactionPolicy: {
+      fingerprint: policyFingerprint,
+      effective: redactionIdentity(args.input, args.savedPolicy),
+    },
+    providerProfileRevision: providerRegistry.revision(),
+    providerProfile: {
+      fingerprint: profileFingerprint,
+      capabilities: args.capabilities,
+    },
+    configFingerprint: args.configFingerprint,
+  };
+  return {
+    fingerprint: stableFingerprint(identity),
+    redactionPolicyRevision: identity.redactionPolicyRevision,
+    redactionPolicyFingerprint: policyFingerprint,
+    providerProfileRevision: identity.providerProfileRevision,
+    providerProfileFingerprint: profileFingerprint,
+  };
+}
+
+/** The identity of every input that shaped a preview (INT-003). */
+function inputsFingerprintOf(args: FingerprintArgs): Promise<string> {
+  return requestIdentityOf(args).then((identity) => identity.fingerprint);
 }
 
 /**
  * INT-003: re-reads the inputs a preview was built from and returns their identity.
- * The send path compares it with the preview's — a prompt edit, a few-shot change or
- * a settings change between the preview and the socket invalidates the approval.
+ * The send path compares it with the preview's — a prompt, few-shot, credential,
+ * policy, profile or configuration change invalidates the approval.
  */
-export async function inputsFingerprintFor(
-  input: Pick<HybridRequestPlanInput, 'toolId' | 'source' | 'sourceName' | 'targetLanguage' | 'sectionSelection' | 'secrets' | 'settings'>,
-): Promise<string> {
+export async function inputsFingerprintFor(input: FingerprintInput): Promise<string> {
   const settings = input.settings ?? connectionSettingsStore.read();
   const operatorInstruction = readPrompt(input.toolId);
   const examples = await listExamples(input.toolId);
-  return inputsFingerprintOf({ input, settings, operatorInstruction, examples });
+  const provider = providerRegistry.resolve({
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+    providerId: input.providerId || settings.providerId || undefined,
+  });
+  const capabilities = input.capabilities ?? provider.capabilities;
+  const savedPolicy = redactionPolicyStore.read();
+  return inputsFingerprintOf({
+    input,
+    settings,
+    operatorInstruction,
+    examples,
+    provider,
+    capabilities,
+    savedPolicy,
+    configFingerprint: hybridConfig.fingerprint(),
+  });
 }
