@@ -12,6 +12,7 @@
  */
 
 import { HybridError } from './errors';
+import { createSseEventDecoder, type SseEvent } from './streamCodec';
 
 export interface StreamUsage {
   inputTokens: number;
@@ -107,65 +108,51 @@ export function parseSseData(data: string): StreamEvent[] {
   return events;
 }
 
-export function createSseParser(): SseParser {
-  let buffer = '';
-  let dataLines: string[] = [];
+export interface SseParserOptions {
+  /** Overrides the configured SSE line ceiling (tests use small values). */
+  maxLineChars?: number;
+  maxEventDataChars?: number;
+}
+
+/**
+ * The parser the provider uses. Framing (UTF-8 sequences, line terminators,
+ * incomplete lines, duplicate flush) is handled by `streamCodec`; this function
+ * only maps a complete `data:` payload to typed events (C-FIX-004).
+ */
+export function createSseParser(options: SseParserOptions = {}): SseParser {
+  const decoder = createSseEventDecoder({
+    maxLineChars: options.maxLineChars,
+    maxEventDataChars: options.maxEventDataChars,
+  });
   let done = false;
 
-  const dispatch = (events: StreamEvent[]) => {
-    if (!dataLines.length) return;
-    const data = dataLines.join('\n');
-    dataLines = [];
-    const parsed = parseSseData(data);
-    for (const event of parsed) {
-      if (event.type === 'done') done = true;
-      events.push(event);
+  const toEvents = (framed: SseEvent[]): StreamEvent[] => {
+    const events: StreamEvent[] = [];
+    for (const problem of decoder.takeProblems()) {
+      events.push({ type: 'error', error: new HybridError('unsupported-format', problem.message) });
     }
-  };
-
-  const processLine = (line: string, events: StreamEvent[]) => {
-    if (line.trim() === '') {
-      dispatch(events);
-      return;
+    for (const frame of framed) {
+      if (done) break;
+      const parsed = parseSseData(frame.data);
+      for (const event of parsed) {
+        if (event.type === 'done') done = true;
+        events.push(event);
+        if (event.type === 'error') break;
+      }
     }
-    if (line.startsWith(':')) return; // comment / keep-alive
-    const colon = line.indexOf(':');
-    const field = colon === -1 ? line : line.slice(0, colon);
-    let value = colon === -1 ? '' : line.slice(colon + 1);
-    if (value.startsWith(' ')) value = value.slice(1);
-    if (field === 'data') dataLines.push(value);
-    // `event:`, `id:` and `retry:` carry nothing we use.
+    return events;
   };
 
   return {
     push(chunk: string): StreamEvent[] {
-      const events: StreamEvent[] = [];
-      if (done || !chunk) return events;
-      buffer += chunk;
-      let index = buffer.indexOf('\n');
-      while (index !== -1) {
-        let line = buffer.slice(0, index);
-        buffer = buffer.slice(index + 1);
-        if (line.endsWith('\r')) line = line.slice(0, -1);
-        processLine(line, events);
-        if (done) return events;
-        index = buffer.indexOf('\n');
-      }
-      return events;
+      if (done || !chunk) return [];
+      return toEvents(decoder.push(chunk));
     },
-
     flush(): StreamEvent[] {
-      const events: StreamEvent[] = [];
-      if (done) return events;
-      if (buffer) {
-        const line = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer;
-        buffer = '';
-        processLine(line, events);
-      }
-      dispatch(events);
-      return events;
+      if (done) return [];
+      // The decoder dispatches its last partial event exactly once.
+      return toEvents(decoder.finish());
     },
-
     get terminated() {
       return done;
     },

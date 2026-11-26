@@ -21,6 +21,13 @@
  */
 
 import { estimateTokens } from '../../lib/fewShotStore';
+import {
+  allocateContext,
+  selectSourceForAllocation,
+  safetyMarginFor as allocationSafetyMarginFor,
+  type ContextAllocation,
+  type ContextProfile,
+} from './contextAllocator';
 
 export const TOKEN_ESTIMATE_ACCURACY = 0.2;
 
@@ -63,6 +70,8 @@ export interface SourceSelection {
 }
 
 export interface BudgetPlan {
+  /** The per-section allocation this plan was computed from (C-FIX-002). */
+  allocation: ContextAllocation;
   contextLimit: number;
   maxOutputTokens: number;
   safetyMargin: number;
@@ -81,9 +90,13 @@ export interface BudgetPlan {
   notes: string[];
 }
 
-/** A 5 % (capped) margin absorbs the estimate error and the chat template overhead. */
-export function safetyMarginFor(contextLimit: number): number {
-  return Math.max(128, Math.min(2048, Math.round(contextLimit * 0.05)));
+/**
+ * A 5 % (capped) margin absorbs the estimate error and the chat template
+ * overhead. The numbers come from the configuration SSoT (C-FIX-008) and a
+ * provider profile may override them for a model with a different tokenisation.
+ */
+export function safetyMarginFor(contextLimit: number, profile?: ContextProfile): number {
+  return allocationSafetyMarginFor(contextLimit, profile);
 }
 
 const UNIT_START: Array<{ kind: SourceUnit['kind']; pattern: RegExp }> = [
@@ -193,18 +206,29 @@ export function selectSourceWithinBudget(units: SourceUnit[], allowanceTokens: n
   };
 }
 
-export function planBudget(parts: BudgetParts, settings: BudgetSettings): BudgetPlan {
-  const safetyMargin = safetyMarginFor(settings.contextLimit);
-  const inputAllowance = Math.max(
-    0,
-    Math.min(settings.maxInputTokens, settings.contextLimit - settings.maxOutputTokens - safetyMargin),
-  );
-  const overheadTokens =
-    parts.systemTokens + parts.operatorTokens + parts.localAnalysisTokens + parts.schemaTokens + parts.fewShotTokens;
-  const sourceBudget = Math.max(0, inputAllowance - overheadTokens);
+export interface BudgetPolicy {
+  /** Model/profile ceilings the user settings are clamped to (C-FIX-002/007). */
+  profile?: ContextProfile;
+  /** Terms from the operator instruction; empty keeps the top-of-file order. */
+  focusTerms?: string[];
+}
+
+export function planBudget(parts: BudgetParts, settings: BudgetSettings, policy: BudgetPolicy = {}): BudgetPlan {
+  const allocation = allocateContext(parts, settings, policy.profile);
+  const contextLimit = allocation.contextLimit;
+  const maxOutputTokens = allocation.maxOutputTokens;
+  const safetyMargin = allocation.safetyMargin;
+  const inputAllowance = allocation.inputAllowance;
+  const overheadTokens = allocation.overheadTokens;
+  const sourceBudget = allocation.sourceBudget;
+
   const units = splitSourceIntoUnits(parts.source);
-  const selection = selectSourceWithinBudget(units, sourceBudget);
-  const notes: string[] = [TOKENIZER_NOTE];
+  const selection = selectSourceForAllocation(units, sourceBudget, {
+    headShare: allocation.headShare,
+    focusTerms: policy.focusTerms ?? [],
+  });
+
+  const notes: string[] = [TOKENIZER_NOTE, ...allocation.notes];
 
   let fits = true;
   let reason: BudgetPlan['reason'];
@@ -232,11 +256,19 @@ export function planBudget(parts: BudgetParts, settings: BudgetSettings): Budget
   if (parts.fewShotTokens > settings.fewShotTokenBudget) {
     notes.push('Few-shot が予算を超えています。選択された例だけが送信対象です。');
   }
+  const fewShotTrimmed = allocation.sections.find((section) => section.name === 'fewShot');
+  if (fewShotTrimmed?.truncated && parts.fewShotTokens <= settings.fewShotTokenBudget) {
+    notes.push('モデル枠を守るため、Few-shot を配分上限まで絞りました。');
+  }
+  if (allocation.clampedByProfile) {
+    notes.push(`モデルのコンテキスト上限（${contextLimit.toLocaleString('ja-JP')} tokens）に合わせて配分しました。`);
+  }
 
   const estimatedInputTokens = overheadTokens + selection.tokens;
   return {
-    contextLimit: settings.contextLimit,
-    maxOutputTokens: settings.maxOutputTokens,
+    allocation,
+    contextLimit,
+    maxOutputTokens,
     safetyMargin,
     inputAllowance,
     fewShotBudget: settings.fewShotTokenBudget,

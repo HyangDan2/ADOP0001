@@ -3,6 +3,7 @@ import type { ToolId } from '../adapters/types';
 import type { ToolOptions, ToolOutput } from '../engine/core/contracts';
 import { applyAccepted, PROVENANCE_LABEL, runHybridPass, type HybridPassOutcome } from '../engine/hybrid/orchestrator';
 import { planHybridRequest, type HybridRequestPlan } from '../engine/hybrid/requestPlan';
+import { sharedLifecycleRegistry } from '../engine/hybrid/lifecycle';
 import { connectionSettingsStore, sessionApiKey } from '../engine/hybrid/settings';
 import { NO_PRICE_LABEL, telemetryRows } from '../engine/hybrid/telemetry';
 import type { HybridSession, HybridStatus } from '../engine/hybrid/streamEngine';
@@ -165,6 +166,10 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
         // Read at send time: a switch to Mode A while the preview is open must
         // stop the request before it leaves the tab.
         engineMode: getEngineMode(),
+        // One request per tool: a second start is refused by the registry instead
+        // of racing the first one (C-FIX-003).
+        lifecycleRegistry: sharedLifecycleRegistry,
+        lifecycleScope: props.toolId,
         approve: () => true, // the consent box below is the approval of this payload
         isCurrent: () => revision.current === startedAt,
         targetLanguage: props.targetLanguage ?? spec.targetLanguage,
@@ -324,9 +329,12 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
                     </div>
                     <div>
                       <dt>ソース範囲</dt>
-                      <dd>
-                        {plan.preview.scope.includedRanges.join(', ') || '—'}
-                        {plan.preview.scope.sourceTruncated ? '（一部を除外）' : ''}
+                      {/* C-FIX-002: the range shown here is the range that is sent. */}
+                      <dd data-testid="hybrid-preview-scope">
+                        対象ソース {plan.preview.sourceFileName}: {plan.preview.scope.includedRanges.join(', ') || '—'}
+                        {plan.preview.scope.sourceTruncated
+                          ? `（一部を除外: ${plan.preview.scope.excludedRanges.join(', ')}）`
+                          : ''}
                       </dd>
                     </div>
                   </dl>
@@ -448,6 +456,11 @@ export function HybridAssist<K extends ToolId>(props: Props<K>) {
                       </div>
                     ))}
                   </dl>
+                  {outcome.payloadDigest ? (
+                    <p className="hybrid-note" data-testid="hybrid-payload-digest">
+                      送信スナップショット SHA-256: {outcome.payloadDigest.slice(0, 16)}…（承認した内容と一致）
+                    </p>
+                  ) : null}
                 </details>
 
                 {outcome.proposals.length ? (

@@ -35,7 +35,6 @@ import { planHybridRequest, type HybridRequestPlan } from './requestPlan';
 import { toHybridSettings, type ConnectionSettings } from './settings';
 import {
   createHybridSession,
-  responseCharCapFor,
   runGatewayRequest,
   TERMINAL_STAGES,
   type GatewayResult,
@@ -47,6 +46,18 @@ import {
 import { toolHybridSpec } from './tools';
 import { buildTelemetry, type HybridTelemetry } from './telemetry';
 import { describeActiveContent, findActiveContent } from './sanitize';
+import { createEvidenceLog, executionFindings, type EvidenceLog, type EvidenceRecord } from './evidence';
+import type { LifecycleRegistry, LifecycleState, RequestLifecycle } from './lifecycle';
+import { providerRegistry } from './providerProfiles';
+import { policyForProfile } from './resourcePolicy';
+import { redactionRegistry } from './redaction';
+import {
+  assertSnapshotIntegrity,
+  sealRequestSnapshot,
+  verifyRequestSnapshot,
+  type RequestSnapshot,
+  type SnapshotProblem,
+} from './requestSnapshot';
 
 export type HybridProvenance = 'local-static' | 'hybrid-ai' | 'local-fallback';
 
@@ -83,6 +94,14 @@ export interface HybridPassInput<K extends ToolId> {
   isCurrent?: () => boolean;
   targetLanguage?: string;
   now?: () => number;
+  /** Shared single-flight registry: one active request per scope (C-FIX-003). */
+  lifecycleRegistry?: LifecycleRegistry;
+  /** Scope key for the registry; defaults to the tool id. */
+  lifecycleScope?: string;
+  /** Evidence log to append to (C-FIX-009); a fresh in-memory log when omitted. */
+  evidenceLog?: EvidenceLog;
+  /** Explicit provider profile id (C-FIX-007). */
+  providerId?: string;
   onStatus?: (status: HybridStatus) => void;
   onSession?: (session: HybridSession) => void;
   onDelta?: (chunk: string, total: string) => void;
@@ -123,6 +142,20 @@ export interface HybridPassOutcome<K extends ToolId> {
   aiText: string | null;
   /** False when the caller moved on while this pass was running (stale). */
   applied: boolean;
+  /** The sealed payload that was transmitted (C-FIX-001); null when nothing was sent. */
+  snapshot: RequestSnapshot | null;
+  /** Chain digest of the sealed payload, for the in-tab evidence row. */
+  payloadDigest: string | null;
+  /** The request's final lifecycle state (C-FIX-003). */
+  lifecycleState: LifecycleState | null;
+  /** True when the answer arrived as SSE deltas; null when nothing was received. */
+  streamed: boolean | null;
+  /** True only when the stream saw `[DONE]` / `finish_reason`. */
+  terminated: boolean | null;
+  /** Bytes the transport accepted for the answer (C-FIX-005). */
+  responseBytes: number | null;
+  /** Tamper-evident record for this run (C-FIX-009); filled by the pass wrapper. */
+  evidence: EvidenceRecord | null;
 }
 
 /** Applies accepted proposals through the tool's own merge function. */
@@ -168,12 +201,86 @@ export function reuseLocalOutput<K extends ToolId>(
   };
 }
 
+/**
+ * Runs one hybrid pass and appends its evidence record (C-FIX-009). The core pass
+ * is unchanged in ordering; the wrapper only exists so the record is written once,
+ * after the outcome is final, instead of at every early return.
+ */
 export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>): Promise<HybridPassOutcome<K>> {
+  const outcome = await runHybridPassCore(input);
+  const log = input.evidenceLog ?? createEvidenceLog();
+  const evidence = await log.append(evidenceDraftFor(input, outcome));
+  return { ...outcome, evidence };
+}
+
+/** The record a run leaves behind: payload digest, actual numbers, findings. */
+export function evidenceDraftFor<K extends ToolId>(
+  input: HybridPassInput<K>,
+  outcome: HybridPassOutcome<K>,
+): Parameters<EvidenceLog['append']>[0] {
+  const execution = {
+    stage: outcome.stage,
+    providerMode: outcome.provenance,
+    engineMode: input.engineMode ?? 'hybrid',
+    streamed: outcome.streamed === true,
+    terminated: outcome.terminated,
+    finishReason: outcome.telemetry.finishReason,
+    usageSource: outcome.telemetry.usageSource,
+    inputTokens: outcome.telemetry.inputTokens,
+    outputTokens: outcome.telemetry.outputTokens,
+    elapsedMs: outcome.telemetry.elapsedMs,
+    ttftMs: outcome.telemetry.ttftMs,
+    receivedChars: (outcome.aiText ?? '').length,
+    responseBytes: outcome.responseBytes,
+  };
+  const counts = {
+    redactions: outcome.redactionCount,
+    proposals: outcome.proposals.length,
+    rejected: outcome.rejected.length,
+    retries: outcome.telemetry.retryCount,
+  };
+  const draft = {
+    requestId: outcome.requestId,
+    toolId: input.toolId,
+    execution,
+    snapshot: outcome.snapshot
+      ? {
+          payloadDigest: outcome.snapshot.payloadDigest,
+          consentDigest: outcome.snapshot.consentDigest,
+          configFingerprint: outcome.snapshot.configFingerprint,
+          destinationHost: outcome.snapshot.destinationHost,
+          model: outcome.snapshot.model,
+          approvedAt: outcome.snapshot.approvedAt,
+        }
+      : null,
+    counts,
+    reason: outcome.reason,
+    estimatedInputTokens: outcome.plan?.preview.estimatedInputTokens ?? null,
+  };
+  // The findings are computed by the log as well; comparing them here keeps the
+  // draft honest when a caller inspects it before appending.
+  void executionFindings(draft);
+  return draft;
+}
+
+async function runHybridPassCore<K extends ToolId>(input: HybridPassInput<K>): Promise<HybridPassOutcome<K>> {
   const spec = toolHybridSpec(input.toolId);
   const clock = input.now ?? (() => Date.now());
   const startedAt = clock();
   const engineMode: EngineMode = input.engineMode ?? 'hybrid';
-  const session = createHybridSession({ signal: input.signal, now: input.now, onStatus: input.onStatus });
+  /** Assigned once the local result exists, before anything can be sent. */
+  let lifecycle: RequestLifecycle | null = null;
+  /** The sealed payload (C-FIX-001); null until an approval produced one. */
+  let snapshot: RequestSnapshot | null = null;
+  const session = createHybridSession({
+    signal: input.signal,
+    now: input.now,
+    onStatus: (status) => {
+      // The lifecycle mirrors the session without ever throwing on a late event.
+      lifecycle?.mirror(status.stage);
+      input.onStatus?.(status);
+    },
+  });
   input.onSession?.(session);
   session.enter('preflight');
 
@@ -181,6 +288,10 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
   /** Known once the preview exists; the telemetry reads it for host/model/redactions. */
   let plan: HybridRequestPlan | null = null;
   let gatewayFinishReason: string | null = null;
+  /** Actual transport facts, recorded for the evidence (C-FIX-009). */
+  let gatewayStreamed: boolean | null = null;
+  let gatewayTerminated: boolean | null = null;
+  let gatewayBytes: number | null = null;
 
   const finish = (
     fields: Partial<HybridPassOutcome<K>> & Pick<HybridPassOutcome<K>, 'local' | 'provenance'>,
@@ -213,7 +324,7 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
       proposalCount: proposals.length,
       rejectedCount: rejected.length,
     });
-    return {
+    const outcome: HybridPassOutcome<K> = {
       stage: session.stage(),
       status,
       output: fields.local.output,
@@ -234,8 +345,21 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
       telemetry,
       aiText: null,
       applied: true,
+      snapshot,
+      payloadDigest: snapshot?.payloadDigest ?? null,
+      lifecycleState: lifecycle?.state() ?? null,
+      streamed: gatewayStreamed,
+      terminated: gatewayTerminated,
+      responseBytes: gatewayBytes,
+      evidence: null,
       ...fields,
     };
+    if (lifecycle) {
+      lifecycle.mirror(session.stage(), reason ?? undefined);
+      lifecycle.dispose(reason ?? undefined);
+    }
+    session.dispose();
+    return outcome;
   };
 
   const cancel = (reason: string, local: EngineRunResult<K>, plan: HybridRequestPlan | null, extra: Partial<HybridPassOutcome<K>> = {}) => {
@@ -266,6 +390,21 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
     session.markStale();
     const outcome = cancel('入力が変更されたため、この AI 実行は破棄しました。', local, null);
     return { ...outcome, applied: false };
+  }
+
+  // C-FIX-003: one active request per scope. The registry refuses a duplicate
+  // instead of letting two passes race for the same tool pane.
+  if (input.lifecycleRegistry) {
+    const began = input.lifecycleRegistry.begin(input.lifecycleScope ?? input.toolId, {
+      signal: input.signal,
+      now: input.now,
+    });
+    if (!began.ok) {
+      session.enter('cancelled', began.message);
+      return finish({ local, provenance: 'local-static', reason: began.message });
+    }
+    lifecycle = began.lifecycle;
+    lifecycle.mirror('preflight');
   }
 
   // Mode A: the local result is the artifact. The check runs before a prompt is
@@ -332,19 +471,68 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
     return fallback(error.message, error.failure, local, plan);
   }
 
+  // C-FIX-001: seal exactly what the user approved. The digest covers endpoint,
+  // model, messages, approval time and the configuration fingerprint; the copy is
+  // frozen, so a later mutation throws instead of changing the payload.
+  const destination = plan.preview.destination;
+  if (!destination) {
+    return fallback('宛先が確認できないため送信できません。', 'invalid-settings', local, plan);
+  }
+  try {
+    snapshot = await sealRequestSnapshot({
+      requestId: session.requestId,
+      toolId: input.toolId,
+      endpoint: destination.endpoint,
+      model: plan.preview.model,
+      destinationHost: destination.host,
+      messages: plan.preview.messages,
+      previewFingerprint: plan.preview.fingerprint,
+      approvedAt: new Date(clock()).toISOString(),
+      sourceFileName: plan.preview.sourceFileName,
+      redaction: {
+        total: plan.preview.redaction.total,
+        byKind: { ...plan.preview.redaction.byKind } as Record<string, number>,
+        registryFingerprint: redactionRegistry.fingerprint(),
+      },
+    });
+    await assertSnapshotIntegrity(snapshot, {
+      endpoint: destination.endpoint,
+      model: plan.preview.model,
+      destinationHost: destination.host,
+      previewFingerprint: plan.preview.fingerprint,
+    });
+  } catch (cause) {
+    const error = toHybridError(cause);
+    return fallback(error.message, error.failure, local, plan);
+  }
+
   // 8. The gateway request, under the session (Stop, timeout, receive cap).
+  const resolution = providerRegistry.resolve({
+    baseUrl: input.settings.baseUrl,
+    model: input.settings.model,
+    providerId: input.providerId,
+  });
   const provider =
     input.provider ??
     new OpenAiCompatibleProvider({
+      // The profile decides streaming support, the endpoint path and the phase
+      // timeouts (C-FIX-005/007); the user's numbers still bound the request.
+      profile: resolution.profile,
       defaults: {
         timeoutMs: input.settings.requestTimeoutMs,
         maxOutputTokens: input.settings.maxOutputTokens,
         temperature: input.settings.temperature,
       },
     });
+  const policy = policyForProfile(resolution.profile, {
+    requestTimeoutMs: input.settings.requestTimeoutMs,
+    maxOutputTokens: input.settings.maxOutputTokens,
+    maxInputTokens: input.settings.maxInputTokens,
+  });
   const request: HybridProviderRequest = {
     settings: toHybridSettings(input.settings, input.apiKey ?? null, true),
-    messages: plan.preview.messages,
+    // The frozen snapshot is what leaves the tab, not the preview's array.
+    messages: snapshot.messages.map((message) => ({ role: message.role, content: message.content })),
     budget: {
       maxInputTokens: input.settings.maxInputTokens,
       maxOutputTokens: input.settings.maxOutputTokens,
@@ -354,14 +542,30 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
     signal: session.signal,
   };
 
+  // A second, independent check immediately before the socket: recompute the
+  // digest and the approval fingerprint from the payload we are holding.
+  const preSend = await verifyRequestSnapshot(snapshot, {
+    endpoint: destination.endpoint,
+    model: plan.preview.model,
+    destinationHost: destination.host,
+    previewFingerprint: plan.preview.fingerprint,
+  });
+  if (!preSend.ok) {
+    const problem: SnapshotProblem = preSend.problems[0];
+    return fallback(problem.message, 'approval', local, plan);
+  }
+
   let gateway: GatewayResult;
   try {
     gateway = await runGatewayRequest({
       provider,
       request,
       session,
-      streaming: input.settings.streaming && typeof provider.completeStream === 'function',
-      maxResponseChars: input.maxResponseChars ?? responseCharCapFor(input.settings.maxOutputTokens),
+      streaming:
+        input.settings.streaming &&
+        resolution.capabilities.streaming &&
+        typeof provider.completeStream === 'function',
+      maxResponseChars: input.maxResponseChars ?? policy.limits.maxResponseChars,
       onDelta: input.onDelta,
     });
   } catch (cause) {
@@ -379,6 +583,9 @@ export async function runHybridPass<K extends ToolId>(input: HybridPassInput<K>)
     return fallback(error.message, error.failure, local, plan, { aiText: session.text() || null });
   }
   gatewayFinishReason = gateway.finishReason;
+  gatewayStreamed = gateway.streamed;
+  gatewayTerminated = gateway.terminated;
+  gatewayBytes = gateway.responseBytes;
 
   if (stale()) {
     session.markStale();

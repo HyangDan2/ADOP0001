@@ -26,7 +26,9 @@
  */
 
 import type { HybridProvider, HybridProviderRequest, HybridProviderResponse } from './contracts';
+import { hybridConfig } from './config';
 import { HybridError, toHybridError } from './errors';
+import { responseCharCapFor as policyCharCap } from './resourcePolicy';
 import type { StreamUsage } from './streamParser';
 import { newRequestId } from './telemetry';
 
@@ -138,6 +140,11 @@ export interface HybridSession {
   isCurrent(): boolean;
   /** Marks the session stale; the orchestrator then discards its result. */
   markStale(): void;
+  /**
+   * Releases the caller-signal listener (C-FIX-003). A session that ends must not
+   * keep a closure on an unmounted component's signal.
+   */
+  dispose(): void;
 }
 
 export const DEFAULT_PREVIEW_CHARS = 4000;
@@ -247,6 +254,9 @@ export function createHybridSession(options: HybridSessionOptions = {}): HybridS
     markStale() {
       stale = true;
     },
+    dispose() {
+      options.signal?.removeEventListener('abort', onExternalAbort);
+    },
   };
 }
 
@@ -254,14 +264,16 @@ export function createHybridSession(options: HybridSessionOptions = {}): HybridS
 /* Gateway request                                                     */
 /* ------------------------------------------------------------------ */
 
-/** Default receive cap. Derived from the output cap by the orchestrator. */
-export const DEFAULT_MAX_RESPONSE_CHARS = 200_000;
+/** Default receive cap; the value comes from the configuration SSoT (C-FIX-008). */
+export const DEFAULT_MAX_RESPONSE_CHARS = hybridConfig.read().stream.defaultReceiveCap;
 
-export function responseCharCapFor(maxOutputTokens: number, slack = 1.5): number {
-  const tokens = Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens : 4096;
-  // ~4 characters per token is the usual English estimate; the slack absorbs
-  // CJK answers, which use more tokens per character than Latin text.
-  return Math.max(4096, Math.ceil(tokens * 4 * slack));
+/**
+ * Derived from the output cap. The implementation now lives in
+ * `resourcePolicy` (C-FIX-005) so the provider, the engine and the profile agree;
+ * it is re-exported here because the engine and its tests refer to it.
+ */
+export function responseCharCapFor(maxOutputTokens: number, slack?: number): number {
+  return policyCharCap(maxOutputTokens, slack);
 }
 
 export interface GatewayRequestParams {
@@ -280,6 +292,10 @@ export interface GatewayResult {
   usage: HybridUsage | null;
   finishReason: string | null;
   streamed: boolean;
+  /** `true` only when the stream ended with `[DONE]` / `finish_reason`. */
+  terminated: boolean | null;
+  /** Bytes accepted by the transport (C-FIX-005/009). */
+  responseBytes: number | null;
 }
 
 export class ReceiveCapExceededError extends HybridError {
@@ -353,6 +369,8 @@ export async function runGatewayRequest(params: GatewayRequestParams): Promise<G
       usage,
       finishReason: response.finishReason ?? null,
       streamed: params.streaming && Boolean(streamFn),
+      terminated: response.streamTerminated ?? null,
+      responseBytes: response.responseBytes ?? null,
     };
   } catch (cause) {
     if (capExceeded) throw new ReceiveCapExceededError(cap);

@@ -82,6 +82,8 @@ export function failureFor(kind: HybridErrorKind): HybridFailure {
       return 'offline';
     case 'schema':
       return 'schema';
+    case 'approval':
+      return 'approval';
     default:
       return 'provider';
   }

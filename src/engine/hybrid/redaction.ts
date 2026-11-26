@@ -1,5 +1,5 @@
 /**
- * WO-06 — redaction.
+ * WO-06 / C-FIX-006 — redaction.
  *
  * The prompt is redacted after it is built and before it is shown to the user for
  * approval, so the preflight preview and the request body are the same text. Every
@@ -10,122 +10,31 @@
  * (`[REDACTED_API_KEY]`, `[REDACTED_PRIVATE_KEY]`, …) and countable per kind. A
  * custom pattern that does not compile is an error, not a silent skip: the caller
  * must refuse to send rather than believe it was redacted.
+ *
+ * The builtin patterns are data (`BUILTIN_REDACTION_PATTERNS`) held in the
+ * redaction registry (C-FIX-006), so a deployment can disable one or register an
+ * extra pattern at runtime without editing the engine.
  */
 
-export type RedactionKind =
-  | 'api-key'
-  | 'access-token'
-  | 'authorization'
-  | 'password'
-  | 'private-key'
-  | 'connection-string'
-  | 'credential-url'
-  | 'jwt'
-  | 'custom';
+import { hybridConfig } from './config';
+import {
+  createRedactionRegistry,
+  type RedactionKind,
+  type RedactionPatternInput,
+  type RedactionRegistry,
+  type RedactionRule,
+  type ResolvedPatterns,
+} from './redactionRegistry';
 
-export interface RedactionRule {
+export type { RedactionKind, RedactionRule, RedactionRegistry } from './redactionRegistry';
+
+export interface CustomRedactionPattern {
   id: string;
-  kind: RedactionKind;
-  label: string;
-  pattern: RegExp;
-  /** Keeps the matched key name and replaces only the value. */
-  replacement: string;
+  /** Regular expression source; flags come from `flags`. */
+  pattern: string;
+  flags?: string;
+  label?: string;
 }
-
-const RULES: RedactionRule[] = [
-  {
-    id: 'private-key',
-    kind: 'private-key',
-    label: '秘密鍵ブロック',
-    pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
-    replacement: '[REDACTED_PRIVATE_KEY]',
-  },
-  {
-    id: 'connection-string',
-    kind: 'connection-string',
-    label: '接続文字列',
-    pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|mssql|sqlserver):\/\/[^\s"'<>]+/gi,
-    replacement: '[REDACTED_CONNECTION_STRING]',
-  },
-  {
-    id: 'credential-url',
-    kind: 'credential-url',
-    label: '認証情報つき URL',
-    pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@<>"']+:[^\s/@<>"']+@[^\s"'<>]+/gi,
-    replacement: '[REDACTED_CREDENTIAL_URL]',
-  },
-  {
-    id: 'shared-key',
-    kind: 'access-token',
-    label: 'SharedAccessKey / AccountKey',
-    pattern: /\b(?:AccountKey|SharedAccessKey|SharedAccessSignature|sig)=[A-Za-z0-9+/=%]{16,}/g,
-    replacement: '[REDACTED_ACCESS_TOKEN]',
-  },
-  {
-    id: 'openai-key',
-    kind: 'api-key',
-    label: 'API キー（sk-/pk-/rk-）',
-    pattern: /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}\b/g,
-    replacement: '[REDACTED_API_KEY]',
-  },
-  {
-    id: 'aws-key',
-    kind: 'api-key',
-    label: 'AWS アクセスキー',
-    pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
-    replacement: '[REDACTED_API_KEY]',
-  },
-  {
-    id: 'github-token',
-    kind: 'access-token',
-    label: 'GitHub トークン',
-    pattern: /\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{20,}\b/g,
-    replacement: '[REDACTED_ACCESS_TOKEN]',
-  },
-  {
-    id: 'slack-token',
-    kind: 'access-token',
-    label: 'Slack トークン',
-    pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
-    replacement: '[REDACTED_ACCESS_TOKEN]',
-  },
-  {
-    id: 'google-key',
-    kind: 'api-key',
-    label: 'Google API キー',
-    pattern: /\bAIza[0-9A-Za-z_-]{30,}\b/g,
-    replacement: '[REDACTED_API_KEY]',
-  },
-  {
-    id: 'jwt',
-    kind: 'jwt',
-    label: 'JWT',
-    pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
-    replacement: '[REDACTED_JWT]',
-  },
-  {
-    id: 'authorization-header',
-    kind: 'authorization',
-    label: 'Authorization ヘッダ',
-    pattern: /\b(authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)?\s*[A-Za-z0-9._~+/=-]{6,}/gi,
-    replacement: 'Authorization: [REDACTED_AUTHORIZATION]',
-  },
-  {
-    id: 'bearer-token',
-    kind: 'access-token',
-    label: 'Bearer トークン',
-    pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{10,}/g,
-    replacement: 'Bearer [REDACTED_ACCESS_TOKEN]',
-  },
-  {
-    id: 'password-assignment',
-    kind: 'password',
-    label: 'パスワード / シークレット代入',
-    pattern:
-      /\b(password|passwd|pwd|secret|client[_-]?secret|access[_-]?token|api[_-]?key|apikey|auth[_-]?token)\b\s*["']?\s*[:=]\s*["']?(?!\[REDACTED)[^\s"',;)}\]]{4,}/gi,
-    replacement: '$1=[REDACTED_PASSWORD]',
-  },
-];
 
 const REPLACEMENT_FOR: Record<RedactionKind, string> = {
   'api-key': '[REDACTED_API_KEY]',
@@ -139,17 +48,153 @@ const REPLACEMENT_FOR: Record<RedactionKind, string> = {
   custom: '[REDACTED_CUSTOM]',
 };
 
+/**
+ * The Phase 5C pattern set, in the same application order as before, now with a
+ * declared priority. A higher priority runs first so a specific pattern (a PEM
+ * block) always wins over a general one (a password assignment inside it).
+ */
+export const BUILTIN_REDACTION_PATTERNS: readonly RedactionPatternInput[] = [
+  {
+    id: 'private-key',
+    kind: 'private-key',
+    label: '秘密鍵ブロック',
+    priority: 120,
+    enabled: true,
+    pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+    replacement: '[REDACTED_PRIVATE_KEY]',
+  },
+  {
+    id: 'connection-string',
+    kind: 'connection-string',
+    label: '接続文字列',
+    priority: 110,
+    enabled: true,
+    pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|mssql|sqlserver):\/\/[^\s"'<>]+/gi,
+    replacement: '[REDACTED_CONNECTION_STRING]',
+  },
+  {
+    id: 'credential-url',
+    kind: 'credential-url',
+    label: '認証情報つき URL',
+    priority: 100,
+    enabled: true,
+    pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@<>"']+:[^\s/@<>"']+@[^\s"'<>]+/gi,
+    replacement: '[REDACTED_CREDENTIAL_URL]',
+  },
+  {
+    id: 'shared-key',
+    kind: 'access-token',
+    label: 'SharedAccessKey / AccountKey',
+    priority: 90,
+    enabled: true,
+    pattern: /\b(?:AccountKey|SharedAccessKey|SharedAccessSignature|sig)=[A-Za-z0-9+/=%]{16,}/g,
+    replacement: '[REDACTED_ACCESS_TOKEN]',
+  },
+  {
+    id: 'openai-key',
+    kind: 'api-key',
+    label: 'API キー（sk-/pk-/rk-）',
+    priority: 85,
+    enabled: true,
+    pattern: /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}\b/g,
+    replacement: '[REDACTED_API_KEY]',
+  },
+  {
+    id: 'aws-key',
+    kind: 'api-key',
+    label: 'AWS アクセスキー',
+    priority: 84,
+    enabled: true,
+    pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
+    replacement: '[REDACTED_API_KEY]',
+  },
+  {
+    id: 'github-token',
+    kind: 'access-token',
+    label: 'GitHub トークン',
+    priority: 80,
+    enabled: true,
+    pattern: /\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{20,}\b/g,
+    replacement: '[REDACTED_ACCESS_TOKEN]',
+  },
+  {
+    id: 'slack-token',
+    kind: 'access-token',
+    label: 'Slack トークン',
+    priority: 70,
+    enabled: true,
+    pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
+    replacement: '[REDACTED_ACCESS_TOKEN]',
+  },
+  {
+    id: 'google-key',
+    kind: 'api-key',
+    label: 'Google API キー',
+    priority: 60,
+    enabled: true,
+    pattern: /\bAIza[0-9A-Za-z_-]{30,}\b/g,
+    replacement: '[REDACTED_API_KEY]',
+  },
+  {
+    id: 'jwt',
+    kind: 'jwt',
+    label: 'JWT',
+    priority: 55,
+    enabled: true,
+    pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+    replacement: '[REDACTED_JWT]',
+  },
+  {
+    id: 'authorization-header',
+    kind: 'authorization',
+    label: 'Authorization ヘッダ',
+    priority: 40,
+    enabled: true,
+    pattern:
+      /\b(authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)?\s*[A-Za-z0-9._~+/=-]{6,}/gi,
+    replacement: 'Authorization: [REDACTED_AUTHORIZATION]',
+  },
+  {
+    id: 'bearer-token',
+    kind: 'access-token',
+    label: 'Bearer トークン',
+    priority: 30,
+    enabled: true,
+    pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{10,}/g,
+    replacement: 'Bearer [REDACTED_ACCESS_TOKEN]',
+  },
+  {
+    id: 'password-assignment',
+    kind: 'password',
+    label: 'パスワード / シークレット代入',
+    priority: 10,
+    enabled: true,
+    pattern:
+      /\b(password|passwd|pwd|secret|client[_-]?secret|access[_-]?token|api[_-]?key|apikey|auth[_-]?token)\b\s*["']?\s*[:=]\s*["']?(?!\[REDACTED)[^\s"',;)}\] ]{4,}/gi,
+    replacement: '$1=[REDACTED_PASSWORD]',
+  },
+];
+
+/** App-wide registry, seeded with the builtin patterns. */
+export const redactionRegistry: RedactionRegistry = createRedactionRegistry([...BUILTIN_REDACTION_PATTERNS]);
+
+/** The enabled builtin rules, in application order (back-compatible export). */
+export const RULES: RedactionRule[] = redactionRegistry.resolved().map((entry) => ({
+  id: entry.id,
+  kind: entry.kind,
+  label: entry.label,
+  pattern: entry.pattern,
+  replacement: entry.replacement,
+}));
+
 export const REDACTION_RULE_LABELS: ReadonlyArray<{ kind: RedactionKind; label: string }> = RULES.map((rule) => ({
   kind: rule.kind,
   label: rule.label,
 }));
 
-export interface CustomRedactionPattern {
-  id: string;
-  /** Regular expression source; flags come from `flags`. */
-  pattern: string;
-  flags?: string;
-  label?: string;
+/** Registers an extra pattern for this tab (C-FIX-006 runtime extension). */
+export function registerRedactionPattern(pattern: RedactionPatternInput): { ok: boolean; message: string | null } {
+  return redactionRegistry.register({ ...pattern, origin: pattern.origin ?? 'runtime' });
 }
 
 export interface CompiledPatterns {
@@ -198,8 +243,40 @@ export interface RedactionResult {
 
 export interface RedactionOptions {
   customPatterns?: CustomRedactionPattern[];
-  /** Compiled patterns, when the caller already validated them. */
+  /** Compiled custom patterns, when the caller already validated them. */
   compiled?: RedactionRule[];
+  /** Pattern ids the operator switched off (C-FIX-006). */
+  disabled?: string[];
+  /** Registry to use instead of the app-wide one (tests, per-request policy). */
+  registry?: RedactionRegistry;
+}
+
+export interface ResolvedRedaction {
+  /** Builtin rules in priority order, then the custom rules. */
+  rules: RedactionRule[];
+  custom: RedactionRule[];
+  errors: CompiledPatterns['errors'];
+  skipped: ResolvedPatterns['skipped'];
+  registryFingerprint: string;
+}
+
+/**
+ * The one place that decides which patterns run for a request: builtin rules from
+ * the registry (minus disabled ones), then the caller's custom rules.
+ */
+export function resolveRedaction(options: RedactionOptions = {}): ResolvedRedaction {
+  const registry = options.registry ?? redactionRegistry;
+  const builtin = registry.resolve({ disabled: options.disabled });
+  const compiledCustom = options.compiled ? { ok: true, rules: options.compiled, errors: [] } : compileCustomPatterns(options.customPatterns ?? []);
+  return {
+    rules: [...builtin.rules, ...compiledCustom.rules],
+    custom: compiledCustom.rules,
+    // A custom pattern that cannot compile is an error the caller must handle, not
+    // a silent skip (Phase 5C rule, kept by C-FIX-006).
+    errors: [...builtin.errors, ...compiledCustom.errors],
+    skipped: builtin.skipped,
+    registryFingerprint: registry.fingerprint(),
+  };
 }
 
 function emptyCounts(): RedactionCounts {
@@ -213,16 +290,13 @@ function addCounts(target: RedactionCounts, source: RedactionCounts): void {
   }
 }
 
-/** Redacts one string. `counts` is the number of replacements, per kind. */
-export function redactText(text: string, options: RedactionOptions = {}): RedactionResult {
-  if (!text) return { text: '', counts: emptyCounts() };
-  const custom = options.compiled ?? compileCustomPatterns(options.customPatterns ?? []).rules;
+/** Applies an already-resolved rule list to one string. */
+function applyRules(text: string, rules: RedactionRule[]): RedactionResult {
   const counts = emptyCounts();
   let output = text;
-
-  for (const rule of RULES) {
+  for (const rule of rules) {
     const pattern = new RegExp(rule.pattern.source, rule.pattern.flags);
-    output = output.replace(pattern, (...args) => {
+    output = output.replace(pattern, (...args: unknown[]) => {
       counts.total += 1;
       counts.byKind[rule.kind] = (counts.byKind[rule.kind] ?? 0) + 1;
       if (rule.replacement.includes('$1')) {
@@ -234,16 +308,16 @@ export function redactText(text: string, options: RedactionOptions = {}): Redact
     });
   }
 
-  for (const rule of custom) {
-    const pattern = new RegExp(rule.pattern.source, rule.pattern.flags.includes('g') ? rule.pattern.flags : `${rule.pattern.flags}g`);
-    output = output.replace(pattern, () => {
-      counts.total += 1;
-      counts.byKind.custom = (counts.byKind.custom ?? 0) + 1;
-      return rule.replacement;
-    });
-  }
-
   return { text: output, counts };
+}
+
+/** Redacts one string. `counts` is the number of replacements, per kind. */
+export function redactText(text: string, options: RedactionOptions = {}): RedactionResult {
+  if (!text) return { text: '', counts: emptyCounts() };
+  const limit = hybridConfig.read().redaction.maxScanChars;
+  // A scan is bounded so a pathological file cannot lock the tab (C-FIX-005/006).
+  const scanned = text.length > limit ? text.slice(0, limit) : text;
+  return applyRules(scanned, resolveRedaction(options).rules);
 }
 
 /** Applies redaction to every message, preserving roles and order. */
@@ -252,9 +326,9 @@ export function redactMessages(
   options: RedactionOptions = {},
 ): { messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>; counts: RedactionCounts } {
   const counts = emptyCounts();
-  const compiled = options.compiled ?? compileCustomPatterns(options.customPatterns ?? []).rules;
+  const resolved = resolveRedaction(options);
   const next = messages.map((message) => {
-    const redacted = redactText(message.content, { compiled });
+    const redacted = applyRules(message.content, resolved.rules);
     addCounts(counts, redacted.counts);
     return { role: message.role, content: redacted.text };
   });
@@ -264,6 +338,6 @@ export function redactMessages(
 /** True when a string still looks like it carries a secret (post-check). */
 export function containsLikelySecret(text: string, options: RedactionOptions = {}): boolean {
   if (!text) return false;
-  const compiled = options.compiled ?? compileCustomPatterns(options.customPatterns ?? []).rules;
-  return [...RULES, ...compiled].some((rule) => new RegExp(rule.pattern.source, rule.pattern.flags).test(text));
+  const { rules } = resolveRedaction(options);
+  return rules.some((rule) => new RegExp(rule.pattern.source, rule.pattern.flags).test(text));
 }

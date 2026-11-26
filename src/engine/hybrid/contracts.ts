@@ -34,6 +34,8 @@ export type HybridFailure =
   | 'timeout'
   | 'offline'
   | 'schema'
+  | 'approval'
+  | 'integrity'
   | 'provider';
 
 export type SettingsCheck = { ok: true } | { ok: false; failure: HybridFailure; message: string };
@@ -97,6 +99,8 @@ export interface HybridProviderResponse {
    * non-streaming response (WO-08 abnormal-EOF detection).
    */
   streamTerminated?: boolean;
+  /** Bytes the transport accepted for this answer (C-FIX-005 evidence). */
+  responseBytes?: number;
 }
 
 export interface HybridProvider {

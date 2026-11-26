@@ -26,7 +26,11 @@ import type {
   HybridSettings,
 } from './contracts';
 import { validateHybridSettings } from './contracts';
+import { hybridConfig } from './config';
 import { HybridError, classifyFetchFailure, errorForStatus, type HybridErrorKind } from './errors';
+import type { ProviderProfile } from './providerProfiles';
+import { ResourceGuard, resolveResourcePolicy, withPhaseDeadline, type ResourcePolicy } from './resourcePolicy';
+import { createUtf8FrameDecoder } from './streamCodec';
 import { createSseParser, readCompletionJson, type StreamUsage } from './streamParser';
 import {
   createFetchTransport,
@@ -37,9 +41,14 @@ import {
   type TransportResponse,
 } from './transport';
 
-export const DEFAULT_TEMPERATURE = 0.2;
-export const DEFAULT_TIMEOUT_MS = 120_000;
-export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+/**
+ * The Phase 5C numbers, now read from the configuration SSoT (C-FIX-008) instead
+ * of being duplicated here. They stay exported because callers and tests refer to
+ * them by name.
+ */
+export const DEFAULT_TEMPERATURE = hybridConfig.read().provider.defaultTemperature;
+export const DEFAULT_TIMEOUT_MS = hybridConfig.read().provider.defaultTotalTimeoutMs;
+export const DEFAULT_MAX_OUTPUT_TOKENS = hybridConfig.read().provider.defaultMaxOutputTokens;
 
 export interface RetryPolicy {
   /** Total attempts, including the first one. `1` means no retry. */
@@ -55,6 +64,12 @@ export interface OpenAiCompatibleOptions {
   retry?: RetryPolicy | null;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Capability profile the client was built for (C-FIX-007). */
+  profile?: ProviderProfile | null;
+  /** Resolved timeout/response policy; derived from the profile when omitted. */
+  policy?: ResourcePolicy;
+  /** Endpoint path the profile declares; `/chat/completions` by default. */
+  endpointPath?: string;
   defaults?: {
     temperature?: number;
     timeoutMs?: number;
@@ -95,7 +110,7 @@ function assertMessages(messages: ChatMessage[]): void {
 async function runWithDeadline<T>(
   signal: AbortSignal | undefined,
   timeoutMs: number,
-  fn: (signal: AbortSignal) => Promise<T>,
+  fn: (signal: AbortSignal, abort: () => void) => Promise<T>,
 ): Promise<T> {
   if (signal?.aborted) throw new HybridError('aborted', 'リクエストはキャンセルされました。');
   const controller = new AbortController();
@@ -107,7 +122,7 @@ async function runWithDeadline<T>(
     controller.abort();
   }, timeoutMs);
   try {
-    return await fn(controller.signal);
+    return await fn(controller.signal, onAbort);
   } catch (cause) {
     if (cause instanceof HybridError) throw cause;
     if (timedOut) {
@@ -135,28 +150,51 @@ export class OpenAiCompatibleProvider implements HybridProvider {
   private readonly retry: RetryPolicy | null;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly defaults: Required<NonNullable<OpenAiCompatibleOptions['defaults']>>;
+  private readonly profile: ProviderProfile | null;
+  private readonly endpointPath: string;
   /** Last call's usage, for the UI's in-tab telemetry. Never persisted. */
   lastUsage: StreamUsage | null = null;
+  /** The policy the last call ran under, for evidence (C-FIX-005/009). */
+  lastPolicy: ResourcePolicy | null = null;
 
   constructor(options: OpenAiCompatibleOptions = {}) {
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.transport = options.transport ?? createFetchTransport(fetchImpl);
-    const policy = options.retry ?? null;
+    // The configured default is "retry off"; a deployment may switch it on
+    // through the configuration SSoT, and a caller may still override per client.
+    const configuredRetry = hybridConfig.read().provider.retryEnabled ? { maxAttempts: 2 } : null;
+    const policy = options.retry === undefined ? configuredRetry : options.retry;
     // A retry policy with a single attempt is the same as no retry.
     this.retry = policy && policy.maxAttempts > 1 ? policy : null;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.profile = options.profile ?? null;
+    this.endpointPath = options.endpointPath ?? this.profile?.capabilities.endpoints.chatCompletions ?? '/chat/completions';
+    const defaults = hybridConfig.read().provider;
     this.defaults = {
-      temperature: options.defaults?.temperature ?? DEFAULT_TEMPERATURE,
-      timeoutMs: options.defaults?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      maxOutputTokens: options.defaults?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+      temperature: options.defaults?.temperature ?? defaults.defaultTemperature,
+      timeoutMs: options.defaults?.timeoutMs ?? defaults.defaultTotalTimeoutMs,
+      maxOutputTokens: options.defaults?.maxOutputTokens ?? defaults.defaultMaxOutputTokens,
     };
+  }
+
+  /** The timeout/response policy for a request (C-FIX-005). */
+  policyFor(resolved: ResolvedRequest): ResourcePolicy {
+    return resolveResourcePolicy({
+      profileId: this.profile?.id,
+      requestTimeoutMs: resolved.timeoutMs,
+      maxOutputTokens: resolved.maxOutputTokens,
+      maxInputTokens: resolved.maxOutputTokens,
+      timeouts: this.profile?.capabilities.timeout,
+      maxResponseChars: this.profile?.capabilities.response.maxResponseChars ?? null,
+      maxResponseBytes: this.profile?.capabilities.response.maxResponseBytes ?? null,
+    });
   }
 
   /** Settings → endpoint, model, timeout; throws before anything is sent. */
   resolve(settings: HybridSettings): ResolvedRequest {
     const check = validateHybridSettings(settings);
     if (!check.ok) throw new HybridError(check.failure as HybridErrorKind, check.message);
-    const endpoint = resolveEndpoint(settings.baseUrl);
+    const endpoint = resolveEndpoint(settings.baseUrl, this.endpointPath);
     if (!endpoint.ok) throw new HybridError('invalid-settings', endpoint.message);
     const model = validateModelId(settings.model);
     if (!model.ok) throw new HybridError('invalid-settings', model.message);
@@ -200,31 +238,39 @@ export class OpenAiCompatibleProvider implements HybridProvider {
     messages: ChatMessage[],
     stream: boolean,
     signal: AbortSignal | undefined,
-    onResponse: (response: TransportResponse) => Promise<HybridProviderResponse>,
+    policy: ResourcePolicy,
+    onResponse: (response: TransportResponse, abort: () => void) => Promise<HybridProviderResponse>,
   ): Promise<HybridProviderResponse> {
-    const policy = this.retry;
-    const maxAttempts = policy ? Math.max(1, policy.maxAttempts) : 1;
+    const retry = this.retry;
+    const maxAttempts = retry ? Math.max(1, retry.maxAttempts) : 1;
     let lastError: HybridError | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        return await runWithDeadline(signal, resolved.timeoutMs, async (deadlineSignal) => {
-          const response = await sendWithRedirectPolicy(this.transport, {
-            url: resolved.endpoint,
-            method: 'POST',
-            headers: this.headers(resolved.apiKey, stream),
-            body: this.body(resolved, messages, stream),
-            signal: deadlineSignal,
-          });
-          return onResponse(response);
+        return await runWithDeadline(signal, resolved.timeoutMs, async (deadlineSignal, abort) => {
+          // C-FIX-005: the connection phase has its own ceiling, so a provider
+          // that never answers is not reported as a slow model.
+          const response = await withPhaseDeadline(
+            sendWithRedirectPolicy(this.transport, {
+              url: resolved.endpoint,
+              method: 'POST',
+              headers: this.headers(resolved.apiKey, stream),
+              body: this.body(resolved, messages, stream),
+              signal: deadlineSignal,
+            }),
+            policy.timeouts.connectMs,
+            'connect',
+            abort,
+          );
+          return onResponse(response, abort);
         });
       } catch (cause) {
         const error = cause instanceof HybridError ? cause : classifyFetchFailure(cause, resolved.timeoutMs);
         lastError = error;
         const retryable = error.retryable && error.kind !== 'aborted' && error.kind !== 'timeout';
-        if (!policy || !retryable || attempt >= maxAttempts) throw error;
-        const base = policy.baseDelayMs ?? 500;
-        const max = policy.maxDelayMs ?? 5_000;
+        if (!retry || !retryable || attempt >= maxAttempts) throw error;
+        const base = retry.baseDelayMs ?? 500;
+        const max = retry.maxDelayMs ?? 5_000;
         const backoff = Math.min(max, base * 2 ** (attempt - 1));
         const wait = error.retryAfterMs ?? backoff;
         if (signal?.aborted) throw new HybridError('aborted', 'リクエストはキャンセルされました。');
@@ -237,12 +283,19 @@ export class OpenAiCompatibleProvider implements HybridProvider {
   async complete(request: HybridProviderRequest): Promise<HybridProviderResponse> {
     const resolved = this.resolve(request.settings);
     assertMessages(request.messages);
-    const result = await this.sendOnce(resolved, request.messages, false, request.signal, async (response) => {
-      const text = await response.text();
+    const policy = this.policyFor(resolved);
+    this.lastPolicy = policy;
+    const result = await this.sendOnce(resolved, request.messages, false, request.signal, policy, async (response, abort) => {
+      const text = await withPhaseDeadline(response.text(), policy.timeouts.ttfbMs, 'ttfb', abort);
       if (!response.ok) throw errorForResponse(response, text);
+      // C-FIX-005: the answer is also bounded by bytes, not only by the engine's
+      // character cap, so a multi-byte flood cannot pass the limit.
+      const guard = new ResourceGuard(policy.limits.maxResponseBytes);
+      const responseBytes = new TextEncoder().encode(text).byteLength;
+      guard.add(responseBytes);
       const parsed = readCompletionJson(text);
       this.lastUsage = parsed.usage ?? null;
-      return { text: parsed.text, usage: parsed.usage, finishReason: parsed.finishReason };
+      return { text: parsed.text, usage: parsed.usage, finishReason: parsed.finishReason, responseBytes };
     });
     return result;
   }
@@ -251,18 +304,25 @@ export class OpenAiCompatibleProvider implements HybridProvider {
     request: HybridProviderRequest,
     onDelta: (chunk: string) => void,
   ): Promise<HybridProviderResponse> {
+    // C-FIX-007: a profile that declares "no streaming" is answered in one piece,
+    // even if a caller asks for SSE. The engine also checks the capability first.
+    if (this.profile && !this.profile.capabilitiesFor(request.settings.model).streaming) {
+      return this.complete(request);
+    }
     const resolved = this.resolve(request.settings);
     assertMessages(request.messages);
+    const policy = this.policyFor(resolved);
+    this.lastPolicy = policy;
     let emitted = false;
 
-    return this.sendOnce(resolved, request.messages, true, request.signal, async (response) => {
+    return this.sendOnce(resolved, request.messages, true, request.signal, policy, async (response, abort) => {
       if (!response.ok) {
         const body = await response.text();
         throw errorForResponse(response, body);
       }
       // A provider that ignores `stream` returns a normal JSON body.
       if (!response.body) {
-        const text = await response.text();
+        const text = await withPhaseDeadline(response.text(), policy.timeouts.ttfbMs, 'ttfb', abort);
         const parsed = readCompletionJson(text);
         this.lastUsage = parsed.usage ?? null;
         if (parsed.text) {
@@ -273,8 +333,11 @@ export class OpenAiCompatibleProvider implements HybridProvider {
       }
 
       const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      // C-FIX-004: explicit UTF-8 framing; a split sequence is held, not mangled.
+      const decoder = createUtf8FrameDecoder();
       const parser = createSseParser();
+      const guard = new ResourceGuard(policy.limits.maxResponseBytes);
+      let firstRead = true;
       let answer = '';
       let usage: StreamUsage | undefined;
       let finishReason: string | null = null;
@@ -298,17 +361,26 @@ export class OpenAiCompatibleProvider implements HybridProvider {
 
       try {
         while (!finished) {
-          const { value, done } = await reader.read();
+          // C-FIX-005: the first token and the gap between chunks have their own
+          // deadlines, so a stalled stream is named instead of waiting for the
+          // whole-request timer.
+          const phase = firstRead ? policy.timeouts.ttfbMs : policy.timeouts.idleChunkMs;
+          const { value, done } = await withPhaseDeadline(
+            reader.read(),
+            phase,
+            firstRead ? 'ttfb' : 'idle',
+            abort,
+          );
+          firstRead = false;
           if (done) break;
-          // `stream: true` keeps a multi-byte UTF-8 sequence that was split
-          // across chunks pending until its bytes are complete, so a Korean or
-          // Japanese character is never mangled at a chunk boundary.
-          consume(parser.push(decoder.decode(value, { stream: true })));
+          // The byte ceiling is enforced before the text reaches the engine.
+          guard.add(value.byteLength);
+          consume(parser.push(decoder.push(value)));
         }
         if (!finished) {
           // Flush the decoder first: a trailing partial sequence must not be lost,
           // and the last event may not have been followed by a blank line.
-          consume(parser.push(decoder.decode()));
+          consume(parser.push(decoder.flush()));
           consume(parser.flush());
         }
       } catch (cause) {
@@ -327,7 +399,13 @@ export class OpenAiCompatibleProvider implements HybridProvider {
         throw new HybridError('empty-choices', 'ストリームから本文を受け取れませんでした。');
       }
       this.lastUsage = usage ?? null;
-      return { text: answer, usage, finishReason, streamTerminated: parser.terminated };
+      return {
+        text: answer,
+        usage,
+        finishReason,
+        streamTerminated: parser.terminated,
+        responseBytes: guard.used(),
+      };
     });
   }
 }

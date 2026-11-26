@@ -17,8 +17,10 @@
  */
 
 import { sha256Hex } from '../../lib/util';
+import type { ToolId } from '../../adapters/types';
 import type { ChatMessage } from './contracts';
 import type { BudgetPlan } from './budget';
+import { inspectDataBoundary, type BoundaryViolation } from './dataBoundary';
 import { HybridError } from './errors';
 import type { BuiltPrompt } from './promptBuilder';
 import {
@@ -36,6 +38,8 @@ export interface PreflightInput {
   built: BuiltPrompt;
   budget: BudgetPlan;
   redaction?: RedactionOptions;
+  /** Needed for the tool-scope boundary rule (C-FIX-006). */
+  toolId?: ToolId;
 }
 
 export interface PreflightScope {
@@ -71,6 +75,8 @@ export interface PreflightPreview {
   estimatedCostUsd: number | null;
   budget: BudgetPlan;
   warnings: string[];
+  /** Data-boundary violations found on the payload (C-FIX-006). */
+  boundary: BoundaryViolation[];
   /** One approval key per payload. */
   fingerprint: string;
 }
@@ -153,6 +159,15 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
     streaming: input.settings.streaming,
   };
 
+  // C-FIX-006: the payload the user approved is the one that leaves — binary
+  // media, excluded source ranges and out-of-scope tool bundles are refused here.
+  const boundary = inspectDataBoundary({
+    toolId: input.toolId,
+    messages: redacted.messages,
+    selection: input.budget.selection,
+  });
+  for (const violation of boundary) blockedReasons.push(violation.message);
+
   const fingerprint = endpoint.ok
     ? await fingerprintPayload(endpoint.endpoint, input.settings.model, redacted.messages)
     : '';
@@ -173,6 +188,7 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
     estimatedCostUsd: null,
     budget: input.budget,
     warnings,
+    boundary,
     fingerprint,
   };
 }
