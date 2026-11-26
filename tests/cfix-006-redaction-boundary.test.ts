@@ -203,3 +203,49 @@ describe('data boundary', () => {
     expect(preview.boundary).toEqual([]);
   });
 });
+
+describe('C-FIX-006 metadata redaction', () => {
+  it('does not show a secret that was inside the source file name', async () => {
+    const text = ['export function pay() {', '  return 1;', '}', ''].join('\n');
+    const built = buildPrompt({
+      toolId: 'shiori',
+      strategy: 'zero-shot',
+      operatorInstruction: '',
+      localAnalysis: '',
+      source: { name: 'report-EMP-98765.md', text },
+      examples: [],
+    });
+    const budget = planBudget(
+      { systemTokens: built.tokens.system, operatorTokens: 0, localAnalysisTokens: 0, schemaTokens: 0, fewShotTokens: 0, source: text },
+      budgetSettings,
+    );
+    const preview = await buildPreflight({
+      settings,
+      built,
+      budget,
+      toolId: 'shiori',
+      redaction: { customPatterns: [{ id: 'emp', pattern: 'EMP-\\d{5}', label: '社員番号' }] },
+    });
+    expect(preview.sourceFileName).not.toContain('EMP-98765');
+    expect(preview.sourceFileName).toContain('report-');
+    expect(preview.scope.sourceFileName).not.toContain('EMP-98765');
+  });
+
+  it('keeps the file name when it holds nothing to redact', async () => {
+    const text = ['export function pay() {', '  return 1;', '}', ''].join('\n');
+    const built = buildPrompt({
+      toolId: 'shiori',
+      strategy: 'zero-shot',
+      operatorInstruction: '',
+      localAnalysis: '',
+      source: { name: 'report-notes.md', text },
+      examples: [],
+    });
+    const budget = planBudget(
+      { systemTokens: built.tokens.system, operatorTokens: 0, localAnalysisTokens: 0, schemaTokens: 0, fewShotTokens: 0, source: text },
+      budgetSettings,
+    );
+    const preview = await buildPreflight({ settings, built, budget, toolId: 'shiori' });
+    expect(preview.sourceFileName).toBe('report-notes.md');
+  });
+});

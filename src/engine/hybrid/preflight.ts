@@ -119,6 +119,11 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
   const unstable = redacted.messages.some((message) => redactText(message.content, { compiled: compiled.rules }).text !== message.content);
   if (unstable) blockedReasons.push('伏字を適用しても秘匿情報が残っています。送信を中止しました。');
 
+  // Metadata travels too: a file name can carry a secret (a staff number, a token
+  // pasted into a name). The preview must never display one the payload removed
+  // (C-FIX-006: schema and metadata).
+  const displayName = redactText(input.built.sections.source.name, { compiled: compiled.rules }).text;
+
   if (!input.budget.fits) {
     blockedReasons.push(
       input.budget.reason === 'source-exceeds-budget'
@@ -141,7 +146,7 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
 
   const scope: PreflightScope = {
     includesSource: input.built.sections.source.content.length > 0,
-    sourceFileName: input.built.sections.source.name,
+    sourceFileName: displayName,
     sourceChars: input.built.sections.source.content.length,
     sourceTokens: input.budget.sourceTokens,
     sourceTruncated: input.budget.selection.truncated,
@@ -179,7 +184,7 @@ export async function buildPreflight(input: PreflightInput): Promise<PreflightPr
       ? { origin: endpoint.origin, host: endpoint.host, endpoint: endpoint.endpoint }
       : null,
     model: input.settings.model,
-    sourceFileName: input.built.sections.source.name,
+    sourceFileName: displayName,
     scope,
     redaction: redacted.counts,
     estimatedInputTokens: input.budget.overheadTokens + input.budget.selection.tokens,
