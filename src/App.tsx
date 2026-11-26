@@ -4,8 +4,10 @@ import { HelpModal } from './components/HelpModal';
 import { FewShotModal } from './components/FewShotModal';
 import { PromptPane } from './components/PromptPane';
 import { WorkspacePanel } from './components/WorkspacePanel';
+import { ConnectionSettingsModal } from './components/ConnectionSettingsModal';
 import { TOOLS, toolFromHash, type ToolMeta } from './adapters/registry';
 import type { ToolId } from './adapters/types';
+import { ENGINE_MODE_STATUS, setEngineMode, useEngineMode } from './lib/engineMode';
 import { publishOpenedFile, type OpenedFile } from './lib/fileBus';
 import { activeExampleCounts } from './lib/fewShotStore';
 import { resetAllDrafts } from './lib/drafts';
@@ -50,11 +52,15 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [helpOpen, setHelpOpen] = useState(false);
   const [fewShotOpen, setFewShotOpen] = useState(false);
+  const [connectionOpen, setConnectionOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(initialRail);
+  /** WO-11: one engine mode for every tool, remembered as a preference. */
+  const engineMode = useEngineMode();
   const [counts, setCounts] = useState<Record<ToolId, number>>(ZERO_COUNTS);
   const [fewShotVersion, setFewShotVersion] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [resetBusy, setResetBusy] = useState(false);
   /** Bumped after an explicit draft reset so the open tool re-reads empty storage. */
   const [draftEpoch, setDraftEpoch] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -116,6 +122,7 @@ export default function App() {
         setMenuOpen(false);
         setHelpOpen(false);
         setFewShotOpen(false);
+        setConnectionOpen(false);
       }
       if (event.key === '?' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement)) {
         setHelpOpen((open) => !open);
@@ -163,26 +170,31 @@ export default function App() {
   };
 
   const resetDrafts = async () => {
+    if (resetBusy) return;
+    setResetBusy(true);
     setResetError(null);
-    // Kotoha keeps its document draft in its own store, so the generic draft
-    // reset alone would let the cleared document return after the reload.
-    // Its reset is awaited first: when IndexedDB refuses the transaction the
-    // drafts are left untouched and nothing is announced as cleared
-    // (PATCH-002).
-    const kotohaReset = await clearKotohaDocument();
-    if (!kotohaReset.ok) {
-      setResetError('保存領域を初期化できませんでした。下書きと文書は削除されていません。');
-      return;
+    try {
+      const kotohaReset = await clearKotohaDocument();
+      if (!kotohaReset.ok) {
+        setResetError('Kotoha のメモリ上の文書は破棄しましたが、保存領域の削除を確認できませんでした。他の下書きは変更していません。再試行してください。');
+        return;
+      }
+      const resetAll = await resetAllDrafts(TOOLS.map((item) => item.id));
+      // Remount after the global epoch advances so partial failures retain working autosaves.
+      setDraftEpoch((value) => value + 1);
+      if (!resetAll.ok) {
+        setResetError(`Kotoha 文書は削除済みです。${resetAll.error ?? '下書きの一部を削除できませんでした。'}`);
+        return;
+      }
+      clearEngineCache();
+      setMenuOpen(false);
+      // Remounting is not enough: a tool that still holds its document in memory
+      // re-saves it on unmount, so "init" could keep showing the old file. A hard
+      // reload starts every tool from the cleared store; the hash keeps the tool.
+      window.location.reload();
+    } finally {
+      setResetBusy(false);
     }
-    await resetAllDrafts(TOOLS.map((item) => item.id));
-    // Completed analyses belong to the drafts that were just discarded.
-    clearEngineCache();
-    setDraftEpoch((value) => value + 1);
-    setMenuOpen(false);
-    // Remounting is not enough: a tool that still holds its document in memory
-    // re-saves it on unmount, so "init" could keep showing the old file. A hard
-    // reload starts every tool from the cleared store; the hash keeps the tool.
-    window.location.reload();
   };
 
   const openFromWorkspace = (targetTool: ToolId, payload: OpenedFile) => {
@@ -310,10 +322,24 @@ export default function App() {
                   </button>
                 ))}
                 <div className="menu-sep" />
+                <div className="menu-group">AI</div>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setConnectionOpen(true);
+                  }}
+                  data-testid="connection-settings"
+                >
+                  <span className="menu-jp">接続</span>
+                  <span>AI 接続設定</span>
+                </button>
+                <div className="menu-sep" />
                 <div className="menu-group">作業データ</div>
-                <button type="button" role="menuitem" onClick={() => void resetDrafts()} data-testid="reset-drafts">
+                <button type="button" role="menuitem" onClick={() => void resetDrafts()} disabled={resetBusy} data-testid="reset-drafts">
                   <span className="menu-jp">初期化</span>
-                  <span>下書きをすべて破棄</span>
+                  <span>{resetBusy ? '初期化しています…' : resetError ? '下書きの破棄を再試行' : '下書きをすべて破棄'}</span>
                 </button>
                 {resetError ? (
                   <p className="menu-error" role="alert" data-testid="reset-error">
@@ -367,7 +393,31 @@ export default function App() {
             </div>
             <div className="head-actions">
               <span className="badge soft">ブラウザ完結</span>
-              <span className="badge">ローカル静的解析</span>
+              <div className="mode-switch" role="group" aria-label="解析モード">
+                <button
+                  type="button"
+                  className="mode-chip"
+                  aria-pressed={engineMode === 'local'}
+                  title="Mode A · ローカル解析（完全オフライン）"
+                  onClick={() => setEngineMode('local')}
+                  data-testid="engine-mode-a"
+                >
+                  A ローカル
+                </button>
+                <button
+                  type="button"
+                  className="mode-chip"
+                  aria-pressed={engineMode === 'hybrid'}
+                  title="Mode B · AI ハイブリッド解析（送信は毎回承認）"
+                  onClick={() => setEngineMode('hybrid')}
+                  data-testid="engine-mode-b"
+                >
+                  B ハイブリッド
+                </button>
+              </div>
+              <span className="badge" data-testid="engine-mode-current" data-engine-mode={engineMode}>
+                {ENGINE_MODE_STATUS[engineMode]}
+              </span>
             </div>
           </div>
           {desktop ? (
@@ -386,6 +436,7 @@ export default function App() {
       {fewShotOpen ? (
         <FewShotModal tool={tool} onClose={() => setFewShotOpen(false)} onChanged={refreshCounts} />
       ) : null}
+      {connectionOpen ? <ConnectionSettingsModal onClose={() => setConnectionOpen(false)} /> : null}
     </div>
   );
 }

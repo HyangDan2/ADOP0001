@@ -6,6 +6,7 @@ export {
   loadDocumentDraft,
   saveDocumentDraft,
   saveDocumentSnapshot,
+  kotohaResetEpoch,
   storageLabel,
   KOTOHA_DRAFT_VERSION,
 } from './store';

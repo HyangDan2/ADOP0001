@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ToolId } from '../adapters/types';
 import { CODE_FILE_ACCEPT, DOCX_FILE_ACCEPT, FEW_SHOT_FILE_ACCEPT, isBinaryFile, languageTagFor, targetToolForFile } from '../lib/fileKinds';
 import { openedFileFrom, type OpenedFile } from '../lib/fileBus';
 import { readSourceFile } from '../lib/fileInput';
+import { createLatestGuard } from '../lib/latestOnly';
 import { saveExample } from '../lib/fewShotStore';
 import {
   buildWorkspaceTree,
@@ -31,6 +32,13 @@ export function WorkspacePanel(props: {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * INT-008: reading a file is asynchronous. If the operator clicks another file
+   * (or opens another folder) while the first read is in flight, the older read
+   * must not replace the newer selection. Every read carries a token; only the
+   * newest token may hand a payload to the tool pane.
+   */
+  const readGuard = useMemo(() => createLatestGuard(), []);
 
   const announce = (message: string) => {
     setFeedback(message);
@@ -38,6 +46,8 @@ export function WorkspacePanel(props: {
   };
 
   const adopt = (name: string, entries: { path: string; file: File }[]) => {
+    // A new folder invalidates any read that started against the old one.
+    readGuard.invalidate();
     const nextFiles = new Map<string, File>();
     for (const entry of entries) nextFiles.set(entry.path, entry.file);
     setFiles(nextFiles);
@@ -83,10 +93,14 @@ export function WorkspacePanel(props: {
       setError('このファイルは読み込めませんでした。フォルダを開き直してください。');
       return;
     }
+    const token = readGuard.next();
     try {
       const payload = await openedFileFrom(file, node.path);
+      // A newer click (or a new folder) happened while this read was running.
+      if (!readGuard.current(token)) return;
       props.onOpenFile(targetToolForFile(node.path, props.activeToolId), payload);
     } catch {
+      if (!readGuard.current(token)) return;
       setError(`ファイルを読み取れませんでした（${node.name}）。フォルダを開き直してください。`);
     }
   };

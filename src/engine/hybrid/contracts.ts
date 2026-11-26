@@ -18,6 +18,14 @@ export interface HybridSettings {
   /** Explicit opt-in. False means every run stays local. */
   consent: boolean;
   promptStrategy?: PromptStrategy;
+  /** Sampling temperature (Phase 5C connection setting, default 0.2). */
+  temperature?: number;
+  /** Whole-request deadline in milliseconds (default 120 000). */
+  requestTimeoutMs?: number;
+  /** Upper bound for the answer the provider may return. */
+  maxOutputTokens?: number;
+  /** INT-006: ask for a JSON response format when the capability profile allows it. */
+  structuredOutput?: boolean;
 }
 
 export type HybridFailure =
@@ -28,6 +36,8 @@ export type HybridFailure =
   | 'timeout'
   | 'offline'
   | 'schema'
+  | 'approval'
+  | 'integrity'
   | 'provider';
 
 export type SettingsCheck = { ok: true } | { ok: false; failure: HybridFailure; message: string };
@@ -78,15 +88,43 @@ export interface HybridProviderRequest {
   messages: ChatMessage[];
   budget: ContextBudget;
   signal?: AbortSignal;
+  /**
+   * INT-001/006: the exact body parameters the approval covered. When present the
+   * provider serialises this spec instead of rebuilding parameters from settings.
+   */
+  body?: import('./requestBody').ChatBodySpec;
+  /** INT-001: exact canonical JSON bytes the approval covered. */
+  serializedBody?: string;
+  /**
+   * INT-001: the endpoint the approval named. A redirect that would change it is
+   * refused instead of followed, and a resolved endpoint that differs is an error.
+   */
+  expectedEndpoint?: string;
 }
 
 export interface HybridProviderResponse {
   text: string;
   usage?: { inputTokens: number; outputTokens: number };
+  /** Provider stop reason; `length` means the answer was cut off by `max_tokens`. */
+  finishReason?: string | null;
+  /**
+   * Streaming only: true when the stream ended with `[DONE]` or a
+   * `finish_reason`, false when it simply closed. `undefined` for a
+   * non-streaming response (WO-08 abnormal-EOF detection).
+   */
+  streamTerminated?: boolean;
+  /** Bytes the transport accepted for this answer (C-FIX-005 evidence). */
+  responseBytes?: number;
 }
 
 export interface HybridProvider {
   readonly id: string;
+  /**
+   * INT-006: the capabilities this client will actually apply. The orchestrator
+   * uses them to build the approved body, so a capability profile and the client
+   * that sends cannot disagree about streaming or parameter spelling.
+   */
+  capabilitiesFor?(model: string): import('./providerProfiles').ProviderCapabilities | null;
   /** Receives the already redacted, already budgeted prompt; never the raw file. */
   complete(request: HybridProviderRequest): Promise<HybridProviderResponse>;
   /** Optional streaming transport; a provider without it is still valid. */

@@ -14,6 +14,7 @@ import {
   kotohaErrorCode,
   loadDocumentDraft,
   loadLatestBundle,
+  kotohaResetEpoch,
   saveDocumentDraft,
   saveDocumentSnapshot,
   clearKotohaDocument,
@@ -24,6 +25,7 @@ import {
 } from './index';
 import { runEngine } from '../../engine/core/runner';
 import type { EngineDiagnostic } from '../../adapters/types';
+import { HybridAssist } from '../../components/HybridAssist';
 const PRESET_KEY = 'adop0001.kotoha.presets';
 
 /** A document with warnings waits here, together with the request that produced it. */
@@ -109,11 +111,13 @@ export function KotohaTool() {
   const gate = useRequestGate();
 
   useEffect(() => {
+    const resetEpoch = kotohaResetEpoch();
     void loadLatestBundle().then((record) => {
+      if (resetEpoch !== kotohaResetEpoch()) return;
       if (record) setStorage(`${new Date(record.savedAt).toLocaleString('ja-JP')} に保存したバンドル · ${storageLabel()}`);
     });
     void loadDocumentDraft().then((draft) => {
-      if (!draft || !draft.bundle || userTouched.current) return;
+      if (resetEpoch !== kotohaResetEpoch() || !draft || !draft.bundle || userTouched.current) return;
       setDocument({ bundle: draft.bundle, markdown: draft.markdown });
       setMarkdown(draft.markdown);
       setAttributes(draft.attributes ?? draft.bundle.attributes);
@@ -126,14 +130,15 @@ export function KotohaTool() {
   useEffect(() => {
     if (!document) return;
     const epoch = documentEpoch.current;
+    const resetEpoch = kotohaResetEpoch();
     const timer = window.setTimeout(() => {
-      if (epoch !== documentEpoch.current) return;
+      if (epoch !== documentEpoch.current || resetEpoch !== kotohaResetEpoch()) return;
       void saveDocumentDraft({
         markdown,
         attributes,
         bundle: withAttributes(document.bundle, attributes),
-      }).then((saved) => {
-        if (epoch !== documentEpoch.current || saved.superseded) return;
+      }, resetEpoch).then((saved) => {
+        if (epoch !== documentEpoch.current || resetEpoch !== kotohaResetEpoch() || saved.superseded) return;
         if (saved.storage === 'memory') setStorage('下書きを保存できませんでした（メモリのみ）');
       });
     }, 700);
@@ -147,6 +152,7 @@ export function KotohaTool() {
 
   const adopt = async (outputValue: KotohaOutput, request?: RequestHandle): Promise<KotohaSaveResult | null> => {
     if (request && !request.isCurrent()) return null;
+    const resetEpoch = kotohaResetEpoch();
     documentEpoch.current += 1;
     setDocument({ bundle: outputValue.bundle, markdown: outputValue.markdown });
     setMarkdown(outputValue.markdown);
@@ -166,9 +172,9 @@ export function KotohaTool() {
       markdown: outputValue.markdown,
       attributes: outputValue.bundle.attributes,
       bundle: outputValue.bundle,
-    });
+    }, resetEpoch);
     if (request && !request.isCurrent()) return null;
-    if (saved.superseded) return null;
+    if (saved.superseded || resetEpoch !== kotohaResetEpoch()) return null;
     setStorage(
       saved.storage === 'indexeddb'
         ? `スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString('ja-JP')}`
@@ -298,6 +304,7 @@ export function KotohaTool() {
     const runAttributes = attributes;
     const runBundle = document.bundle;
     const request = gate.start();
+    const resetEpoch = kotohaResetEpoch();
     setPending(null);
     setBusy(true);
     setError(null);
@@ -334,9 +341,9 @@ export function KotohaTool() {
         markdown: runMarkdown,
         attributes: result.output.bundle.attributes,
         bundle: result.output.bundle,
-      });
+      }, resetEpoch);
       if (!request.isCurrent()) return;
-      if (saved.superseded) return;
+      if (saved.superseded || resetEpoch !== kotohaResetEpoch()) return;
       if (saved.storage === 'memory') setStorage('下書きを保存できませんでした（メモリのみ）');
       if (download) {
         downloadBlob(
@@ -822,6 +829,18 @@ export function KotohaTool() {
           </div>
         </ToolPane>
       </div>
+      <HybridAssist
+        toolId="kotoha"
+        source={markdown}
+        sourceName={output ? output.fileName.replace(/\.docx$/i, '.md') : 'document.md'}
+        options={{ action: 'decompose' }}
+        localOutput={output}
+        onApplied={(next, note) => {
+          setMarkdown(next.markdown);
+          setOutput(next);
+          showToast(note);
+        }}
+      />
       <div className="statusbar">
         <span className="dot" /> <span>OOXML エンジン（JSZip）</span>
         <span>{busy ? '処理中' : '待機中'}</span>

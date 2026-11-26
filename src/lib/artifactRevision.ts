@@ -16,3 +16,19 @@ export function assertArtifactRevision(inputRevision: number, outputRevision: nu
     throw new Error('入力が変更されています。再生成してから書き出してください。');
   }
 }
+
+/**
+ * WO-11 — the apply-time twin of the export guard.
+ *
+ * An AI proposal was written against the local artifact that existed when the
+ * request started. If the pane has produced a different artifact since (a
+ * re-run with new options, a reset), the proposal no longer describes what is
+ * on screen and must not be merged into it.
+ */
+export function assertSameArtifact(base: unknown, current: unknown): void {
+  if (base !== current) {
+    throw new Error(
+      'AI 補完の対象だったローカル結果が更新されました。この提案は適用できません。もう一度事前確認から実行してください。',
+    );
+  }
+}

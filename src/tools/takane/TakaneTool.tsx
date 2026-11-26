@@ -4,6 +4,7 @@ import { ExportModal } from '../../components/ExportModal';
 import { SPEC_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { readSourceFile, takeFileInput } from '../../lib/fileInput';
+import { useInputArbiter } from '../../lib/inputArbiter';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { useRequestGate } from '../../lib/requestGate';
@@ -20,6 +21,7 @@ import {
 import { TAKANE_SAMPLES } from './samples';
 import { runEngine } from '../../engine/core/runner';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
+import { HybridAssist } from '../../components/HybridAssist';
 const SHIORI_KEY = 'adop0001.shiori.latest';
 
 const LANGUAGES: { value: TakaneLanguage; label: string }[] = [
@@ -68,7 +70,12 @@ export function TakaneTool() {
     language: 'python' as TakaneLanguage,
   });
   const { source, fileName, language } = draft;
-  const setSource = (value: string) => setField('source', value);
+  /** WO-02: typing, Clear, samples and workspace opens all supersede a pending file read. */
+  const input = useInputArbiter();
+  const setSource = (value: string) => {
+    input.commit();
+    setField('source', value);
+  };
   const setFileName = (value: string) => setField('fileName', value);
   const setLanguage = (value: TakaneLanguage) => setField('language', value);
   const [view, setView] = useState<'preview' | 'code'>('preview');
@@ -86,7 +93,6 @@ export function TakaneTool() {
   // PATCH-006: input/output revisions so a stale result can never be exported.
   const inputRevision = useRef(0);
   const outputRevision = useRef<number | null>(null);
-  const readSeq = useRef(0);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -144,9 +150,11 @@ export function TakaneTool() {
   };
 
   const loadFile = async (file: File) => {
-    const readId = ++readSeq.current;
+    // WO-02: only the newest input may land. A slower read loses to a later
+    // pick, to typing, to Clear, to a sample or to a workspace open.
+    const readId = input.beginRead();
     const read = await readSourceFile(file);
-    if (readId !== readSeq.current) return;
+    if (!input.isReadCurrent(readId)) return;
     if (read.text === null) {
       showToast(read.error);
       return;
@@ -158,6 +166,8 @@ export function TakaneTool() {
   const drop = useDropFile((file) => void loadFile(file));
 
   useOpenedFile('takane', (opened) => {
+    // A workspace pick is a newer input than any read still in flight.
+    input.commit();
     setSource(opened.text);
     setFileName(opened.name);
     showToast(`${opened.path} を開きました`);
@@ -434,6 +444,18 @@ export function TakaneTool() {
           </div>
         </ToolPane>
       </div>
+      <HybridAssist
+        toolId="takane"
+        source={source}
+        sourceName={fileName}
+        options={{ language }}
+        localOutput={output}
+        targetLanguage={language}
+        onApplied={(next, note) => {
+          setOutput(next);
+          showToast(note);
+        }}
+      />
       <div className="statusbar">
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>

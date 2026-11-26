@@ -4,6 +4,7 @@ import { ExportModal } from '../../components/ExportModal';
 import { CODE_FILE_ACCEPT } from '../../lib/fileKinds';
 import { useOpenedFile } from '../../lib/fileBus';
 import { readSourceFile, takeFileInput } from '../../lib/fileInput';
+import { useInputArbiter } from '../../lib/inputArbiter';
 import { downloadBlob } from '../../lib/util';
 import { useToolDraft } from '../../lib/drafts';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
@@ -14,6 +15,7 @@ import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
 import { ALL_SECTIONS, type ShioriOutput, type SpecSection } from './adapter';
 import { runEngine } from '../../engine/core/runner';
+import { HybridAssist } from '../../components/HybridAssist';
 
 const SECTION_LABEL: Record<SpecSection, string> = {
   overview: '概要',
@@ -34,7 +36,12 @@ export function ShioriTool() {
     sections: ALL_SECTIONS as SpecSection[],
   });
   const { source, fileName, sections } = draft;
-  const setSource = (value: string) => setField('source', value);
+  /** WO-02: typing, Clear, samples and workspace opens all supersede a pending file read. */
+  const input = useInputArbiter();
+  const setSource = (value: string) => {
+    input.commit();
+    setField('source', value);
+  };
   const setFileName = (value: string) => setField('fileName', value);
   const [output, setOutput] = useState<ShioriOutput | null>(null);
   const [view, setView] = useState<View>('preview');
@@ -49,8 +56,7 @@ export function ShioriTool() {
   /** PATCH-006: the input an output belongs to, and the input it was built from. */
   const inputRevision = useRef(0);
   const outputRevision = useRef<number | null>(null);
-  /** PATCH-006: identity of the newest file pick; older reads are dropped. */
-  const readSeq = useRef(0);
+
 
   const run = async (text: string, name: string, activeSections: SpecSection[]) => {
     const revision = inputRevision.current;
@@ -119,11 +125,11 @@ export function ShioriTool() {
   };
 
   const loadFile = async (file: File) => {
-    // PATCH-006: only the latest pick may land; a slower earlier read must not
-    // overwrite the file the user chose afterwards.
-    const readId = ++readSeq.current;
+    // WO-02: only the newest input may land. A slower read loses to a later
+    // pick, to typing, to Clear, to a sample or to a workspace open.
+    const readId = input.beginRead();
     const read = await readSourceFile(file);
-    if (readId !== readSeq.current) return;
+    if (!input.isReadCurrent(readId)) return;
     if (read.text === null) {
       showToast(read.error);
       return;
@@ -135,6 +141,8 @@ export function ShioriTool() {
   const drop = useDropFile((file) => void loadFile(file));
 
   useOpenedFile('shiori', (opened) => {
+    // A workspace pick is a newer input than any read still in flight.
+    input.commit();
     setSource(opened.text);
     setFileName(opened.name);
     showToast(`${opened.path} を開きました`);
@@ -394,6 +402,17 @@ export function ShioriTool() {
           </div>
         </ToolPane>
       </div>
+      <HybridAssist
+        toolId="shiori"
+        source={source}
+        sourceName={fileName}
+        options={{ sections, includePrivate: true }}
+        localOutput={output}
+        onApplied={(next, note) => {
+          setOutput(next);
+          showToast(note);
+        }}
+      />
       <div className="statusbar">
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
