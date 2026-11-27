@@ -56,6 +56,7 @@ repository, validator, or tool implementation modules.
 | `npx vitest run tests/artifacts/contract/contract-foundation.test.ts` | 7 / 7 pass |
 | `npm test` | 67 files / 687 tests pass (680 baseline + 7 contract) |
 | `git diff --check` | pass |
+| CI `45913773768` (`workflow_dispatch`, `8ecf0aa`) | success: typecheck, Vitest 67/687, generated QA PASS 59 / FAIL 0 / SKIP 5, Playwright 70 passed; deploy skipped (non-main) |
 
 No existing test was deleted or weakened.
 
