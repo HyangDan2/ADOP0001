@@ -1,7 +1,7 @@
 # G1 Regression Matrix (REG-G1-01~29)
 
-- **Status:** APPROVED — CP02-00 complete; CP02-01 QA contract audit merged (§12); CP02-02 integrated verification recorded (§13)
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 complete at `8ecf0aa` (tag `cp02-contract-foundation`); CP02-01 authorized; CP02-01 QA contract audit complete; CP02-02 integrated verification recorded at `80048cb` (engine level); CP03 locked
+- **Status:** G1 CLOSURE QA COMPLETE — CP02-02 recorded (§13); CP03 closed at `5154035`; G1 closure verification recorded (§14)
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 complete at `8ecf0aa` (tag `cp02-contract-foundation`); CP02-01 QA contract audit merged; CP02-02 integrated verification recorded at `80048cb`; CP03 closed at `5154035` (CI `45925519226`); G1 closure QA executed at code tip `5154035` / docs `8183e89`
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -9,8 +9,8 @@
 - **Scope:** WO-D01~D04 and SUP-D01~D07; no WO-D05+ behavior
 
 This matrix maps the G1 mandatory regression cases to independent invariants,
-existing evidence, and new tests. No G1 test has been executed yet. Existing
-counts are the baseline inventory; the new test paths are proposals.
+existing evidence, and new tests. §12~§14 record the executed QA; the closure
+run is §14.
 
 ---
 
@@ -514,3 +514,162 @@ promoted to product PASS.
   Owner: E2E harness (not edited by Q05). Full-suite evidence uses 4173.
 - Go and JUnit toolchains are absent locally; the four `environment` SKIPs in
   `qa:generated` are SKIP, not PASS.
+
+---
+
+## 14. G1 closure independent QA record (Q05, 2026-11-27)
+
+Verified tree: `feature/phase5d-artifact-pipeline` code tip `51540351b5055f1f84d80710749354b48df34194`
+(docs `8183e89`), worktree `ADOP0001-wt/qa`, branch `agent/g1-qa` (fast-forwarded
+from `19dff86`). No `src` edit, no expected-value change, no deleted/weakened
+test, no dependency change, no main merge/deploy, no live gateway, no API key.
+Existing PASS evidence reused per Lean Engineering v1.1; only the previously
+unverified paths were executed.
+
+### 14.1 Commands actually executed
+
+| Command | Result |
+| --- | --- |
+| `npx tsc --noEmit` (at `8183e89` + new spec) | PASS — no diagnostics |
+| `npm run build` | PASS — Vite production build emitted |
+| `npm run preview` + `npx playwright test tests/e2e/artifacts/g1-closure-artifact-export.spec.ts` (`E2E_BASE_URL=http://127.0.0.1:4173/ADOP0001/`, `PW_CHROMIUM=Google Chrome`, `workers: 1`) | **11 tests: 10 PASS + 1 expected-fail** (G1-BL-13), 43 s, exit 0 |
+| Reused: CI `45925519226` at `5154035` | success — typecheck, Vitest (84 files / 884 tests as recorded by CP03), `qa:generated`, build, Playwright E2E all green; deploy skipped |
+
+### 14.2 New independent E2E (`tests/e2e/artifacts/g1-closure-artifact-export.spec.ts`)
+
+Every test reads the artifact IndexedDB back and hashes the saved file with an
+independent `node:crypto` SHA-256; expected values come from the frozen contract
+and the written bytes, not from implementation return values. Each test runs in
+a fresh browser context, keeps the context request log, and fails on any
+`pageerror`/console error or non-app origin.
+
+| Test | Observation |
+| --- | --- |
+| ART-E2E-01..05 | Shiori, Yayoi, Kozue, Haruhi, Takane: capture → slot `current`/`valid` → guard → `registerExport` → download. Export row: `kind=normal`, revision/artifact/digest/hash bindings, `validation` record for the revision, `exportByteLength`+`exportByteHash` equal the saved file, derivation `direct` (Kozue `rendered`); export adds no revision/artifact |
+| ART-E2E-06 | Kotoha Markdown + DOCX slots captured separately; `.docx` export is a real ZIP (`PK`), `.kotoha.json` is `rendered` from the style-bundle entry and contains the Markdown/attributes payload |
+| ART-E2E-07 | Attribute edit after rebuild: both slot badges report the pane stale/blocked, `.docx` export refused with `再構築`, **bundle export still succeeds** and merges the live `Meiryo` attribute (KOT-003). Markdown body edit: bundle refused with the exact stale message and no export row; rebuild restores a normal export |
+| ART-E2E-08 | Reload keeps the artifact and export rows; the exported `.kotoha.json` is imported and re-captured, then exports normally (two export rows, distinct ids) |
+| ART-E2E-09 | Edit + re-run: same slot advances to `rev 2`, the newer revision/bytes are exported, the export row names the new revision |
+| ART-E2E-10 | Artifact status element fits at 320 px and 1440 px (`scrollWidth ≤ innerWidth + 1`) with no console errors |
+| ART-E2E-11 | **Expected fail (G1-BL-13):** a fresh capture reports `data-export=blocked` while `guardExport` writes the same export normally |
+
+### 14.3 CP03 attack results (c037496 correction + 5154035 scoping)
+
+| Attack | Result |
+| --- | --- |
+| `.kotoha.json` immediately after attribute edit (KOT-003) | PASS — export authorized; live attribute merged; new export row correct (ART-E2E-07) |
+| `.kotoha.json` after Markdown body edit | PASS — refused with `入力が変更されています。…`, zero rows written (ART-E2E-07) |
+| Document switch / reload / import → export | PASS — reload + import re-captures and exports; rows survive (ART-E2E-08) |
+| Capture superseded / pane artifacts authorize the current document | PASS — attribute edit drops the `.docx` result but the stored Markdown artifact still authorizes the bundle export (ART-E2E-07, `5154035` adoption-scoped capture) |
+| `verifySnapshot` regressions in other tools | PASS — all five non-Kotoha tools export through the same guard without `verifySnapshot` (ART-E2E-01..05) |
+| 320–1440 px overflow / console errors | PASS for the new status element (ART-E2E-10); existing UI-002/QA-002/REG-5C-12/C-FIX-010 evidence reused |
+| Security: no external transmission / credentials / auto-execution | PASS — zero non-app origins across 11 contexts; export payloads contain engine output only; G0 credential evidence reused |
+| Data integrity: hash/digest/revision identity | PASS — file SHA-256 equals `exportByteHash`; `contentDigest`/`revisionHash` equal the stored revision and its validation record; exported revision is the current tip |
+| Revision/Transaction C01/C02/C04 | PASS at engine level (repository/contract tests) and observed at UI level: capture commits artifact+revision+validation, export writes exactly one `exports` row and no revision/artifact, guard tuple (`expectedScopeEpoch=1`, `historyEpoch`, `currentRevisionId`) accepted; stale/moved refusals persist no row |
+| Export Gate §8.5 enforcement at the export trigger | **Gap (G1-BL-14, P2):** `guardExport` does not consult `validationSummary`/`decideExport`; eligibility is display-only. Not reproducible through product paths today (capture validates before publish and shipped validators pass), so no observed bad export |
+
+### 14.4 REG-G1-01~29 verdicts on the integrated tree
+
+`PASS` = executed evidence covers the row as far as G1 exposes the behavior;
+`PARTIAL` = the engine/repository contract is executed and green but no product
+UI path exists for the remaining step; `NOT TESTED` = no executable path.
+
+| REG | Verdict | Evidence |
+| --- | --- | --- |
+| 01 | PARTIAL | ART-E2E-01..06 (six tools, IDB dumps, downloads); unit `capture/tool-slots`; legacy reopen not re-run |
+| 02 | PARTIAL | `wiring/kotoha-slots` AI-apply append unit; no browser revision assertion for apply |
+| 03 | PARTIAL | repository tamper/append unit; ART-E2E-09 shows new revision exported |
+| 04 | PARTIAL | repository restore-as-append unit; no G1 restore UI |
+| 05 | PARTIAL | `capture` options-change append + `status-view` stale block; ART-E2E-09 source edit; options-only UI not exercised |
+| 06 | PARTIAL | `capture` superseded-mid-validation unit |
+| 07 | PARTIAL | `validation/policy` + §13.3 conditions; UI cannot inject an unregistered REQUIRED |
+| 08 | PARTIAL | `decideExport` deny unit; ArtifactStatus blocked display; no injected invalid revision in UI (see BL-14) |
+| 09 | NOT TESTED | engine `kind=debug` + warning unit only; no debug-export UI in G1 |
+| 10 | PASS | repository reload/hydrate unit + ART-E2E-08 reload keeps artifacts/exports and re-exports against stored revision/validation |
+| 11 | PARTIAL | abort-injection unit (fake IDB) |
+| 12 | PARTIAL | quota-injection unit |
+| 13 | PARTIAL | open-failure unit |
+| 14 | PARTIAL | memory-only unit |
+| 15 | PARTIAL | unknown-version gate unit; no real prior schema (CP02-B4 stands) |
+| 16 | PARTIAL | append-vs-reset serialization unit |
+| 17 | PARTIAL | pointer CAS + two-tab harness units; no browser two-context run |
+| 18 | PASS | ART-E2E-07 stale refusal (download/copy absent, no row) + `guard` unit + reused PATCH-006/FIX-015 |
+| 19 | PASS (reused) | G0 `phase5c-stage3`/`hybrid-settings` credential evidence; artifact payload builders audited in `tool-slots`; exported bundle JSON contains no credential |
+| 20 | PASS | context request log in every new test: zero non-app origins |
+| 21 | PARTIAL | contract input-fingerprint unit; options-only stale unverified in browser |
+| 22 | PARTIAL | `reg-g1-hash` digest-identity unit |
+| 23 | PARTIAL | repository restore-vs-duplicate unit |
+| 24 | PARTIAL | policy fingerprint/validator-version invalidation unit |
+| 25 | PARTIAL | epoch-race unit (fake IDB) |
+| 26 | PASS | ART-E2E-01..08: file hash == `exportByteHash`, row bound to current revision, derivation kinds, no old-revision export |
+| 27 | PASS | ART-E2E-06/07 independent slots, staleness and authorizations; `wiring/kotoha-slots` |
+| 28 | PARTIAL | `guard` stale/moved units + ART-E2E-07 stale click; no slow-regeneration timing matrix |
+| 29 | PARTIAL | §13.3 conditions cover 5 frameworks / 4 languages at validation level; browser exports cover vitest + python only |
+
+### 14.5 INV-01~34 verdicts
+
+| INV | Verdict | Evidence |
+| --- | --- | --- |
+| 01 | PASS | repository slot identity unit; per-slot artifact rows in all new IDB dumps |
+| 02 | PARTIAL | contract draft-link shape; no runtime draft↔artifact link check |
+| 03 | PASS | create/type conflict unit; exactly one artifact row per slot in E2E |
+| 04 | PARTIAL | delete/no-reuse unit |
+| 05 | PARTIAL | delete/slot-release unit; link repair not exercised |
+| 06 | PASS | append-only + tamper unit; old rows retained in E2E dumps |
+| 07 | PASS | parent/ordinal/restore-lineage unit |
+| 08 | PASS | `capture` options-append + ART-E2E-09 rev 2 in the same artifact |
+| 09 | PARTIAL | restore append unit |
+| 10 | PASS | abort keeps pointer/revisions; export transaction unit |
+| 11 | PASS | `crypto.randomUUID` ids + monotonic ordinal; repository append unit |
+| 12 | PASS | SHA-256 vectors + digest identity unit; E2E hashes are 64-hex and recompute |
+| 13 | PASS | tamper unit + independent file SHA-256 in every export |
+| 14 | PARTIAL | record non-effective → denied at engine; UI path in BL-14 |
+| 15 | PASS | content tuple/capability unit |
+| 16 | PASS | policy binding unit + E2E validation row bound to revision digest/hash |
+| 17 | PARTIAL | REQUIRED skip/unsupported blocked unit; UI export not gated (BL-14) |
+| 18 | PASS | repository commits validation only against stored revision hashes; new revision validated separately in ART-E2E-09 |
+| 19 | PARTIAL | abort unit (fake IDB); UI mutation atomicity only observed post-commit |
+| 20 | PARTIAL | unknown-version gate unit |
+| 21 | PARTIAL | cross-tab CAS unit |
+| 22 | PARTIAL | cross-tab create unit |
+| 23 | PASS (reused) | G0 secret scans + payload builders audited; bundle JSON inspected |
+| 24 | PASS | ART-E2E request logs: zero external origins |
+| 25 | PARTIAL | engine blocks REQUIRED-incomplete; export trigger not gated (BL-14) |
+| 26 | PASS | E2E export bytes/hash/current-revision/history |
+| 27 | PARTIAL | fingerprint options material unit; no browser options-only staleness |
+| 28 | PARTIAL | digest identity unit; identical-content re-capture not exercised in browser |
+| 29 | PARTIAL | revision-hash protected fields unit |
+| 30 | PASS | validator config/policy fingerprint invalidation unit + §13 conditions |
+| 31 | PARTIAL | epoch CAS unit (fake IDB) |
+| 32 | PARTIAL | tombstone/purge/reset unit |
+| 33 | PARTIAL | persistence reason/limit units |
+| 34 | PARTIAL | restore-vs-duplicate unit |
+
+Summary: REG 6 PASS / 22 PARTIAL / 1 NOT TESTED; INV 16 PASS / 18 PARTIAL /
+0 NOT TESTED. No row regressed from a previously recorded PASS.
+
+### 14.6 Defects and proposals
+
+| ID | Severity | Finding | Reproduction | Scope | Proposal |
+| --- | --- | --- | --- | --- | --- |
+| G1-BL-13 | P2 (display) | Slot badge derives eligibility from the capture snapshot artifact record, which is read before `appendRevision`; a fresh capture therefore reports `revision-not-current` (and `artifact-not-ready` on the first revision) while the guard accepts the export | Any tool → run → badge title `通常書き出し不可: 最新リビジョンではない`; same export downloads normally (ART-E2E-11) | ArtifactStatus display only; no data or authorization effect | Backlog: derive the view from the repository's current artifact/pointer after capture |
+| G1-BL-14 | P2 (contract conformance) | `guardExport` never reads `validationSummary`/`decideExport`; §8.5 gating is display-only | Static: `src/components/artifacts/ExportGuard.ts` has no validation check; `decideExport` has no caller in `src/` | Latent: not reachable through shipped validators (capture validates before publish) | Backlog: wire `decideExport` into the guard (normal/debug) |
+
+No P0 or reproducible P1 was found. The transient refusal seen once when a
+capture landed between the readiness check and the click is the intended
+`MOVED_ARTIFACT` behaviour (retry succeeds); the spec settles before clicking
+instead of masking it.
+
+### 14.7 G1 closure verdict
+
+- **P0:** 0. **P1:** 0 (reproducible). **P2:** 2 (BL-13, BL-14, both backlog).
+- Six-tool capture → ExportGuard → registerExport → download, the CP03 Kotoha
+  attack set, security (zero external origins), and data-integrity
+  (file-hash/digest/revision/validation bindings) are **PASS** with executed
+  browser evidence.
+- Remaining PARTIAL rows are flows G1 does not expose in the product UI
+  (restore, delete/reset, debug export, multi-tab, quota/schema) and are green
+  at repository/contract level; they do not block closure under Lean v1.1.
+- **Verdict: G1 closure QA PASS** with BL-13/BL-14 carried in
+  `docs/G1_BACKLOG.md`. Lead merges; Q05 does not merge, deploy, or call the
+  gateway.
