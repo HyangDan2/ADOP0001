@@ -82,6 +82,13 @@ function selector(
   return value;
 }
 
+function contentStructure(
+  validatorId: string,
+  requirement: ValidationRequirementSpec['requirement'],
+): ValidationRequirementSpec {
+  return { level: 'structure', scope: 'content-entry', validatorId, requirement };
+}
+
 interface DescriptorSeed {
   type: ArtifactType;
   labelJa: string;
@@ -121,7 +128,11 @@ export const ARTIFACT_TYPE_DESCRIPTORS: Readonly<Record<ArtifactType, ArtifactTy
       multiContent: true,
       binary: false,
       validationLevels: ['structure'],
-      validationRequirements: [],
+      validationRequirements: [
+        contentStructure('format.markdown', 'REQUIRED'),
+        contentStructure('format.html', 'OPTIONAL'),
+        contentStructure('format.json', 'OPTIONAL'),
+      ],
       exportFormats: ['markdown', 'html'],
     }),
 
@@ -136,7 +147,11 @@ export const ARTIFACT_TYPE_DESCRIPTORS: Readonly<Record<ArtifactType, ArtifactTy
       multiContent: true,
       binary: false,
       validationLevels: ['structure'],
-      validationRequirements: [],
+      validationRequirements: [
+        contentStructure('format.markdown', 'REQUIRED'),
+        contentStructure('format.text', 'REQUIRED'),
+        contentStructure('format.json', 'OPTIONAL'),
+      ],
       exportFormats: ['markdown', 'text'],
     }),
 
@@ -158,7 +173,11 @@ export const ARTIFACT_TYPE_DESCRIPTORS: Readonly<Record<ArtifactType, ArtifactTy
       multiContent: true,
       binary: true,
       validationLevels: ['syntax', 'structure'],
-      validationRequirements: [],
+      validationRequirements: [
+        contentStructure('format.mermaid', 'REQUIRED'),
+        contentStructure('format.svg', 'OPTIONAL'),
+        contentStructure('format.json', 'OPTIONAL'),
+      ],
       exportFormats: ['mmd', 'svg', 'png'],
     }),
 
@@ -172,7 +191,10 @@ export const ARTIFACT_TYPE_DESCRIPTORS: Readonly<Record<ArtifactType, ArtifactTy
       multiContent: false,
       binary: false,
       validationLevels: ['syntax', 'structure', 'compile'],
-      validationRequirements: [],
+      validationRequirements: [
+        contentStructure('code.test-suite.structure', 'REQUIRED'),
+        contentStructure('format.json', 'OPTIONAL'),
+      ],
       exportFormats: ['test'],
     }),
 
@@ -187,7 +209,10 @@ export const ARTIFACT_TYPE_DESCRIPTORS: Readonly<Record<ArtifactType, ArtifactTy
       multiContent: true,
       binary: false,
       validationLevels: ['structure'],
-      validationRequirements: [],
+      validationRequirements: [
+        contentStructure('format.markdown', 'REQUIRED'),
+        contentStructure('format.json', 'REQUIRED'),
+      ],
       exportFormats: ['markdown', 'bundle'],
     }),
 
@@ -206,7 +231,11 @@ export const ARTIFACT_TYPE_DESCRIPTORS: Readonly<Record<ArtifactType, ArtifactTy
       multiContent: true,
       binary: true,
       validationLevels: ['structure'],
-      validationRequirements: [],
+      validationRequirements: [
+        contentStructure('format.docx', 'REQUIRED'),
+        contentStructure('format.markdown', 'REQUIRED'),
+        contentStructure('format.json', 'REQUIRED'),
+      ],
       exportFormats: ['docx', 'markdown', 'bundle'],
     }),
 
@@ -224,7 +253,10 @@ export const ARTIFACT_TYPE_DESCRIPTORS: Readonly<Record<ArtifactType, ArtifactTy
       multiContent: true,
       binary: false,
       validationLevels: ['syntax', 'structure', 'compile'],
-      validationRequirements: [],
+      validationRequirements: [
+        contentStructure('code.source.structure', 'REQUIRED'),
+        contentStructure('format.json', 'OPTIONAL'),
+      ],
       exportFormats: [
         'all',
         'python',
