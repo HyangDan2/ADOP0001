@@ -423,9 +423,29 @@ test('G2-E2E-03: Haruhi and the Kotoha DOCX slot record revision-based dependenc
   expect(currentRevision(tests).dependencies).toEqual([
     { artifactId: source.artifactId, revisionId: source.currentRevisionId, relation: 'validates' },
   ]);
-  expect(currentRevision(docx).dependencies).toEqual([
-    { artifactId: markdown.artifactId, revisionId: markdown.currentRevisionId, relation: 'derived-from' },
+
+  // The DOCX edge names the Markdown revision captured by the same run: the
+  // first revisions of both slots come from the sample adoption. A later
+  // Markdown revision must not retarget an already captured DOCX edge.
+  const markdownRevisions = revisions
+    .filter((revision) => revision.artifactId === markdown.artifactId)
+    .sort((a, b) => a.ordinal - b.ordinal);
+  const docxRevisions = revisions
+    .filter((revision) => revision.artifactId === docx.artifactId)
+    .sort((a, b) => a.ordinal - b.ordinal);
+  expect(docxRevisions[0].dependencies).toEqual([
+    {
+      artifactId: markdown.artifactId,
+      revisionId: markdownRevisions[0].revisionId,
+      relation: 'derived-from',
+    },
   ]);
+  for (const revision of docxRevisions) {
+    expect(revision.dependencies).toHaveLength(1);
+    expect(markdownRevisions.map((item) => item.revisionId)).toContain(
+      revision.dependencies![0].revisionId,
+    );
+  }
 
   // The workspace resolves the edge against the stored target revision.
   await openWorkspace(page);
