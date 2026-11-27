@@ -205,4 +205,4 @@ fixed contract SHA. See the freeze document §11.3.
    Supervisor Lean Engineering v1.1, and CP02~CP04 are milestones.
 7. Independent G1 QA runs at G1 closure, not per milestone.
 
-**Current state: CP03 CLOSED at `5154035` (CI `45925519226` success). G1 closure QA in progress; G1 close pending.**
+**Current state: G1 CLOSED at `e723302` (CI `45927895810` success). Independent QA verdict: PASS (0 P0 / 0 P1 / 2 P2 backlog). Awaiting Supervisor G1 closure review; G2 implementation, main merge and deploy remain locked.**
