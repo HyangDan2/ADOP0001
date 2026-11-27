@@ -110,7 +110,8 @@ export interface ExportGuardDeps {
  * G1 correction (BL-14): the export decision is re-derived from the stored
  * record, the current revision and a freshly resolved plan. A record that was
  * effective at capture but is not (policy version/fingerprint, validator set)
- * or whose REQUIRED results are not all PASS blocks a normal export.
+ * or whose REQUIRED results are not all PASS blocks a normal export. A record
+ * only counts when it is stored: the in-memory snapshot is never a substitute.
  */
 export async function exportValidationDecision(
   snapshot: ArtifactSlotSnapshot,
@@ -133,7 +134,7 @@ export async function exportValidationDecision(
       policy,
       context: snapshot.validationContext,
     });
-    return decideExport({ record: record ?? snapshot.validation ?? null, revision, plan, policy });
+    return decideExport({ record: record ?? null, revision, plan, policy });
   } catch (cause) {
     console.warn('[artifact] validation plan could not be resolved', cause);
     return { allowed: false, kind: 'none', reasons: ['validation-unavailable'] };
@@ -268,11 +269,11 @@ export async function guardExport(
 }
 
 /**
- * Copy path. G1 correction (BL-14): the copy button now waits for the same
- * stored-identity and validation-policy decision as a download before the text
- * is returned, so Copy cannot bypass the gate. Registration stays queued; a
- * registration failure is reported to the console instead of failing a copy
- * whose bytes were already verified against the stored entry.
+ * Copy path. G1 correction (BL-14): Copy waits for the same live-fingerprint,
+ * stored-identity, validation-policy and CAS registration steps as a download
+ * before the text is returned, so it cannot bypass or race the gate. A
+ * registration failure refuses the copy instead of copying text that the
+ * repository no longer authorizes.
  */
 export async function guardCopyText(
   binding: ExportGuardBinding,
@@ -295,6 +296,10 @@ export async function guardCopyText(
   if (entry.encoding !== 'utf8' || entry.payload !== options.text) {
     throw new Error(CONTENT_MISMATCH_MESSAGE);
   }
+  const live = await binding.liveFingerprint();
+  if (!live || live !== snapshot.fingerprint) throw new Error(STALE_INPUT_MESSAGE);
+  binding.assertCurrent();
+
   const repository = options.repository ?? artifactRepository();
   const artifact = await repository.getArtifact(snapshot.artifact.artifactId);
   const revision = await repository.getCurrentRevision(snapshot.artifact.artifactId);
@@ -312,35 +317,35 @@ export async function guardCopyText(
     registry: options.registry,
   });
   if (!decision.allowed) throw new Error(decisionMessage(decision));
-  binding.assertCurrent();
 
   const bytes = textBytes(options.text);
-  void (async () => {
-    const hash = await exportByteHash(bytes);
-    if (hash !== entry.contentHash) return;
-    await repository.registerExport({
-      artifactId: artifact.artifactId,
-      revisionId: revision.revisionId,
-      revisionHash: revision.revisionHash,
-      contentDigest: revision.contentDigest,
-      format: options.format,
-      exportContentType: options.contentType,
-      exportByteHash: hash,
-      exportByteLength: bytes.byteLength,
-      derivation: {
-        kind: 'direct',
-        sourceContentId: entry.contentId,
-        sourceContentHash: entry.contentHash,
-      },
-      fileName: options.fileName,
-      kind: 'normal',
-      guard: {
-        expectedScopeEpoch: ARTIFACT_SCOPE_EPOCH,
-        expectedHistoryEpoch: artifact.historyEpoch,
-        expectedCurrentRevisionId: revision.revisionId,
-      },
-      exportBytes: bytes,
-    });
-  })().catch((cause) => console.warn('[artifact] copy export was not registered', cause));
+  const hash = await exportByteHash(bytes);
+  if (hash !== entry.contentHash) throw new Error(CONTENT_MISMATCH_MESSAGE);
+  binding.assertCurrent();
+
+  await repository.registerExport({
+    artifactId: artifact.artifactId,
+    revisionId: revision.revisionId,
+    revisionHash: revision.revisionHash,
+    contentDigest: revision.contentDigest,
+    format: options.format,
+    exportContentType: options.contentType,
+    exportByteHash: hash,
+    exportByteLength: bytes.byteLength,
+    derivation: {
+      kind: 'direct',
+      sourceContentId: entry.contentId,
+      sourceContentHash: entry.contentHash,
+    },
+    fileName: options.fileName,
+    kind: 'normal',
+    guard: {
+      expectedScopeEpoch: ARTIFACT_SCOPE_EPOCH,
+      expectedHistoryEpoch: artifact.historyEpoch,
+      expectedCurrentRevisionId: revision.revisionId,
+    },
+    exportBytes: bytes,
+  });
+  binding.assertCurrent();
   return options.text;
 }

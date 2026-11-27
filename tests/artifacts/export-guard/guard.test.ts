@@ -394,9 +394,56 @@ describe('export guard — validation policy gating (G1-BL-14)', () => {
       snapshot,
     });
     expect(text).toBe('# Spec\n');
-    await vi.waitFor(async () => {
-      const exports = await repo.listExports({ artifactId: captured.artifact!.artifactId });
-      expect(exports).toHaveLength(1);
-    });
+    const exports = await repo.listExports({ artifactId: captured.artifact!.artifactId });
+    expect(exports, 'the copy is registered (CAS-checked) before the text is returned').toHaveLength(1);
+  });
+
+  it('blocks when no stored record exists, even if the snapshot still carries one', async () => {
+    const { repo, request } = await fixture();
+    const captured = await request();
+    const snapshot = getArtifactSlotSnapshot(SLOT)!;
+    expect(snapshot.validation).not.toBeNull();
+    const listValidations = vi.spyOn(repo, 'listValidations').mockResolvedValue([]);
+    const write = vi.fn();
+
+    await expect(
+      guardExport(binding(snapshot.fingerprint), [MARKDOWN_PLAN], write, {
+        repository: repo,
+        snapshot,
+      }),
+    ).rejects.toThrow(`${VALIDATION_BLOCKED_MESSAGE}（検証記録なし）`);
+    await expect(
+      guardCopyText(binding(snapshot.fingerprint), {
+        format: 'markdown',
+        fileName: 'payment.spec.md',
+        contentType: 'text/markdown',
+        entry: entryByRole('primary'),
+        text: '# Spec\n',
+        repository: repo,
+        snapshot,
+      }),
+    ).rejects.toThrow(`${VALIDATION_BLOCKED_MESSAGE}（検証記録なし）`);
+    expect(write).not.toHaveBeenCalled();
+    expect(await repo.listExports({ artifactId: captured.artifact!.artifactId })).toHaveLength(0);
+    listValidations.mockRestore();
+  });
+
+  it('refuses to copy when the live fingerprint moved past the snapshot', async () => {
+    const { repo, request } = await fixture();
+    await request();
+    const snapshot = getArtifactSlotSnapshot(SLOT)!;
+
+    await expect(
+      guardCopyText(binding('9'.repeat(64)), {
+        format: 'markdown',
+        fileName: 'payment.spec.md',
+        contentType: 'text/markdown',
+        entry: entryByRole('primary'),
+        text: '# Spec\n',
+        repository: repo,
+        snapshot,
+      }),
+    ).rejects.toThrow(STALE_INPUT_MESSAGE);
+    expect(await repo.listExports({ artifactId: snapshot.artifact.artifactId })).toHaveLength(0);
   });
 });
