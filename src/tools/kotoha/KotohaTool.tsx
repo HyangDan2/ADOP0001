@@ -5,7 +5,7 @@ import { EngineDiagnostics } from '../../components/EngineDiagnostics';
 import { DOCX_FILE_ACCEPT } from '../../lib/fileKinds';
 import { takeFileInput } from '../../lib/fileInput';
 import { useOpenedFile } from '../../lib/fileBus';
-import { copyText, downloadBlob } from '../../lib/util';
+import { copyText, downloadBlob, sha256Hex } from '../../lib/util';
 import { useRequestGate, type RequestHandle } from '../../lib/requestGate';
 import { type KotohaOutput } from './adapter';
 import { attributeSignature, parseBundleExport, withAttributes, type BundleAttributes, type KotohaBundle, type LossWarning } from './bundle';
@@ -23,15 +23,33 @@ import {
   KOTOHA_LIMITS,
   type KotohaSaveResult,
 } from './index';
-import { runEngine } from '../../engine/core/runner';
+import { runEngine, ENGINE_VERSION } from '../../engine/core/runner';
 import type { EngineDiagnostic } from '../../adapters/types';
+import type { ExecutionContext } from '../../engine/core/contracts';
 import { HybridAssist } from '../../components/HybridAssist';
+import {
+  ARTIFACT_SLOTS,
+  DOCX_CONTENT_TYPE,
+  KOTOHA_MARKDOWN_SLOT_SOURCE,
+  kotohaBinaryInputs,
+  kotohaDocxContents,
+  kotohaMarkdownContents,
+} from '../../features/artifacts/tools';
+import { useArtifactCapture } from '../../components/artifacts/useArtifactCapture';
+import { ArtifactSlotStatus } from '../../components/artifacts/ArtifactStatus';
+import {
+  NO_ARTIFACT_MESSAGE,
+  entryByRole,
+  guardCopyText,
+  guardExport,
+} from '../../components/artifacts/ExportGuard';
 const PRESET_KEY = 'adop0001.kotoha.presets';
 
 /** A document with warnings waits here, together with the request that produced it. */
 interface PendingApproval {
   output: KotohaOutput;
   request?: RequestHandle;
+  context?: ExecutionContext<'kotoha'>;
 }
 
 /** The store reports `indexeddb` / `memory`; the UI shows a Japanese label. */
@@ -53,6 +71,32 @@ const ERROR_LABEL: Record<string, string> = {
   'no-body': 'この文書には本文（w:body）がありません。',
   'bad-bundle': 'この JSON は琴葉のバンドルではありません。',
 };
+
+/** A bundle import is a document input, not an engine run; its identity is the parsed bundle. */
+async function bundleImportContext(parsed: { bundle: KotohaBundle; markdown: string }): Promise<ExecutionContext<'kotoha'>> {
+  const sourceHash = await sha256Hex(parsed.markdown);
+  const cacheKey = await sha256Hex(
+    JSON.stringify([
+      'adop0001.artifact.bundle-import.v1',
+      parsed.bundle.fileName,
+      sourceHash,
+      JSON.stringify(parsed.bundle),
+    ]),
+  );
+  return {
+    requestId: `kotoha-import-${parsed.bundle.fileName}`,
+    toolId: 'kotoha',
+    sourceName: parsed.bundle.fileName,
+    sourceHash,
+    options: { action: 'decompose', bytes: new Uint8Array(), fileName: parsed.bundle.fileName } as ExecutionContext<'kotoha'>['options'],
+    providerMode: 'local-static',
+    diagnostics: [],
+    elapsedMs: 0,
+    cacheKey,
+    engineVersion: ENGINE_VERSION,
+    cacheHit: false,
+  };
+}
 
 function explainError(cause: unknown, fallback: string): string {
   const code = kotohaErrorCode(cause);
@@ -109,6 +153,9 @@ export function KotohaTool() {
   const documentEpoch = useRef(0);
   /** FIX-003: a newer file/render/reset supersedes the run in flight. */
   const gate = useRequestGate();
+  /** CP03: the two slots are captured independently and never authorize each other. */
+  const artifactMd = useArtifactCapture<'kotoha'>(ARTIFACT_SLOTS.kotohaMarkdown);
+  const artifactDocx = useArtifactCapture<'kotoha'>(ARTIFACT_SLOTS.kotohaDocx);
 
   useEffect(() => {
     const resetEpoch = kotohaResetEpoch();
@@ -150,7 +197,11 @@ export function KotohaTool() {
     window.setTimeout(() => setToast(null), 2200);
   };
 
-  const adopt = async (outputValue: KotohaOutput, request?: RequestHandle): Promise<KotohaSaveResult | null> => {
+  const adopt = async (
+    outputValue: KotohaOutput,
+    request?: RequestHandle,
+    context?: ExecutionContext<'kotoha'>,
+  ): Promise<KotohaSaveResult | null> => {
     if (request && !request.isCurrent()) return null;
     const resetEpoch = kotohaResetEpoch();
     documentEpoch.current += 1;
@@ -175,6 +226,30 @@ export function KotohaTool() {
     }, resetEpoch);
     if (request && !request.isCurrent()) return null;
     if (saved.superseded || resetEpoch !== kotohaResetEpoch()) return null;
+    if (context) {
+      const binaryInputs = await kotohaBinaryInputs(context.options as { bytes?: unknown });
+      const isCurrent = () => (!request || request.isCurrent()) && resetEpoch === kotohaResetEpoch();
+      if (isCurrent()) {
+        artifactMd.remember(context);
+        artifactDocx.remember(context);
+        artifactMd.capture({
+          contents: kotohaMarkdownContents(outputValue),
+          sourceName: KOTOHA_MARKDOWN_SLOT_SOURCE(outputValue),
+          binaryInputs,
+          inputRevision: documentEpoch.current,
+          isCurrent,
+        });
+        if (outputValue.docx) {
+          artifactDocx.capture({
+            contents: kotohaDocxContents(outputValue),
+            sourceName: outputValue.fileName,
+            binaryInputs,
+            inputRevision: documentEpoch.current,
+            isCurrent,
+          });
+        }
+      }
+    }
     setStorage(
       saved.storage === 'indexeddb'
         ? `スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString('ja-JP')}`
@@ -184,12 +259,16 @@ export function KotohaTool() {
   };
 
   /** A document with structural limits is shown to the user *before* it replaces the current work. */
-  const offer = async (outputValue: KotohaOutput, request?: RequestHandle) => {
+  const offer = async (
+    outputValue: KotohaOutput,
+    request?: RequestHandle,
+    context?: ExecutionContext<'kotoha'>,
+  ) => {
     if (outputValue.warnings.length) {
-      setPending({ output: outputValue, request });
+      setPending({ output: outputValue, request, context });
       return;
     }
-    await adopt(outputValue, request);
+    await adopt(outputValue, request, context);
   };
 
   const runSample = async () => {
@@ -208,7 +287,7 @@ export function KotohaTool() {
         signal: request.signal,
       });
       if (!request.isCurrent()) return;
-      await adopt(result.output, request);
+      await adopt(result.output, request, result.context);
       if (!request.isCurrent()) return;
       setDiagnostics(result.diagnostics);
       setElapsed(result.elapsedMs);
@@ -247,7 +326,7 @@ export function KotohaTool() {
         signal: request.signal,
       });
       if (!request.isCurrent()) return;
-      await offer(result.output, request);
+      await offer(result.output, request, result.context);
       if (!request.isCurrent()) return;
       setDiagnostics(result.diagnostics);
       setElapsed(result.elapsedMs);
@@ -277,7 +356,7 @@ export function KotohaTool() {
         markdown: parsed.markdown,
         bundle: parsed.bundle,
         warnings: parsed.bundle.warnings ?? [],
-      }, request);
+      }, request, await bundleImportContext(parsed));
       if (!request.isCurrent() || !saved) return;
       // A failed IndexedDB write stays a failure message: the import succeeded,
       // the persistence did not, and the success text must not overwrite that
@@ -344,6 +423,23 @@ export function KotohaTool() {
       }, resetEpoch);
       if (!request.isCurrent()) return;
       if (saved.superseded || resetEpoch !== kotohaResetEpoch()) return;
+      artifactMd.remember(result.context);
+      artifactDocx.remember(result.context);
+      {
+        const isCurrent = () => request.isCurrent() && resetEpoch === kotohaResetEpoch();
+        artifactMd.capture({
+          contents: kotohaMarkdownContents(result.output),
+          sourceName: KOTOHA_MARKDOWN_SLOT_SOURCE(result.output),
+          inputRevision: documentEpoch.current,
+          isCurrent,
+        });
+        artifactDocx.capture({
+          contents: kotohaDocxContents(result.output),
+          sourceName: result.output.fileName,
+          inputRevision: documentEpoch.current,
+          isCurrent,
+        });
+      }
       if (saved.storage === 'memory') setStorage('下書きを保存できませんでした（メモリのみ）');
       if (download) {
         downloadBlob(
@@ -366,9 +462,58 @@ export function KotohaTool() {
     else void loadBundleFile(opened.file);
   });
 
+  const markdownBinding = {
+    slot: ARTIFACT_SLOTS.kotohaMarkdown,
+    assertCurrent: () => {
+      if (!output) throw new Error(NO_ARTIFACT_MESSAGE);
+    },
+    liveFingerprint: () => artifactMd.liveFingerprint(),
+  };
+
+  const assertDocxCurrent = () => {
+    if (!output?.docx) {
+      throw new Error('先に「.docx を再構築」を実行してください。');
+    }
+    if (
+      !docxSource ||
+      docxSource.markdown !== markdown ||
+      !attributes ||
+      docxSource.attributes !== attributeSignature(attributes)
+    ) {
+      throw new Error('編集内容はまだ .docx に反映されていません。先に「.docx を再構築」を実行してください。');
+    }
+  };
+
+  const docxBinding = {
+    slot: ARTIFACT_SLOTS.kotohaDocx,
+    assertCurrent: assertDocxCurrent,
+    liveFingerprint: () => artifactDocx.liveFingerprint(),
+  };
+
+  const writeDocx = async (fileName: string) => {
+    assertDocxCurrent();
+    await guardExport(
+      docxBinding,
+      [
+        {
+          format: 'docx',
+          fileName,
+          contentType: DOCX_CONTENT_TYPE,
+          entry: entryByRole('primary'),
+          payload: () => {
+            if (!output?.docx) throw new Error('先に「.docx を再構築」を実行してください。');
+            return output.docx;
+          },
+        },
+      ],
+      (bytes, name) => downloadBlob(name, bytes, DOCX_CONTENT_TYPE),
+    );
+  };
+
   /** Export always merges the inspector's current values into the bundle (KOT-003). */
-  const exportBundle = (base?: string) => {
+  const exportBundle = async (base?: string) => {
     if (!document) return;
+    markdownBinding.assertCurrent();
     const source = withAttributes(document.bundle, attributes);
     const payload = {
       version: 1,
@@ -377,10 +522,20 @@ export function KotohaTool() {
       markdown,
       bundle: source,
     };
-    downloadBlob(
-      `${base ?? document.bundle.fileName.replace(/\.docx$/i, '')}.kotoha.json`,
-      JSON.stringify(payload, null, 2),
-      'application/json;charset=utf-8',
+    const text = JSON.stringify(payload, null, 2);
+    await guardExport(
+      markdownBinding,
+      [
+        {
+          format: 'bundle',
+          fileName: `${base ?? document.bundle.fileName.replace(/\.docx$/i, '')}.kotoha.json`,
+          contentType: 'application/json',
+          entry: entryByRole('style-bundle'),
+          payload: () => text,
+          derivation: 'rendered',
+        },
+      ],
+      (bytes, name) => downloadBlob(name, bytes, 'application/json;charset=utf-8'),
     );
   };
 
@@ -758,13 +913,7 @@ export function KotohaTool() {
                     <button
                       type="button"
                       className="btn btn-sm"
-                      onClick={() =>
-                        downloadBlob(
-                          output.fileName,
-                          output.docx!,
-                          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                        )
-                      }
+                      onClick={() => void writeDocx(output.fileName)}
                       data-testid="kotoha-download"
                     >
                       .docx をダウンロード
@@ -838,12 +987,35 @@ export function KotohaTool() {
         onApplied={(next, note) => {
           setMarkdown(next.markdown);
           setOutput(next);
+          artifactMd.capture({
+            contents: kotohaMarkdownContents(next),
+            sourceName: KOTOHA_MARKDOWN_SLOT_SOURCE(next),
+            inputRevision: documentEpoch.current,
+            forceAppend: true,
+            isCurrent: () => true,
+          });
           showToast(note);
         }}
       />
       <div className="statusbar">
         <span className="dot" /> <span>OOXML エンジン（JSZip）</span>
         <span>{busy ? '処理中' : '待機中'}</span>
+        <ArtifactSlotStatus
+          slot={ARTIFACT_SLOTS.kotohaMarkdown}
+          label="Markdown"
+          stale={!output || output.markdown !== markdown}
+        />
+        <ArtifactSlotStatus
+          slot={ARTIFACT_SLOTS.kotohaDocx}
+          label="DOCX"
+          stale={
+            !output?.docx ||
+            !docxSource ||
+            !attributes ||
+            docxSource.markdown !== markdown ||
+            docxSource.attributes !== attributeSignature(attributes)
+          }
+        />
         <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
@@ -880,7 +1052,7 @@ export function KotohaTool() {
                   const approval = pending;
                   setPending(null);
                   if (approval.request && !approval.request.isCurrent()) return;
-                  void adopt(approval.output, approval.request);
+                  void adopt(approval.output, approval.request, approval.context);
                 }}
                 data-testid="kotoha-loss-continue"
               >
@@ -903,20 +1075,7 @@ export function KotohaTool() {
               label: '.docx',
               description: 'スタイル・ヘッダー・フッターを保った再構築済み文書',
               fileName: (base) => `${base}.docx`,
-              run: (base) => {
-                if (!output?.docx) {
-                  throw new Error('先に「.docx を再構築」を実行してください。');
-                }
-                if (
-                  !docxSource ||
-                  docxSource.markdown !== markdown ||
-                  !attributes ||
-                  docxSource.attributes !== attributeSignature(attributes)
-                ) {
-                  throw new Error('編集内容はまだ .docx に反映されていません。先に「.docx を再構築」を実行してください。');
-                }
-                downloadBlob(`${base}.docx`, output.docx, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-              },
+              run: (base) => writeDocx(`${base}.docx`),
             },
             {
               id: 'bundle',
@@ -930,8 +1089,30 @@ export function KotohaTool() {
               label: '.md',
               description: '編集した Markdown 文書',
               fileName: (base) => `${base}.md`,
-              run: (base) => downloadBlob(`${base}.md`, markdown, 'text/markdown;charset=utf-8'),
-              copy: () => markdown,
+              run: async (base) => {
+                markdownBinding.assertCurrent();
+                await guardExport(
+                  markdownBinding,
+                  [
+                    {
+                      format: 'markdown',
+                      fileName: `${base}.md`,
+                      contentType: 'text/markdown',
+                      entry: entryByRole('primary'),
+                      payload: () => markdown,
+                    },
+                  ],
+                  (bytes, name) => downloadBlob(name, bytes, 'text/markdown;charset=utf-8'),
+                );
+              },
+              copy: () =>
+                guardCopyText(markdownBinding, {
+                  format: 'markdown',
+                  fileName: `${document.bundle.fileName.replace(/\.docx$/i, '') || 'document'}.md`,
+                  contentType: 'text/markdown',
+                  entry: entryByRole('primary'),
+                  text: markdown,
+                }),
             },
           ]}
         />

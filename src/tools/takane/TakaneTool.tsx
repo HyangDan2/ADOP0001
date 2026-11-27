@@ -22,6 +22,15 @@ import { TAKANE_SAMPLES } from './samples';
 import { runEngine } from '../../engine/core/runner';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { HybridAssist } from '../../components/HybridAssist';
+import {
+  ARTIFACT_SLOTS,
+  takaneContents,
+  takaneValidationContext,
+} from '../../features/artifacts/tools';
+import { contentTypeForTakaneLanguage, type TakaneLanguage as ArtifactTakaneLanguage } from '../../engine/artifacts/contentTypes';
+import { useArtifactCapture } from '../../components/artifacts/useArtifactCapture';
+import { ArtifactSlotStatus } from '../../components/artifacts/ArtifactStatus';
+import { entryByRole, guardCopyText, guardExport } from '../../components/artifacts/ExportGuard';
 const SHIORI_KEY = 'adop0001.shiori.latest';
 
 const LANGUAGES: { value: TakaneLanguage; label: string }[] = [
@@ -93,6 +102,8 @@ export function TakaneTool() {
   // PATCH-006: input/output revisions so a stale result can never be exported.
   const inputRevision = useRef(0);
   const outputRevision = useRef<number | null>(null);
+  /** CP03: generated files are the artifact; language selects validators. */
+  const artifact = useArtifactCapture<'takane'>(ARTIFACT_SLOTS.takane);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -124,6 +135,13 @@ export function TakaneTool() {
           outputRevision.current = revision;
           setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
+          artifact.remember(result.context);
+          artifact.capture({
+            contents: takaneContents(result.output),
+            validationContext: takaneValidationContext(language),
+            inputRevision: revision,
+            isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
+          });
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
@@ -197,12 +215,47 @@ export function TakaneTool() {
       ? takaneHeaderName(target, base) ?? takaneFileName(target, base)
       : takaneFileName(target, base);
 
-  /** Downloads one artifact of the freshly generated scaffold. */
-  const download = (target: TakaneLanguage, base: string, role: 'header' | 'implementation') => {
-    assertArtifactRevision(inputRevision.current, outputRevision.current);
+  const binding = {
+    slot: ARTIFACT_SLOTS.takane,
+    assertCurrent: () => assertArtifactRevision(inputRevision.current, outputRevision.current),
+    liveFingerprint: () => artifact.liveFingerprint(),
+  };
+
+  const formatIdFor = (target: TakaneLanguage, role: 'header' | 'implementation'): string => {
+    if (target === 'python') return 'python';
+    if (target === 'c') return role === 'header' ? 'c-header' : 'c';
+    if (target === 'cpp') return role === 'header' ? 'cpp-header' : 'cpp';
+    return role === 'header' ? 'mcu-header' : 'mcu';
+  };
+
+  /**
+   * A scaffold for the current language has a stored revision and is guarded.
+   * Exporting another language is a fresh generation the artifact does not
+   * contain, so it keeps the legacy revision check (CP03 gap: per-language
+   * capture is not part of the frozen G1 slot).
+   */
+  const download = async (target: TakaneLanguage, base: string, role: 'header' | 'implementation') => {
+    binding.assertCurrent();
     const built = buildTakane(fileName, source, target);
     const file = built.files.find((item) => item.role === role) ?? built.files[built.files.length - 1];
-    downloadBlob(artifactName(target, base, role), file.code, 'text/plain;charset=utf-8');
+    const fileNameFor = artifactName(target, base, role);
+    if (!output || target !== output.language) {
+      downloadBlob(fileNameFor, file.code, 'text/plain;charset=utf-8');
+      return;
+    }
+    await guardExport(
+      binding,
+      [
+        {
+          format: formatIdFor(target, role),
+          fileName: fileNameFor,
+          contentType: contentTypeForTakaneLanguage(target as ArtifactTakaneLanguage),
+          entry: entryByRole(role),
+          payload: () => file.code,
+        },
+      ],
+      (bytes, name) => downloadBlob(name, bytes, 'text/plain;charset=utf-8'),
+    );
   };
 
   const stats = useMemo(
@@ -453,6 +506,15 @@ export function TakaneTool() {
         targetLanguage={language}
         onApplied={(next, note) => {
           setOutput(next);
+          const revision = inputRevision.current;
+          outputRevision.current = revision;
+          artifact.capture({
+            contents: takaneContents(next),
+            validationContext: takaneValidationContext(language),
+            inputRevision: revision,
+            forceAppend: true,
+            isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
+          });
           showToast(note);
         }}
       />
@@ -460,6 +522,11 @@ export function TakaneTool() {
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
         <DraftStateBadge state={draftState} />
+        <ArtifactSlotStatus
+          slot={ARTIFACT_SLOTS.takane}
+          label="コード"
+          stale={outputRevision.current === null || outputRevision.current !== inputRevision.current}
+        />
         <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
@@ -479,10 +546,14 @@ export function TakaneTool() {
               description: 'Python スキャフォールド（dataclass・型ヒント・docstring）',
               fileName: (base) => takaneFileName('python', base),
               run: (base) => download('python', base, 'implementation'),
-              copy: () => {
-                assertArtifactRevision(inputRevision.current, outputRevision.current);
-                return output.code;
-              },
+              copy: () =>
+                guardCopyText(binding, {
+                  format: 'python',
+                  fileName: takaneFileName('python', fileName.replace(/(\.spec)?\.md$/i, '').replace(/\.[^.]+$/, '') || 'module'),
+                  contentType: 'text/x-python',
+                  entry: entryByRole('implementation'),
+                  text: output.code,
+                }),
             },
             {
               id: 'c',
@@ -531,13 +602,27 @@ export function TakaneTool() {
               label: 'すべて',
               description: 'いま選んでいる言語のファイルをすべて書き出す',
               fileName: (base) => takaneFileName(language, base),
-              run: (base) => {
-                assertArtifactRevision(inputRevision.current, outputRevision.current);
+              run: async (base) => {
+                binding.assertCurrent();
                 const target = language;
                 const built = buildTakane(fileName, source, target);
-                for (const file of built.files) {
-                  downloadBlob(artifactName(target, base, file.role), file.code, 'text/plain;charset=utf-8');
+                if (!output || target !== output.language) {
+                  for (const file of built.files) {
+                    downloadBlob(artifactName(target, base, file.role), file.code, 'text/plain;charset=utf-8');
+                  }
+                  return;
                 }
+                await guardExport(
+                  binding,
+                  built.files.map((file) => ({
+                    format: 'all',
+                    fileName: artifactName(target, base, file.role),
+                    contentType: contentTypeForTakaneLanguage(target as ArtifactTakaneLanguage),
+                    entry: entryByRole(file.role),
+                    payload: () => file.code,
+                  })),
+                  (bytes, name) => downloadBlob(name, bytes, 'text/plain;charset=utf-8'),
+                );
               },
             },
           ]}
