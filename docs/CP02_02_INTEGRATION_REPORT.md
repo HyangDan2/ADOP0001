@@ -25,7 +25,7 @@ is the milestone evidence, not an approval request.
 | Qoder-02 Validation | `agent/g1-validation` | `551ecc5` (after `20ccdf1`, `819d636`, `628e5c4`, `848ff62`) | `src/engine/artifacts/validation/{registry,policy,formats,index}.ts`, `docs/CP02_VALIDATOR_COVERAGE.md`, `tests/artifacts/validation/*` |
 | Qoder-03 Data | `agent/g1-data` | `7ecc378` | `src/lib/idb.ts`, `src/lib/artifacts/{hash,schema,repository,index}.ts`, `tests/artifacts/repository/*` |
 | Qoder-04 UI | `agent/g1-ui` | `8fb454b` | `docs/CP02_RUNTIME_MAPPING.md`, `tests/artifacts/integration/runtime-mapping.test.ts` |
-| Qoder-05 QA | `agent/g1-qa` | `8cc9f38` (CP02-02 re-run suspended by Lean v1.1) | `tests/artifacts/contract/qa-contract-invariants.test.ts`, `tests/artifacts/helpers/*`, `tests/e2e/artifacts/helpers/*`, `docs/G1_REGRESSION_MATRIX.md` |
+| Qoder-05 QA | `agent/g1-qa` | `abb90a8` (independent CP02 condition verification, 13 tests) | `tests/artifacts/contract/qa-contract-invariants.test.ts`, `tests/artifacts/contract/qa-cp02-conditions.test.ts`, `tests/artifacts/helpers/*`, `tests/e2e/artifacts/helpers/*`, `docs/G1_REGRESSION_MATRIX.md` |
 
 Each branch is based on `8ecf0aa`; no agent merged into the integration branch.
 
@@ -82,9 +82,14 @@ export allowed.
 | `npm run test:e2e` | 70 passed (CI `45916061189`, reused; no local re-run under Lean v1.1) |
 | CI `45916061189` (`workflow_dispatch`, `80048cb`) | success: typecheck, Vitest 78 files / 840 tests, generated QA PASS 59 / FAIL 0 / SKIP 5 (toolchains installed in CI), Playwright 70 passed in 2.4m; Pages/deploy skipped (non-main) |
 
-Q05's independent G1 verification is deferred to G1 closure per Lean v1.1; its
-CP02-01 audit (`8cc9f38`) is merged and the CP02-02 re-run was suspended as
-duplicate work.
+Q05's independent verification (`abb90a8`, 13 tests) confirms the same results
+without importing Q02 fixtures or `expectedRequiredIdentities`: intact vitest
+export allowed; one missing REQUIRED result yields `required-result-missing` and
+denies normal export; unregistered/unsupported/skip-only sets are complete but
+blocked; all 16 validator IDs register and execute; seven real-descriptor smokes
+pass. No src defect was found. Its matrix §13 is merged. The 4273-port E2E run's
+5 failures are a harness CORS-origin hardcode (BL-08), not product behavior;
+70/70 pass on 4173. Independent G1 closure QA still runs after CP03.
 
 ## 6. Integration seams and resolutions
 

@@ -12,6 +12,7 @@ current milestone and are tracked in the milestone report instead.
 | G1-BL-05 | P2 | Artifact capture/export E2E does not exist until CP03 wiring lands | Q04/Q05 | Open; CP03 work item |
 | G1-BL-06 | P3 | Haruhi metadata stores `cases.length`, not full case data, by design to bound revision size | Q04 | Accepted |
 | G1-BL-07 | P3 | `multi-file-package` has no validation levels/requirements (B-10, unused in G1) | Q01 | Accepted |
+| G1-BL-08 | P3 | E2E on QA port 4273 gives 5 false failures because Phase 5C specs hardcode CORS origin `http://127.0.0.1:4173` (`tests/e2e/phase5c1.spec.ts:55`, `tests/e2e/phase5c-stage3.spec.ts:66`); 70/70 pass on 4173 | Q05 (harness) | Open; 4173 is authoritative |
 
 Security, data integrity, and core contract checks are not backlog items; they
 remain verified in CI and at G1 closure.
