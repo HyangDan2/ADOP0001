@@ -1,7 +1,7 @@
 # G1-CP01 Interface Freeze Candidate
 
 - **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP03 CLOSED (CI `45925519226`); G1 closure QA in progress (Lean v1.1)
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00/01/02 complete (`8ecf0aa` contract, integration `80048cb`, CI `45916061189` success); CP03 runtime integration complete (integration `19dff86`, E2E 70/70 locally); CP04 verification and G1 close pending; CP02~CP04 are milestones, not approval gates (Supervisor Lean Engineering v1.1, 2026-11-27)
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00/01/02 complete (`8ecf0aa` contract, integration `80048cb`, CI `45916061189` success); CP03 closed (integration `5154035`, CI `45925519226` success, E2E 70/70); G1 closure QA in progress; CP02~CP04 are milestones, not approval gates (Supervisor Lean Engineering v1.1, 2026-11-27)
 - **Baseline:** `04dd2fc` (merged tree identical to approved `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Scope:** WO-D01~D04 and SUP-D01~D07 only

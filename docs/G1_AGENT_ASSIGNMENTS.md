@@ -201,8 +201,8 @@ fixed contract SHA. See the freeze document §11.3.
 5. Qoder-00 integrated CP02-01 at `80048cb`; CI `45916061189` passed (840 unit,
    generated QA 59/0/5, E2E 70).
 6. CP03 runtime integration (capture, validation execution, ExportGuard, artifact
-   UI) is complete at `19dff86`; CP04 verification proceeds under Supervisor Lean
-   Engineering v1.1, and CP02~CP04 are milestones.
+   UI) closed at `5154035` (CI `45925519226`); G1 closure QA proceeds under
+   Supervisor Lean Engineering v1.1, and CP02~CP04 are milestones.
 7. Independent G1 QA runs at G1 closure, not per milestone.
 
 **Current state: CP03 CLOSED at `5154035` (CI `45925519226` success). G1 closure QA in progress; G1 close pending.**
