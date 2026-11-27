@@ -1,7 +1,7 @@
 # G1 Agent Assignments and Collaboration Protocol
 
-- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 complete
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 complete at `8ecf0aa` (tag `cp02-contract-foundation`); CP02-01 authorized; CP03 locked
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02 milestone complete
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00/01/02 complete (`8ecf0aa` contract, integration `80048cb`, CI `45916061189` success); CP03 runtime integration in progress; G1 close pending. CP02~CP04 are milestones, not approval gates (Supervisor Lean Engineering v1.1, 2026-11-27).
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -20,7 +20,7 @@ within WO-D01~D04 only; CP03 is not authorized.
 | --- | --- | --- |
 | G0 final PO approval | RECORDED 2026-11-27 | PR #12 merged at `04dd2fc`; tree identical to approved `3af2427`; tag `g0-baseline`; CI `45911307876` passed build and Pages deploy. |
 | CP01 Interface Freeze | APPROVED WITH IMPLEMENTATION CONDITIONS | C01~C06 corrections are applied in the contract foundation. |
-| G1 parallel implementation | CP02-01 authorized | Contract SHA `8ecf0aa`; per-agent worktrees created from it; CP02-02 review pending. |
+| G1 parallel implementation | CP02 milestone complete; CP03 in progress | Contract SHA `8ecf0aa`; CP02-02 integrated at `80048cb`; CI `45916061189` passed; CP03 runtime integration proceeds under Lean v1.1. |
 | CP02 | AUTHORIZED | WO-D01~D04 only; CP03 needs separate approval. |
 
 The CP02 order is registered in `docs/G1_SUP_D01_D07.md`. The correction record is
@@ -198,8 +198,10 @@ fixed contract SHA. See the freeze document §11.3.
    `docs/G1_SUP_D01_D07.md`.
 4. CP02-00 is complete: contract `8ecf0aa`, C01~C06 corrections, contract
    invariants 7/7, full suite 687/687.
-5. Qoder-00 handed off CP02-01 to Q01~Q05 from that SHA; the next gate is CP02-02
-   integration review.
-6. CP03 Runtime Integration remains forbidden until separate approval.
+5. Qoder-00 integrated CP02-01 at `80048cb`; CI `45916061189` passed (840 unit,
+   generated QA 59/0/5, E2E 70).
+6. CP03 runtime integration (capture, validation execution, ExportGuard, artifact
+   UI) proceeds under Supervisor Lean Engineering v1.1; CP02~CP04 are milestones.
+7. Independent G1 QA runs at G1 closure, not per milestone.
 
-**Current state: CP02-00 complete at `8ecf0aa`. CP02-01 authorized; CP02-02 review pending; CP03 locked.**
+**Current state: CP02 milestone complete at `80048cb`. CP03 runtime integration in progress. G1 close pending.**

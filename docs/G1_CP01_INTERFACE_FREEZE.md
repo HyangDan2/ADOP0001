@@ -1,7 +1,7 @@
 # G1-CP01 Interface Freeze Candidate
 
-- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02-00 complete
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 complete at `8ecf0aa` (tag `cp02-contract-foundation`); CP02-01 authorized; CP03 locked
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02 milestone complete; CP03 in progress (Lean v1.1)
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00/01/02 complete (`8ecf0aa` contract, integration `80048cb`, CI `45916061189` success); CP03 runtime integration in progress; G1 close pending; CP02~CP04 are milestones, not approval gates (Supervisor Lean Engineering v1.1, 2026-11-27)
 - **Baseline:** `04dd2fc` (merged tree identical to approved `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Scope:** WO-D01~D04 and SUP-D01~D07 only
@@ -1372,6 +1372,9 @@ Approved by the Supervisor:
 | D-25 | Takane type mapping (same as D-01). |
 | D-26 | Kotoha two-slot mapping (same as D-02). |
 | D-27 | Compile is OPTIONAL for test-suite/source-code until 5F. |
+| D-28 | Multi-language artifact types (`test-suite`, `source-code`) wire artifact-scoped aggregate validators as REQUIRED (`code.test-suite.structure`, `code.source.structure`) that dispatch on content type; per-language validators stay registered as format evidence. Reason: a static requirement list cannot express per-language exclusivity, and REQUIRED+SKIP blocks by contract (§8.2). No contract type changed (CP02-02). |
+| D-29 | The synthesized empty-REQUIRED result keeps `validatorId: 'system.required-set'` and uses `reason: 'unsupported'` with an explicit message because the frozen `ValidationResult.reason` union has no dedicated literal. Contract extension is deferred; behavior is fail-closed (CP02-02). |
+| D-30 | RESOLVED in CP03: `.kotoha.json` uses `derivation.kind = 'rendered'` from the `style-bundle` entry. The stored bundle keeps engine semantics for import, and Q03's `registerExport` verifies the source entry hash plus the export byte hash (C03). |
 
 Amendment application log:
 
@@ -1427,4 +1430,4 @@ Work Order text.
 - CP02-00 is complete at `8ecf0aa`; CP02-01 parallel implementation is authorized
   on the per-agent worktrees created from that SHA.
 
-**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 complete; CP02-01 authorized; CP02-02 review pending.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02 milestone complete (contract `8ecf0aa`, integration `80048cb`, CI `45916061189`); CP03 runtime integration in progress under Lean v1.1; G1 close pending.**
