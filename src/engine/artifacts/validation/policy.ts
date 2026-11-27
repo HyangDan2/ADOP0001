@@ -437,7 +437,107 @@ export function checkRecordEffectiveness(
     );
   if (!sameSet) reasons.push('validator-set-mismatch');
 
+  reasons.push(...checkRequiredCompleteness(record, plan));
+
   return { effective: reasons.length === 0, reasons };
+}
+
+interface RequiredIdentity {
+  validatorId: string;
+  level: ValidationLevel;
+  scope: 'content-entry' | 'revision';
+  contentId?: string;
+  validatorVersion: string;
+  configHash: string;
+}
+
+function identityKey(identity: Pick<RequiredIdentity, 'validatorId' | 'level' | 'scope' | 'contentId'>): string {
+  return [identity.validatorId, identity.level, identity.scope, identity.contentId ?? ''].join('\u0000');
+}
+
+/**
+ * The REQUIRED set the plan demands: one identity per selected REQUIRED
+ * assignment, or the synthetic `system.required-set` identity when no REQUIRED
+ * assignment was selected (mirrors `executeValidation`).
+ */
+function expectedRequiredIdentities(plan: ValidationPlan): RequiredIdentity[] {
+  const selected: RequiredIdentity[] = [];
+  for (const assignment of plan.selection.assignments) {
+    if (assignment.requirement !== 'REQUIRED' || assignment.gate !== 'match') continue;
+    const descriptor = assignment.descriptor;
+    selected.push({
+      validatorId: descriptor?.validatorId ?? assignment.requirementSpec.validatorId,
+      level: assignment.level,
+      scope: assignment.scope,
+      contentId: assignment.contentId,
+      validatorVersion: descriptor?.validatorVersion ?? 'unavailable',
+      configHash: descriptor?.configHash ?? '',
+    });
+  }
+  if (selected.length) return selected;
+  return [
+    {
+      validatorId: 'system.required-set',
+      level: plan.enabledLevels[0] ?? 'structure',
+      scope: 'revision',
+      validatorVersion: plan.policyVersion,
+      configHash: '',
+    },
+  ];
+}
+
+function checkRequiredCompleteness(record: ValidationRecord, plan: ValidationPlan): string[] {
+  const expected = expectedRequiredIdentities(plan);
+  const expectedKeys = new Set(expected.map(identityKey));
+  const actual = new Map<string, ValidationResult[]>();
+  for (const result of record.results) {
+    if (result.requirement !== 'REQUIRED') continue;
+    const key = identityKey(result);
+    const list = actual.get(key);
+    if (list) list.push(result);
+    else actual.set(key, [result]);
+  }
+
+  let missing = false;
+  let mismatch = false;
+  for (const identity of expected) {
+    const results = actual.get(identityKey(identity));
+    if (!results) {
+      missing = true;
+      continue;
+    }
+    if (
+      results.some(
+        (result) =>
+          result.validatorVersion !== identity.validatorVersion ||
+          result.validatorConfigHash !== identity.configHash,
+      )
+    ) {
+      mismatch = true;
+    }
+    if (results.length > 1) {
+      const [first] = results;
+      if (
+        results.some(
+          (result) =>
+            result.executionStatus !== first.executionStatus ||
+            result.severity !== first.severity ||
+            result.reason !== first.reason ||
+            result.message !== first.message,
+        )
+      ) {
+        mismatch = true;
+      }
+    }
+  }
+  for (const key of actual.keys()) {
+    if (!expectedKeys.has(key)) mismatch = true;
+  }
+
+  const reasons: string[] = [];
+  if (missing) reasons.push('required-result-missing');
+  if (mismatch) reasons.push('required-result-mismatch');
+  return reasons;
 }
 
 function normalExportBlockers(record: ValidationRecord): string[] {

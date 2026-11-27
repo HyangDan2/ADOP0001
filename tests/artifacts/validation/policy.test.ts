@@ -400,6 +400,122 @@ describe('WO-D03 effective validation policy', () => {
     expect(debug.kind).not.toBe('normal');
   });
 
+  it('rejects a valid-status record whose REQUIRED result is missing and allows debug only', async () => {
+    const revision = specificationRevision();
+    const { plan, record } = await runValidation({
+      registry: registryOf(mdRegistration(), semanticRegistration()),
+      revision,
+    });
+    expect(record.status).toBe('valid');
+
+    const forged: ValidationRecord = {
+      ...record,
+      results: record.results.filter((result) => result.validatorId !== 'md.structure'),
+    };
+    const effectiveness = checkRecordEffectiveness(forged, revision, plan);
+    expect(effectiveness.effective).toBe(false);
+    expect(effectiveness.reasons).toContain('required-result-missing');
+    expect(decideExport({ record: forged, revision, plan, policy: POLICY })).toMatchObject({
+      allowed: false,
+      kind: 'none',
+    });
+    expect(
+      decideExport({ record: forged, revision, plan, policy: POLICY, debug: { reason: '確認用' } }),
+    ).toMatchObject({ allowed: true, kind: 'debug' });
+  });
+
+  it('requires one result per REQUIRED assignment', async () => {
+    const revision = specificationRevision();
+    const secondRequired: ValidatorRegistration = {
+      descriptor: validator({
+        validatorId: 'spec.revision-structure',
+        levels: ['structure'],
+        scopes: ['revision'],
+        contentTypeMatchers: ['text/markdown'],
+      }),
+      run: () => ({ status: 'PASS', severity: 'INFO', message: 'revision ok' }),
+    };
+    const descriptor = specificationDescriptor({
+      validationRequirements: [
+        { level: 'structure', scope: 'content-entry', validatorId: 'md.structure', requirement: 'REQUIRED' },
+        { level: 'structure', scope: 'revision', validatorId: 'spec.revision-structure', requirement: 'REQUIRED' },
+      ],
+    });
+    const registry = registryOf(mdRegistration(), secondRequired);
+    const { plan, record } = await runValidation({ registry, revision, descriptor });
+    expect(record.results.filter((result) => result.requirement === 'REQUIRED')).toHaveLength(2);
+    expect(checkRecordEffectiveness(record, revision, plan).effective).toBe(true);
+
+    const half: ValidationRecord = {
+      ...record,
+      results: record.results.filter((result) => result.validatorId !== 'spec.revision-structure'),
+    };
+    expect(checkRecordEffectiveness(half, revision, plan).reasons).toContain('required-result-missing');
+  });
+
+  it('treats a REQUIRED result for another identity as missing and mismatched', async () => {
+    const revision = specificationRevision();
+    const { plan, record } = await runValidation({
+      registry: registryOf(mdRegistration(), semanticRegistration()),
+      revision,
+    });
+    const shifted: ValidationRecord = {
+      ...record,
+      results: record.results.map((result) =>
+        result.validatorId === 'md.structure' ? { ...result, level: 'semantic' } : result,
+      ),
+    };
+
+    const effectiveness = checkRecordEffectiveness(shifted, revision, plan);
+    expect(effectiveness.effective).toBe(false);
+    expect(effectiveness.reasons).toEqual(
+      expect.arrayContaining(['required-result-missing', 'required-result-mismatch']),
+    );
+  });
+
+  it('treats conflicting duplicate REQUIRED results as mismatched', async () => {
+    const revision = specificationRevision();
+    const { plan, record } = await runValidation({
+      registry: registryOf(mdRegistration(), semanticRegistration()),
+      revision,
+    });
+    const required = record.results.find((result) => result.validatorId === 'md.structure');
+    if (!required) throw new Error('fixture must include the REQUIRED result');
+    const conflicting: ValidationRecord = {
+      ...record,
+      results: [...record.results, { ...required, executionStatus: 'FAIL', severity: 'ERROR', message: 'conflict' }],
+    };
+
+    expect(checkRecordEffectiveness(conflicting, revision, plan).reasons).toContain(
+      'required-result-mismatch',
+    );
+  });
+
+  it('requires the synthesized system.required-set result when no REQUIRED assignment exists', async () => {
+    const revision = specificationRevision();
+    const descriptor = specificationDescriptor({ validationRequirements: [] });
+    const { plan, record } = await runValidation({ registry: registryOf(), revision, descriptor });
+
+    expect(record.results.some((result) => result.validatorId === 'system.required-set')).toBe(true);
+    expect(checkRecordEffectiveness(record, revision, plan).effective).toBe(true);
+
+    const stripped: ValidationRecord = {
+      ...record,
+      status: 'valid',
+      results: record.results.filter((result) => result.validatorId !== 'system.required-set'),
+    };
+    const effectiveness = checkRecordEffectiveness(stripped, revision, plan);
+    expect(effectiveness.effective).toBe(false);
+    expect(effectiveness.reasons).toContain('required-result-missing');
+    expect(decideExport({ record: stripped, revision, plan, policy: POLICY })).toMatchObject({
+      allowed: false,
+      kind: 'none',
+    });
+    expect(
+      decideExport({ record: stripped, revision, plan, policy: POLICY, debug: { reason: '確認用' } }),
+    ).toMatchObject({ allowed: true, kind: 'debug' });
+  });
+
   it('allows a normal export for an effective valid record', async () => {
     const revision = specificationRevision();
     const { plan, record } = await runValidation({
