@@ -20,6 +20,7 @@ import { KotohaTool } from './tools/kotoha/KotohaTool';
 import { clearKotohaDocument } from './tools/kotoha';
 import { clearEngineCache } from './engine/core/runner';
 import { TakaneTool } from './tools/takane/TakaneTool';
+import { ArtifactWorkspace } from './components/artifacts/ArtifactWorkspace';
 
 type Theme = 'dark' | 'light';
 const THEME_KEY = 'adop0001.theme';
@@ -53,6 +54,7 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [fewShotOpen, setFewShotOpen] = useState(false);
   const [connectionOpen, setConnectionOpen] = useState(false);
+  const [artifactWorkspaceOpen, setArtifactWorkspaceOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(initialRail);
   /** WO-11: one engine mode for every tool, remembered as a preference. */
   const engineMode = useEngineMode();
@@ -123,6 +125,7 @@ export default function App() {
         setHelpOpen(false);
         setFewShotOpen(false);
         setConnectionOpen(false);
+        setArtifactWorkspaceOpen(false);
       }
       if (event.key === '?' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement)) {
         setHelpOpen((open) => !open);
@@ -337,6 +340,18 @@ export default function App() {
                 </button>
                 <div className="menu-sep" />
                 <div className="menu-group">作業データ</div>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setArtifactWorkspaceOpen(true);
+                  }}
+                  data-testid="artifact-workspace-open"
+                >
+                  <span className="menu-jp">成果物</span>
+                  <span>成果物ワークスペース</span>
+                </button>
                 <button type="button" role="menuitem" onClick={() => void resetDrafts()} disabled={resetBusy} data-testid="reset-drafts">
                   <span className="menu-jp">初期化</span>
                   <span>{resetBusy ? '初期化しています…' : resetError ? '下書きの破棄を再試行' : '下書きをすべて破棄'}</span>
@@ -437,6 +452,10 @@ export default function App() {
         <FewShotModal tool={tool} onClose={() => setFewShotOpen(false)} onChanged={refreshCounts} />
       ) : null}
       {connectionOpen ? <ConnectionSettingsModal onClose={() => setConnectionOpen(false)} /> : null}
+      <ArtifactWorkspace
+        open={artifactWorkspaceOpen}
+        onClose={() => setArtifactWorkspaceOpen(false)}
+      />
     </div>
   );
 }

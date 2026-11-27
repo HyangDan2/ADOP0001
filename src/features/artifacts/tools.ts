@@ -9,6 +9,7 @@
 import type {
   ArtifactContentInput,
   ArtifactContentType,
+  ArtifactRevision,
   ArtifactSlot,
 } from '../../engine/artifacts/types';
 import {
@@ -206,4 +207,39 @@ export async function kotohaBinaryInputs(
   const bytes = options?.bytes;
   if (!(bytes instanceof Uint8Array)) return undefined;
   return { 'input.docx': await sha256Hex(bytes) };
+}
+
+const SOURCE_LANGUAGE_BY_CONTENT_TYPE: Partial<Record<ArtifactContentType, string>> = {
+  'text/x-python': 'python',
+  'text/x-c': 'c',
+  'text/x-cpp': 'cpp',
+};
+
+const TEST_FRAMEWORK_BY_CONTENT_TYPE: Partial<Record<ArtifactContentType, Framework>> = {
+  'text/x-typescript': 'vitest',
+  'text/x-python': 'pytest',
+  'text/x-java': 'junit5',
+  'text/x-go': 'go',
+};
+
+/**
+ * WO-D07 — rebuilds the validator selection a workspace action needs from the
+ * stored revision. The capture request's context is not part of the immutable
+ * revision, so the content type is the durable evidence. MCU C shares
+ * `text/x-c` with C11 and TypeScript tests cannot distinguish vitest from jest;
+ * the REQUIRED structure validators do not depend on those distinctions.
+ */
+export function validationContextForRevision(
+  revision: ArtifactRevision,
+): ValidatorSelectionContext | undefined {
+  const ordered = [...revision.contents].sort((a, b) => a.order - b.order);
+  const implementation =
+    ordered.find((entry) => entry.role === 'implementation') ??
+    ordered.find((entry) => entry.role === 'source-file' || entry.role === 'primary');
+  if (!implementation) return undefined;
+  const language = SOURCE_LANGUAGE_BY_CONTENT_TYPE[implementation.contentType];
+  if (language) return { language };
+  const framework = TEST_FRAMEWORK_BY_CONTENT_TYPE[implementation.contentType];
+  if (framework) return { language: FRAMEWORK_LANGUAGE[framework], framework };
+  return undefined;
 }

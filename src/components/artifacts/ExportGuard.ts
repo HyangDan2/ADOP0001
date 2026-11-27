@@ -29,7 +29,8 @@ import {
   type ExportDecision,
   type ValidationPolicyOptions,
 } from '../../engine/artifacts/validation/policy';
-import type { ValidatorRegistry } from '../../engine/artifacts/validation/registry';
+import type { ValidatorRegistry, ValidatorSelectionContext } from '../../engine/artifacts/validation/registry';
+import { assertRegisteredExportFormat } from '../../engine/artifacts/export/registry';
 import type { ArtifactRepositoryImpl } from '../../lib/artifacts';
 import { exportByteHash } from '../../lib/artifacts/hash';
 import {
@@ -64,9 +65,13 @@ export const EXPORT_DECISION_LABEL: Record<string, string> = {
   'required-result-missing': '必須検証結果なし',
   'required-result-mismatch': '必須検証結果不一致',
   'validation-unavailable': '検証を実行できません',
+  'debug-reason-required': 'デバッグ理由が未入力',
+  'debug-disabled': 'デバッグ書き出しは無効',
 };
 
-function decisionMessage(decision: ExportDecision): string {
+export const ARCHIVED_ARTIFACT_MESSAGE = '成果物はアーカイブされています。復元してから書き出してください。';
+
+export function decisionMessage(decision: ExportDecision): string {
   const labels = decision.reasons.map((reason) => EXPORT_DECISION_LABEL[reason] ?? reason);
   return `${VALIDATION_BLOCKED_MESSAGE}（${labels.join('・')}）`;
 }
@@ -104,6 +109,20 @@ export interface ExportGuardDeps {
   /** Validation policy/registry override for tests and non-default runtimes. */
   policy?: ValidationPolicyOptions;
   registry?: ValidatorRegistry | Promise<ValidatorRegistry>;
+  /** Language/framework context when the caller can rebuild it (workspace). */
+  context?: ValidatorSelectionContext;
+  /** Presence requests the labelled debug path; `reason` must be non-empty. */
+  debug?: { reason?: string };
+}
+
+export interface ValidationDecisionInput {
+  artifact: ArtifactRecord;
+  revision: ArtifactRevision;
+  context?: ValidatorSelectionContext;
+  debug?: { reason?: string };
+  repository?: ArtifactRepositoryImpl;
+  policy?: ValidationPolicyOptions;
+  registry?: ValidatorRegistry | Promise<ValidatorRegistry>;
 }
 
 /**
@@ -112,33 +131,54 @@ export interface ExportGuardDeps {
  * effective at capture but is not (policy version/fingerprint, validator set)
  * or whose REQUIRED results are not all PASS blocks a normal export. A record
  * only counts when it is stored: the in-memory snapshot is never a substitute.
+ * A debug request goes through `decideExport`'s labelled path instead.
  */
-export async function exportValidationDecision(
-  snapshot: ArtifactSlotSnapshot,
-  artifact: ArtifactRecord,
-  revision: ArtifactRevision,
-  deps: Pick<ExportGuardDeps, 'repository' | 'policy' | 'registry'> = {},
+export async function validationDecisionForRevision(
+  input: ValidationDecisionInput,
 ): Promise<ExportDecision> {
-  const repository = deps.repository ?? artifactRepository();
-  const policy = deps.policy ?? ARTIFACT_VALIDATION_POLICY;
+  const repository = input.repository ?? artifactRepository();
+  const policy = input.policy ?? ARTIFACT_VALIDATION_POLICY;
   const [record] = await repository.listValidations({
-    artifactId: artifact.artifactId,
-    revisionId: revision.revisionId,
+    artifactId: input.artifact.artifactId,
+    revisionId: input.revision.revisionId,
     limit: 1,
   });
   try {
     const plan = await resolveValidationPlan({
-      descriptor: artifactTypeDescriptor(artifact.artifactType),
-      revision,
-      registry: await (deps.registry ?? artifactValidatorRegistry()),
+      descriptor: artifactTypeDescriptor(input.artifact.artifactType),
+      revision: input.revision,
+      registry: await (input.registry ?? artifactValidatorRegistry()),
       policy,
-      context: snapshot.validationContext,
+      context: input.context,
     });
-    return decideExport({ record: record ?? null, revision, plan, policy });
+    return decideExport({
+      record: record ?? null,
+      revision: input.revision,
+      plan,
+      policy,
+      ...(input.debug ? { debug: input.debug } : {}),
+    });
   } catch (cause) {
     console.warn('[artifact] validation plan could not be resolved', cause);
     return { allowed: false, kind: 'none', reasons: ['validation-unavailable'] };
   }
+}
+
+export async function exportValidationDecision(
+  snapshot: ArtifactSlotSnapshot,
+  artifact: ArtifactRecord,
+  revision: ArtifactRevision,
+  deps: Pick<ExportGuardDeps, 'repository' | 'policy' | 'registry' | 'debug' | 'context'> = {},
+): Promise<ExportDecision> {
+  return validationDecisionForRevision({
+    artifact,
+    revision,
+    context: deps.context ?? snapshot.validationContext,
+    ...(deps.debug ? { debug: deps.debug } : {}),
+    ...(deps.repository ? { repository: deps.repository } : {}),
+    ...(deps.policy ? { policy: deps.policy } : {}),
+    ...(deps.registry ? { registry: deps.registry } : {}),
+  });
 }
 
 export function textBytes(text: string): Uint8Array {
@@ -191,6 +231,14 @@ export async function guardExport(
   deps.verifySnapshot?.(snapshot);
   binding.assertCurrent();
 
+  for (const plan of plans) {
+    assertRegisteredExportFormat({
+      format: plan.format,
+      artifactType: snapshot.artifact.artifactType,
+      contentType: plan.contentType,
+    });
+  }
+
   const repository = deps.repository ?? artifactRepository();
 
   const payloads: Uint8Array[] = [];
@@ -217,6 +265,7 @@ export async function guardExport(
 
   const decision = await exportValidationDecision(snapshot, artifact, revision, deps);
   if (!decision.allowed) throw new Error(decisionMessage(decision));
+  const exportKind: ExportRecord['kind'] = decision.kind === 'debug' ? 'debug' : 'normal';
   binding.assertCurrent();
 
   const prepared = await Promise.all(
@@ -250,7 +299,7 @@ export async function guardExport(
           sourceContentHash: item.entry.contentHash,
         },
         fileName: item.plan.fileName,
-        kind: 'normal',
+        kind: exportKind,
         guard: {
           expectedScopeEpoch: ARTIFACT_SCOPE_EPOCH,
           expectedHistoryEpoch: artifact.historyEpoch,
@@ -292,6 +341,11 @@ export async function guardCopyText(
   binding.assertCurrent();
   const snapshot = options.snapshot ?? getArtifactSlotSnapshot(binding.slot);
   if (!snapshot) throw new Error(NO_ARTIFACT_MESSAGE);
+  assertRegisteredExportFormat({
+    format: options.format,
+    artifactType: snapshot.artifact.artifactType,
+    contentType: options.contentType,
+  });
   const entry = options.entry(snapshot.revision);
   if (entry.encoding !== 'utf8' || entry.payload !== options.text) {
     throw new Error(CONTENT_MISMATCH_MESSAGE);

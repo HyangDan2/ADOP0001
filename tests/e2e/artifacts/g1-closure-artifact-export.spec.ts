@@ -758,16 +758,13 @@ test('ART-E2E-13: after a document switch the previous document artifact cannot 
 });
 
 /**
- * Proposed G1-BL-13 (P2, display only): the slot badge derives eligibility from
- * the capture snapshot's artifact record, which is the record read *before*
- * `appendRevision`. A fresh capture therefore always reports
- * "revision-not-current" (+ "artifact-not-ready" on the first revision) while
- * the export guard, reading the repository's current pointer, accepts the same
- * export — ART-E2E-01..09 prove the downloads and stored export rows are
- * correct. `test.fail` keeps the defect visible; once it is fixed this test
- * starts passing and must be un-marked.
+ * G1-BL-13 (fixed in G2/WO-D07): the capture service now publishes the artifact,
+ * revision and validation read *after* `appendRevision`, so a fresh capture's
+ * badge and the export guard agree on the current pointer. This test was kept
+ * as `test.fail` while the defect was open; it is un-marked now that the badge
+ * is judged on the post-append state.
  */
-test.fail(
+test(
   'ART-E2E-11: the status badge reports the same export eligibility as the guard (G1-BL-13)',
   async ({ page }) => {
     await page.goto('#/shiori');

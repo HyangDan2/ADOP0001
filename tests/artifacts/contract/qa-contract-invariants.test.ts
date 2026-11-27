@@ -122,6 +122,8 @@ const DOC_CONTENT_TYPES = [
   'image/png',
   'application/json',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  // G2 WO-D06: the manifest package is written as one ZIP export.
+  'application/zip',
   'text/x-python',
   'text/x-typescript',
   'text/x-java',

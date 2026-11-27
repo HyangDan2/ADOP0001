@@ -40,6 +40,7 @@ export type ArtifactContentType =
   | 'image/png'
   | 'application/json'
   | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  | 'application/zip'
   | 'text/x-python'
   | 'text/x-typescript'
   | 'text/x-java'

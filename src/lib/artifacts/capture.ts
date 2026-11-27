@@ -394,21 +394,38 @@ export function createArtifactCaptureService(options: CaptureServiceOptions): Ar
               )[0] ?? null,
           }
         : await runValidation(request, artifact, revision);
+
+    // G1-BL-13: the artifact read before `appendRevision` does not carry the new
+    // current pointer or validation summary. Publish the repository's state
+    // after the write so the slot badge judges the same revision the guard does.
+    const freshArtifact = (await repository.getArtifact(artifact.artifactId)) ?? artifact;
+    const freshRevision = (await repository.getCurrentRevision(artifact.artifactId)) ?? revision;
+    const freshValidation =
+      freshRevision.revisionId === revision.revisionId
+        ? validated.record
+        : ((
+            await repository.listValidations({
+              artifactId: artifact.artifactId,
+              revisionId: freshRevision.revisionId,
+              limit: 1,
+            })
+          )[0] ?? null);
+
     const result: ArtifactCaptureResult = {
       status,
       slot: request.slot,
       fingerprint,
-      artifact,
-      revision,
-      validation: validated.record,
+      artifact: freshArtifact,
+      revision: freshRevision,
+      validation: freshValidation,
     };
     if ('error' in validated && validated.error !== undefined) result.validationError = validated.error;
 
     publish({
       slot: request.slot,
-      artifact,
-      revision,
-      validation: validated.record,
+      artifact: freshArtifact,
+      revision: freshRevision,
+      validation: freshValidation,
       fingerprint,
       validationContext: request.validationContext,
     });
@@ -418,8 +435,72 @@ export function createArtifactCaptureService(options: CaptureServiceOptions): Ar
   return { capture };
 }
 
-let defaultRepository: ArtifactRepositoryImpl | null = null;
-let defaultRegistry: Promise<ValidatorRegistry> | null = null;
+export interface ValidateRevisionOptions {
+  repository: ArtifactRepository;
+  registry: ValidatorRegistry | Promise<ValidatorRegistry>;
+  policy?: ValidationPolicyOptions;
+  context?: ValidatorSelectionContext;
+  now?: () => Date;
+  recordId?: () => string;
+}
+
+export interface ValidateRevisionResult {
+  artifact: ArtifactRecord;
+  revision: ArtifactRevision;
+  validation: ValidationRecord;
+}
+
+/**
+ * WO-D07 — validates an already stored revision (workspace revalidate/restore).
+ * The same plan resolution and repository CAS as capture apply; the record is
+ * committed against the artifact's live pointer tuple.
+ */
+export async function validateArtifactRevision(
+  input: { artifactId: string; revisionId?: string } & ValidateRevisionOptions,
+): Promise<ValidateRevisionResult> {
+  const artifact = await input.repository.getArtifact(input.artifactId);
+  if (!artifact) throw new Error(`Artifact ${input.artifactId} does not exist`);
+  const revision = input.revisionId
+    ? await input.repository.getRevision(input.revisionId)
+    : await input.repository.getCurrentRevision(input.artifactId);
+  if (!revision || revision.artifactId !== artifact.artifactId) {
+    throw new Error(`Artifact ${input.artifactId} has no revision to validate`);
+  }
+  const validators = await input.registry;
+  const plan = await resolveValidationPlan({
+    descriptor: artifactTypeDescriptor(artifact.artifactType as ArtifactType),
+    revision,
+    registry: validators,
+    policy: input.policy ?? ARTIFACT_VALIDATION_POLICY,
+    context: input.context,
+  });
+  const record = await executeValidation({
+    artifactId: artifact.artifactId,
+    recordId: (input.recordId ?? (() => fallbackId('val')))(),
+    revision,
+    plan,
+    registry: validators,
+    context: input.context,
+    now: input.now,
+  });
+  await input.repository.commitValidation({
+    artifactId: artifact.artifactId,
+    revisionId: revision.revisionId,
+    record,
+    guard: {
+      expectedScopeEpoch: ARTIFACT_SCOPE_EPOCH,
+      expectedHistoryEpoch: artifact.historyEpoch,
+      expectedCurrentRevisionId: revision.revisionId,
+    },
+  });
+  return {
+    artifact: (await input.repository.getArtifact(artifact.artifactId)) ?? artifact,
+    revision,
+    validation: record,
+  };
+}
+
+let defaultRepository: ArtifactRepositoryImpl | null = null;let defaultRegistry: Promise<ValidatorRegistry> | null = null;
 let defaultService: ArtifactCaptureService | null = null;
 
 export function artifactRepository(): ArtifactRepositoryImpl {
