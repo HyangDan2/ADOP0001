@@ -18,6 +18,17 @@ SHA-256 config hash over the validator's check list. Selection uses artifact
 type, level, scope, content type, role, variant, language, and framework — not
 tool names.
 
+Static descriptor requirements cannot express per-language exclusivity, and
+REQUIRED+SKIP blocks by contract, so the descriptor-wired REQUIRED validator
+must accept every supported content type of its artifact type and dispatch
+internally. The aggregate IDs are `code.test-suite.structure` (test-suite:
+TypeScript/Python/Java/Go) and `code.source.structure` (source-code:
+Python/C/C++/MCU-C). They intentionally declare no roles, languages, or
+frameworks, so a vitest revision with context
+`{language:'typescript', framework:'vitest'}` has zero payload-skip results.
+`format.json` also accepts uml-diagram, test-suite, and source-code for
+optional metadata JSON.
+
 Evidence: `tests/artifacts/validation/format-coverage.test.ts` builds real
 outputs from the local adapters/engines (no network) and executes the resolved
 plan. `tests/artifacts/validation/formats.test.ts` covers malformed inputs and
@@ -35,10 +46,12 @@ the SVG/XML and unregistered-syntax paths.
 | Haruhi (pytest) | Python / `text/x-python` | `code.python.test.structure` | REQUIRED | PASS | `format-coverage.test.ts` — "haruhi pytest" |
 | Haruhi (junit5) | Java / `text/x-java` | `code.java.structure` | REQUIRED | PASS | `format-coverage.test.ts` — "haruhi junit5" |
 | Haruhi (go) | Go / `text/x-go` | `code.go.structure` | REQUIRED | PASS | `format-coverage.test.ts` — "haruhi go" |
+| Haruhi (aggregate) | test-suite code, all 5 frameworks | `code.test-suite.structure` | REQUIRED | PASS ×5, 0 SKIP | `format-coverage.test.ts` — "haruhi * aggregate" |
 | Takane (python) | Python / `text/x-python` | `code.python.source.structure` | REQUIRED | PASS | `format-coverage.test.ts` — "takane python" |
 | Takane (c) | C header + implementation / `text/x-c` | `code.c.structure` | REQUIRED | PASS ×2 | `format-coverage.test.ts` — "takane c" |
 | Takane (cpp) | C++ header + implementation / `text/x-cpp` | `code.cpp.structure` | REQUIRED | PASS ×2 | `format-coverage.test.ts` — "takane cpp" |
 | Takane (mcu) | MCU C header + implementation / `text/x-c` | `code.c.structure` | REQUIRED | PASS ×2 | `format-coverage.test.ts` — "takane mcu" |
+| Takane (aggregate) | source code, all 4 languages / 7 files | `code.source.structure` | REQUIRED | PASS ×7, 0 SKIP | `format-coverage.test.ts` — "takane * aggregate" |
 | Kotoha | Markdown document / `text/markdown` | `format.markdown` | REQUIRED | PASS | `format-coverage.test.ts` — "kotoha markdown-document" |
 | Kotoha | Style bundle / `application/json` | `format.json` | REQUIRED | PASS | `format-coverage.test.ts` — "kotoha markdown-document" |
 | Kotoha | DOCX sample / OOXML document | `format.docx` | REQUIRED | PASS | `format-coverage.test.ts` — "kotoha docx-document" |
@@ -46,7 +59,7 @@ the SVG/XML and unregistered-syntax paths.
 | Kotoha | DOCX style bundle / `application/json` | `format.json` | REQUIRED | PASS | `format-coverage.test.ts` — "kotoha docx-document" |
 | (export product) | SVG / `image/svg+xml` | `format.svg` | not selected in G1 | PASS (unit) | `formats.test.ts` — "accepts well-formed format samples" |
 
-Coverage totals for the G1 engine outputs: **26 structural results across 12
+Coverage totals for the G1 engine outputs: **38 structural results across 12
 distinct content types, all PASS** (`text/markdown`, `text/plain`, `text/html`,
 `text/x-mermaid`, `text/x-typescript`, `text/x-python`, `text/x-java`,
 `text/x-go`, `text/x-c`, `text/x-cpp`, `application/json`, DOCX). The test fails

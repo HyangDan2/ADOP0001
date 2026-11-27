@@ -437,6 +437,22 @@ function textValidator(
   };
 }
 
+function runCodeCheck(
+  label: string,
+  text: string,
+  options: { hashComments: boolean; tripleQuotes: boolean; markers: readonly RegExp[]; missing: readonly string[] },
+): ValidatorRunOutcome {
+  return report(
+    label,
+    checkCode(text, {
+      hashComments: options.hashComments,
+      tripleQuotes: options.tripleQuotes,
+      markers: [...options.markers],
+      missing: [...options.missing],
+    }),
+  );
+}
+
 function codeValidator(
   label: string,
   options: { hashComments: boolean; tripleQuotes: boolean; markers: readonly RegExp[]; missing: readonly string[] },
@@ -444,15 +460,32 @@ function codeValidator(
   return (input) => {
     const text = textPayload(input);
     if (text === null) return missingPayload(input);
-    return report(
-      label,
-      checkCode(text, {
-        hashComments: options.hashComments,
-        tripleQuotes: options.tripleQuotes,
-        markers: [...options.markers],
-        missing: [...options.missing],
-      }),
-    );
+    return runCodeCheck(label, text, options);
+  };
+}
+
+/**
+ * Artifact-type-scoped aggregate: the descriptor wires this as REQUIRED and it
+ * accepts every content type of the type, dispatching internally. A
+ * language/framework-capped validator would become REQUIRED+SKIP on the other
+ * variants, which blocks by contract.
+ */
+function dispatchCodeValidator(
+  label: string,
+  byContentType: Readonly<Record<string, { hashComments: boolean; tripleQuotes: boolean; markers: readonly RegExp[]; missing: readonly string[] }>>,
+): (input: ValidatorRunInput) => ValidatorRunOutcome {
+  return (input) => {
+    const text = textPayload(input);
+    if (text === null) return missingPayload(input);
+    const check = input.contentType ? byContentType[input.contentType] : undefined;
+    if (!check) {
+      return {
+        status: 'UNSUPPORTED',
+        severity: 'WARNING',
+        message: `${label}の対象外の内容種別です: ${input.contentType ?? '(unknown)'}`,
+      };
+    }
+    return runCodeCheck(label, text, check);
   };
 }
 
@@ -460,7 +493,15 @@ function builtins(): BuiltinValidator[] {
   return [
     {
       validatorId: 'format.json',
-      artifactTypes: ['specification', 'pseudocode', 'markdown-document', 'docx-document'],
+      artifactTypes: [
+        'specification',
+        'pseudocode',
+        'uml-diagram',
+        'test-suite',
+        'markdown-document',
+        'docx-document',
+        'source-code',
+      ],
       levels: ['structure'],
       scopes: ['content-entry'],
       contentTypeMatchers: ['application/json'],
@@ -524,6 +565,33 @@ function builtins(): BuiltinValidator[] {
       contentTypeMatchers: ['image/svg+xml'],
       checks: ['xml-well-formed', 'svg-root'],
       run: textValidator('SVG', checkSvg),
+    },
+    {
+      validatorId: 'code.test-suite.structure',
+      artifactTypes: ['test-suite'],
+      levels: ['structure'],
+      scopes: ['content-entry'],
+      contentTypeMatchers: ['text/x-typescript', 'text/x-python', 'text/x-java', 'text/x-go'],
+      checks: ['content-type-dispatch', 'delimiter-balance', 'test-markers'],
+      run: dispatchCodeValidator('テストコード', {
+        'text/x-typescript': CODE_MARKERS.typescript,
+        'text/x-python': CODE_MARKERS['python-test'],
+        'text/x-java': CODE_MARKERS.java,
+        'text/x-go': CODE_MARKERS.go,
+      }),
+    },
+    {
+      validatorId: 'code.source.structure',
+      artifactTypes: ['source-code'],
+      levels: ['structure'],
+      scopes: ['content-entry'],
+      contentTypeMatchers: ['text/x-python', 'text/x-c', 'text/x-cpp'],
+      checks: ['content-type-dispatch', 'delimiter-balance', 'declaration-markers'],
+      run: dispatchCodeValidator('ソースコード', {
+        'text/x-python': CODE_MARKERS.python,
+        'text/x-c': CODE_MARKERS.c,
+        'text/x-cpp': CODE_MARKERS.cpp,
+      }),
     },
     {
       validatorId: 'code.typescript.structure',
