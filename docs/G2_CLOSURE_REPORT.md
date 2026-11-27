@@ -35,6 +35,16 @@
   captured → validated → exported`), never stored, so it cannot drift.
 - The workspace renders the report against the selected artifact; the evidence
   column shows the revision hash, validation status and export count.
+- **Revision-based dependency links (G2 closure QA correction).** Each evidence
+  row now carries `dependencies[]` resolved against stored revisions: the link
+  is `current` when the target revision is still the artifact's current one,
+  `historical` when a newer revision exists, and `missing` when the target
+  artifact or revision is gone. Two producers declare real edges at capture
+  time: Haruhi `validates` the current Takane source revision, and the Kotoha
+  DOCX slot is `derived-from` the Markdown revision captured by the same run
+  (the dependency is taken from that capture's result, so a concurrent adoption
+  cannot make the edge point at a different revision). The workspace renders
+  the resolved status per dependency.
 
 ## 3. WO-D06 — registry and package
 
@@ -53,6 +63,17 @@
   export row with `format: 'package'`, `application/zip`, the ZIP's SHA-256 and
   byte length. `ArtifactContentType` gained `application/zip` (documented
   vocabulary extension in the contract test; no expectation relaxed).
+- **`SHA256SUMS.txt` and safe import (G2 closure QA correction).** Every package
+  now carries a `sha256sum`-compatible `SHA256SUMS.txt` listing each archived
+  file plus `manifest.json` (the manifest still lists only content files).
+  `src/lib/artifacts/import.ts` verifies a user-selected ZIP read-only: limits
+  (≤200 entries, ≤40 MiB/file, ≤50 MiB total, ≤1 MiB manifest, ≤64 KiB sums),
+  path safety (no absolute, drive-letter, backslash, `.`/`..` or NUL), required
+  `manifest.json` + `SHA256SUMS.txt`, canonical manifest, catalogue identity,
+  sums ↔ manifest ↔ bytes agreement and no unlisted entries. It writes nothing,
+  adopts nothing and executes nothing; the workspace shows the verdict and
+  error list. `contentDigest`/`revisionHash` are recorded but not recomputed
+  (G2-BL-06).
 
 ## 4. WO-D07 — workspace, BL-13, BL-15
 
@@ -123,10 +144,13 @@ New G2 tests:
 - `tests/artifacts/workspace/workspace-guard.test.ts` — 9 tests (package
   registration, missing record, archived, tombstoned, debug reason, registry
   rejection, pointer-advance conflict, restore, revalidate).
-- `tests/e2e/artifacts/g2-workspace.spec.ts` — 2 tests: workspace + verified ZIP
-  (manifest/files/SHA-256/export row/current revision), debug refusal, archive
+- `tests/e2e/artifacts/g2-workspace.spec.ts` — 3 tests: workspace + verified ZIP
+  (manifest/files/SHA-256/`SHA256SUMS.txt`/export row/current revision), read-only
+  import verdict (valid + tampered, no stored-row change), debug refusal, archive
   block/unblock, two-step delete with retained history; two-revision diff,
-  restore with payload equality and validation.
+  restore with payload equality and validation; revision-based dependency edges
+  for Haruhi (`validates`) and Kotoha DOCX (`derived-from`) visible as `current`
+  in the workspace.
 - `tests/e2e/artifacts/g1-closure-artifact-export.spec.ts` — `ART-E2E-11`
   un-marked (BL-13).
 
@@ -155,3 +179,28 @@ Downloaded package verified in Node during E2E: `.playwright-artifacts/g2-worksp
 
 Independent QA for G2 closure, per the standing order. No further implementation
 on G2 scope unless QA finds a P0/P1.
+
+## 10. G2 closure QA corrections
+
+The Supervisor accepted implementation `61b361b` (CI `45938190252`) and ordered
+the independent G2 closure QA with four mandatory checks. Auditing D05/D06
+against that checklist found missing mandatory scope, corrected on the feature
+branch without touching G1 contracts:
+
+| Check | Finding | Correction | Evidence |
+| --- | --- | --- | --- |
+| D05 real revision-based traceability + dependency links | Dependencies were display-only; no tool declared one | `TraceabilityDependencyLink` (current/historical/missing), revision resolution in the report, Haruhi → Takane `validates`, Kotoha DOCX → Markdown `derived-from`, status-aware workspace display | `traceability.test.ts` (7), `wiring/dependency-links.test.ts` (3), `G2-E2E-03` |
+| D06 project package, manifest, SHA256SUMS, ZIP import safety | No `SHA256SUMS`, no import path | `SHA256SUMS.txt` in every package; read-only `inspectArtifactPackage` verification with limits/path/identity/hash rules; workspace import panel | `export/package.test.ts` (sums assertions), `workspace/package-import.test.ts` (9), `G2-E2E-01` (valid + tampered import, no writes) |
+| D07 restore/delete/debug/validation guard | Delivered at `61b361b` | None needed; existing evidence reused | `workspace-guard.test.ts` (9), `G2-E2E-01/02`, `ART-E2E-11` |
+| G1 security and data-integrity contracts | Retained | Dependency edges join the existing revision-integrity hash inputs (canonical, protected) | `tests/artifacts` 251 pass; `g1-closure-artifact-export` 13 pass |
+
+Focused verification on the corrected tree (full regression not repeated per the
+order; unchanged paths reuse `61b361b` evidence): `npx tsc --noEmit` pass;
+`npx vitest run tests/artifacts` **26 files / 251 tests pass**; `npm run build`
+pass; `g2-workspace.spec.ts` 3/3; `g1-closure-artifact-export.spec.ts` 13/13.
+
+QA classification: **no P0, no blocking P1**. New P3 items `G2-BL-06`
+(import cannot recompute `contentDigest`/`revisionHash`), `G2-BL-07`
+(verification-only import, no adoption), `G2-BL-08` (deleted dependency target
+renders `missing`). `G2-BL-04` updated (status resolution added). No main merge,
+no production deploy, no Phase 5E.

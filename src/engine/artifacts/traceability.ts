@@ -166,6 +166,17 @@ export interface TraceabilityExportEvidence {
   createdAt: string;
 }
 
+export type TraceabilityDependencyStatus = 'current' | 'historical' | 'missing';
+
+export interface TraceabilityDependencyLink {
+  artifactId: string;
+  revisionId: string;
+  relation: 'derived-from' | 'validates' | 'packages';
+  status: TraceabilityDependencyStatus;
+  targetArtifactId: string | null;
+  targetOrdinal: number | null;
+}
+
 export interface TraceabilityArtifactEvidence {
   artifactId: string;
   toolId: ToolId;
@@ -181,6 +192,7 @@ export interface TraceabilityArtifactEvidence {
   validationRecordId: string | null;
   effectiveValidation: boolean;
   dependencyCount: number;
+  dependencies: TraceabilityDependencyLink[];
   exports: TraceabilityExportEvidence[];
   status: RequirementStatus;
 }
@@ -254,12 +266,40 @@ function requirementAcceptsExport(
   return requirement.evidenceFormats.includes(record.format);
 }
 
+function dependencyLinks(
+  revision: ArtifactRevision | null,
+  currentByArtifact: ReadonlyMap<string, ArtifactRevision>,
+  revisionsByArtifact: ReadonlyMap<string, ArtifactRevision[]>,
+): TraceabilityDependencyLink[] {
+  if (!revision) return [];
+  return revision.dependencies.map((dependency) => {
+    const history = revisionsByArtifact.get(dependency.artifactId) ?? [];
+    const target = history.find((candidate) => candidate.revisionId === dependency.revisionId);
+    const current = currentByArtifact.get(dependency.artifactId) ?? null;
+    const status: TraceabilityDependencyStatus = !target
+      ? 'missing'
+      : current?.revisionId === dependency.revisionId
+        ? 'current'
+        : 'historical';
+    return {
+      artifactId: dependency.artifactId,
+      revisionId: dependency.revisionId,
+      relation: dependency.relation,
+      status,
+      targetArtifactId: target?.artifactId ?? null,
+      targetOrdinal: target?.ordinal ?? null,
+    };
+  });
+}
+
 function evidenceFor(
   artifact: ArtifactRecord,
   revision: ArtifactRevision | null,
   validations: readonly ValidationRecord[],
   exports: readonly ExportRecord[],
   requirement: RequirementDefinition,
+  currentByArtifact: ReadonlyMap<string, ArtifactRevision>,
+  revisionsByArtifact: ReadonlyMap<string, ArtifactRevision[]>,
 ): TraceabilityArtifactEvidence {
   const artifactExports = revision
     ? exports.filter(
@@ -294,6 +334,7 @@ function evidenceFor(
     validationRecordId: record?.recordId ?? null,
     effectiveValidation: effective,
     dependencyCount: revision?.dependencies.length ?? 0,
+    dependencies: dependencyLinks(revision, currentByArtifact, revisionsByArtifact),
     exports: artifactExports.map((record) => ({
       exportId: record.exportId,
       format: record.format,
@@ -309,11 +350,15 @@ function evidenceFor(
 export function buildTraceabilityReport(input: TraceabilityInput): TraceabilityReport {
   const requirements = input.requirements ?? REQUIREMENT_CATALOGUE;
   const currentByArtifact = new Map<string, ArtifactRevision>();
+  const revisionsByArtifact = new Map<string, ArtifactRevision[]>();
   for (const revision of input.revisions) {
     const existing = currentByArtifact.get(revision.artifactId);
     if (!existing || revision.ordinal > existing.ordinal) {
       currentByArtifact.set(revision.artifactId, revision);
     }
+    const history = revisionsByArtifact.get(revision.artifactId) ?? [];
+    history.push(revision);
+    revisionsByArtifact.set(revision.artifactId, history);
   }
 
   const traces: RequirementTrace[] = requirements.map((requirement) => {
@@ -331,6 +376,8 @@ export function buildTraceabilityReport(input: TraceabilityInput): TraceabilityR
         input.validations,
         input.exports,
         requirement,
+        currentByArtifact,
+        revisionsByArtifact,
       ),
     );
     const status = evidence.reduce<RequirementStatus>(
@@ -353,6 +400,7 @@ export function buildTraceabilityReport(input: TraceabilityInput): TraceabilityR
 export interface TraceabilityRepository {
   listArtifacts(filter?: { includeDeleted?: boolean }): Promise<ArtifactRecord[]>;
   getCurrentRevision(artifactId: string): Promise<ArtifactRevision | null>;
+  listRevisions?(input: { artifactId: string }): Promise<ArtifactRevision[]>;
   listValidations(input: { artifactId: string; limit?: number }): Promise<ValidationRecord[]>;
   listExports(input: { artifactId: string; limit?: number }): Promise<ExportRecord[]>;
 }
@@ -366,8 +414,12 @@ export async function loadTraceabilityReport(
   const validations: ValidationRecord[] = [];
   const exports: ExportRecord[] = [];
   for (const artifact of artifacts) {
-    const revision = await repository.getCurrentRevision(artifact.artifactId);
-    if (revision) revisions.push(revision);
+    if (repository.listRevisions) {
+      revisions.push(...(await repository.listRevisions({ artifactId: artifact.artifactId })));
+    } else {
+      const revision = await repository.getCurrentRevision(artifact.artifactId);
+      if (revision) revisions.push(revision);
+    }
     validations.push(...(await repository.listValidations({ artifactId: artifact.artifactId })));
     exports.push(...(await repository.listExports({ artifactId: artifact.artifactId })));
   }

@@ -7,8 +7,10 @@
  */
 
 import type {
+  ArtifactRepository,
   ArtifactContentInput,
   ArtifactContentType,
+  ArtifactDependency,
   ArtifactRevision,
   ArtifactSlot,
 } from '../../engine/artifacts/types';
@@ -207,6 +209,38 @@ export async function kotohaBinaryInputs(
   const bytes = options?.bytes;
   if (!(bytes instanceof Uint8Array)) return undefined;
   return { 'input.docx': await sha256Hex(bytes) };
+}
+
+/**
+ * WO-D05/D07 — links a new revision to the current revision of the artifact it
+ * was actually derived from or validates. No target means no dependency; the
+ * revision is still captured, just without the edge.
+ */
+export async function currentArtifactDependency(input: {
+  artifactType: ArtifactSlot['artifactType'];
+  relation: ArtifactDependency['relation'];
+  repository?: ArtifactRepository;
+}): Promise<ArtifactDependency[]> {
+  const repository =
+    input.repository ??
+    (await import('../../lib/artifacts/capture')).artifactRepository();
+  const artifacts = await repository.listArtifacts();
+  const target = artifacts
+    .filter(
+      (artifact) =>
+        artifact.artifactType === input.artifactType &&
+        artifact.lifecycle !== 'archived' &&
+        artifact.currentRevisionId !== null,
+    )
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))[0];
+  if (!target?.currentRevisionId) return [];
+  return [
+    {
+      artifactId: target.artifactId,
+      revisionId: target.currentRevisionId,
+      relation: input.relation,
+    },
+  ];
 }
 
 const SOURCE_LANGUAGE_BY_CONTENT_TYPE: Partial<Record<ArtifactContentType, string>> = {

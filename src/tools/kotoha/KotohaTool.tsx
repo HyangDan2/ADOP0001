@@ -233,7 +233,7 @@ export function KotohaTool() {
       if (isCurrent()) {
         artifactMd.remember(context);
         artifactDocx.remember(context);
-        artifactMd.capture({
+        const markdownCaptured = artifactMd.capture({
           contents: kotohaMarkdownContents(outputValue),
           sourceName: KOTOHA_MARKDOWN_SLOT_SOURCE(outputValue),
           binaryInputs,
@@ -241,11 +241,26 @@ export function KotohaTool() {
           isCurrent,
         });
         if (outputValue.docx) {
+          // WO-D05: the .docx revision is derived from the Markdown revision
+          // captured for this same adoption, so the edge resolves only after
+          // that capture lands.
           artifactDocx.capture({
             contents: kotohaDocxContents(outputValue),
             sourceName: outputValue.fileName,
             binaryInputs,
             inputRevision: documentEpoch.current,
+            dependencies: async () => {
+              const captured = await markdownCaptured;
+              return captured
+                ? [
+                    {
+                      artifactId: captured.artifact!.artifactId,
+                      revisionId: captured.revision!.revisionId,
+                      relation: 'derived-from' as const,
+                    },
+                  ]
+                : [];
+            },
             isCurrent,
           });
         }
@@ -437,7 +452,7 @@ export function KotohaTool() {
       artifactDocx.remember(result.context);
       {
         const isCurrent = () => request.isCurrent() && resetEpoch === kotohaResetEpoch();
-        artifactMd.capture({
+        const markdownCaptured = artifactMd.capture({
           contents: kotohaMarkdownContents(result.output),
           sourceName: KOTOHA_MARKDOWN_SLOT_SOURCE(result.output),
           inputRevision: documentEpoch.current,
@@ -447,6 +462,18 @@ export function KotohaTool() {
           contents: kotohaDocxContents(result.output),
           sourceName: result.output.fileName,
           inputRevision: documentEpoch.current,
+          dependencies: async () => {
+            const captured = await markdownCaptured;
+            return captured
+              ? [
+                  {
+                    artifactId: captured.artifact!.artifactId,
+                    revisionId: captured.revision!.revisionId,
+                    relation: 'derived-from' as const,
+                  },
+                ]
+              : [];
+          },
           isCurrent,
         });
       }

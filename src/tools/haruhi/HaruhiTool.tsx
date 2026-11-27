@@ -18,6 +18,7 @@ import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { HybridAssist } from '../../components/HybridAssist';
 import {
   ARTIFACT_SLOTS,
+  currentArtifactDependency,
   haruhiContents,
   haruhiValidationContext,
 } from '../../features/artifacts/tools';
@@ -108,6 +109,8 @@ export function HaruhiTool() {
             contents: haruhiContents(result.output, framework),
             validationContext: haruhiValidationContext(framework),
             inputRevision: revision,
+            dependencies: () =>
+              currentArtifactDependency({ artifactType: 'source-code', relation: 'validates' }),
             isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
           });
         })
@@ -312,6 +315,8 @@ export function HaruhiTool() {
             validationContext: haruhiValidationContext(framework),
             inputRevision: revision,
             forceAppend: true,
+            dependencies: () =>
+              currentArtifactDependency({ artifactType: 'source-code', relation: 'validates' }),
             isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
           });
           showToast(note);

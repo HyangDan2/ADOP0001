@@ -4,8 +4,9 @@
  * One place for the stored artifact lifecycle: every visible artifact, its
  * revision history, validation records, dependency links, requirement
  * traceability, revision diff, package export (normal and labelled debug),
- * explicit restore, archive/restore and soft delete. It reads the repository
- * directly; every write goes through the same CAS guard as the capture path.
+ * read-only package verification, explicit restore, archive/restore and soft
+ * delete. It reads the repository directly; every write goes through the same
+ * CAS guard as the capture path. Package verification never writes.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -17,9 +18,14 @@ import type {
   ValidationRecord,
 } from '../../engine/artifacts/types';
 import { diffRevisions } from '../../engine/artifacts/diff';
-import { loadTraceabilityReport, type TraceabilityReport } from '../../engine/artifacts/traceability';
+import {
+  loadTraceabilityReport,
+  type TraceabilityDependencyLink,
+  type TraceabilityReport,
+} from '../../engine/artifacts/traceability';
 import { artifactTypeDescriptor } from '../../engine/artifacts/registry';
 import { buildArtifactPackage, packageFileName } from '../../lib/artifacts/package';
+import { inspectArtifactPackage, type PackageVerification } from '../../lib/artifacts/import';
 import { artifactRepository } from '../../lib/artifacts/capture';
 import { downloadBlob } from '../../lib/util';
 import {
@@ -122,14 +128,44 @@ function useWorkspaceData(open: boolean, selectedId: string | null) {
   return { artifacts, detail, traceability, busy, error, refresh };
 }
 
-function dependenciesFor(
+type DependencyStatus = 'current' | 'historical' | 'missing';
+
+function dependencyStatusFor(
   dependency: ArtifactDependency,
   artifacts: ArtifactRecord[],
+  links: Map<string, TraceabilityDependencyLink>,
+): DependencyStatus {
+  const link = links.get(`${dependency.artifactId}\u0000${dependency.revisionId}`);
+  if (link) return link.status;
+  const target = artifacts.find((artifact) => artifact.artifactId === dependency.artifactId);
+  if (!target) return 'missing';
+  return target.currentRevisionId === dependency.revisionId ? 'current' : 'historical';
+}
+
+function dependenciesFor(
+  dependency: ArtifactDependency,
+  status: DependencyStatus,
+  artifacts: ArtifactRecord[],
+  links: Map<string, TraceabilityDependencyLink>,
 ): string {
+  if (status === 'missing') return '参照先が見つかりません（リビジョン欠落）';
   const target = artifacts.find((artifact) => artifact.artifactId === dependency.artifactId);
   if (!target) return '参照先が見つかりません';
-  const current = target.currentRevisionId === dependency.revisionId;
-  return `${artifactTitle(target)} · ${current ? '現行リビジョン' : '旧リビジョン'}`;
+  const link = links.get(`${dependency.artifactId}\u0000${dependency.revisionId}`);
+  const ordinal = link?.targetOrdinal ? ` rev ${link.targetOrdinal}` : '';
+  return `${artifactTitle(target)}${ordinal} · ${status === 'current' ? '現行リビジョン' : '旧リビジョン'}`;
+}
+
+function traceabilityLinks(traceability: TraceabilityReport | null): Map<string, TraceabilityDependencyLink> {
+  const links = new Map<string, TraceabilityDependencyLink>();
+  for (const trace of traceability?.requirements ?? []) {
+    for (const evidence of trace.evidence) {
+      for (const link of evidence.dependencies) {
+        links.set(`${link.artifactId}\u0000${link.revisionId}`, link);
+      }
+    }
+  }
+  return links;
 }
 
 export function ArtifactWorkspace(props: { open: boolean; onClose: () => void }) {
@@ -144,6 +180,11 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugReason, setDebugReason] = useState('');
   const [deleteArmed, setDeleteArmed] = useState(false);
+  const [verification, setVerification] = useState<{
+    fileName: string;
+    verdict: PackageVerification;
+  } | null>(null);
+  const dependencyLinks = traceabilityLinks(traceability);
 
   useEffect(() => {
     if (!props.open) return;
@@ -151,6 +192,7 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
     setDebugOpen(false);
     setDebugReason('');
     setDeleteArmed(false);
+    setVerification(null);
   }, [props.open]);
 
   useEffect(() => {
@@ -234,6 +276,25 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
   );
 
   const exportPackage = () => run(() => packagePlan(false));
+
+  const verifyPackage = async (file: File) => {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const verdict = await inspectArtifactPackage(bytes);
+      setVerification({ fileName: file.name, verdict });
+      announce({
+        kind: verdict.ok ? 'ok' : 'error',
+        message: verdict.ok
+          ? `${file.name} の整合性を確認しました（読み取り専用・取り込みは行いません）。`
+          : `${file.name} を検証できませんでした（${verdict.errors.length} 件）。`,
+      });
+    } catch (cause) {
+      announce({
+        kind: 'error',
+        message: cause instanceof Error ? cause.message : 'パッケージを検証できませんでした。',
+      });
+    }
+  };
 
   const exportDebug = () =>
     run(async () => {
@@ -432,6 +493,54 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
                   )}
                 </div>
 
+                <div className="workspace-import" data-testid="artifact-package-import">
+                  <label className="field">
+                    <span>パッケージ検証（ZIP・読み取り専用）</span>
+                    <input
+                      type="file"
+                      accept=".zip,application/zip"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        event.target.value = '';
+                        if (file) void verifyPackage(file);
+                      }}
+                      data-testid="artifact-package-import-input"
+                    />
+                  </label>
+                  {verification ? (
+                    <div
+                      className="workspace-verification"
+                      data-testid="artifact-import-verdict"
+                      data-ok={verification.verdict.ok ? 'true' : 'false'}
+                    >
+                      <p>
+                        {verification.fileName} · {verification.verdict.ok ? '整合性 OK' : '不合格'} ·
+                        manifest {verification.verdict.manifestHash?.slice(0, 12) ?? '—'}…
+                      </p>
+                      {verification.verdict.manifest ? (
+                        <p>
+                          {verification.verdict.manifest.artifact.toolId} /{' '}
+                          {verification.verdict.manifest.artifact.artifactType} · rev{' '}
+                          {verification.verdict.manifest.revision.ordinal} ·{' '}
+                          {verification.verdict.files.length} ファイル
+                        </p>
+                      ) : null}
+                      {verification.verdict.errors.length > 0 ? (
+                        <ul data-testid="artifact-import-errors">
+                          {verification.verdict.errors.map((error) => (
+                            <li key={error}>{error}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {verification.verdict.warnings.map((warning) => (
+                        <p key={warning} className="muted">
+                          {warning}
+                        </p>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
                 {debugOpen ? (
                   <div className="workspace-debug" data-testid="artifact-debug-panel">
                     <label className="field">
@@ -603,12 +712,18 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
                 <h3>依存関係</h3>
                 {detail.current && detail.current.dependencies.length > 0 ? (
                   <ul data-testid="artifact-dependencies">
-                    {detail.current.dependencies.map((dependency) => (
-                      <li key={`${dependency.artifactId}:${dependency.revisionId}`}>
-                        <span className="badge soft">{dependency.relation}</span>{' '}
-                        {dependenciesFor(dependency, artifacts)}
-                      </li>
-                    ))}
+                    {detail.current.dependencies.map((dependency) => {
+                      const status = dependencyStatusFor(dependency, artifacts, dependencyLinks);
+                      return (
+                        <li
+                          key={`${dependency.artifactId}:${dependency.revisionId}`}
+                          data-dependency-status={status}
+                        >
+                          <span className="badge soft">{dependency.relation}</span>{' '}
+                          {dependenciesFor(dependency, status, artifacts, dependencyLinks)}
+                        </li>
+                      );
+                    })}
                   </ul>
                 ) : (
                   <p data-testid="artifact-dependencies-none">このリビジョンに宣言された依存関係はありません。</p>

@@ -43,14 +43,17 @@ export function removeEntry(ledger: Ledger): Ledger {
 
 interface RevisionRow {
   revisionId: string;
+  artifactId: string;
   ordinal: number;
   revisionHash: string;
   contentDigest: string;
+  dependencies?: Array<{ artifactId: string; revisionId: string; relation: string }>;
 }
 
 interface ArtifactRow {
   artifactId: string;
   artifactType: string;
+  toolId?: string;
   currentRevisionId: string;
 }
 
@@ -213,7 +216,14 @@ test('G2-E2E-01: workspace shows history/validation/traceability and writes a ve
   expect(manifest.files.length).toBeGreaterThan(0);
   const manifestPaths = new Set(manifest.files.map((entry) => entry.path));
   expect(Object.keys(zip.files).sort()).toEqual(
-    ['manifest.json', ...manifest.files.map((entry) => entry.path)].sort(),
+    ['manifest.json', 'SHA256SUMS.txt', ...manifest.files.map((entry) => entry.path)].sort(),
+  );
+  const sumsLines = (await zip.file('SHA256SUMS.txt')!.async('text')).trimEnd().split('\n').sort();
+  expect(sumsLines).toEqual(
+    [
+      ...manifest.files.map((entry) => `${entry.sha256}  ${entry.path}`),
+      `${crypto.createHash('sha256').update(await zip.file('manifest.json')!.async('uint8array')).digest('hex')}  manifest.json`,
+    ].sort(),
   );
   for (const entry of manifest.files) {
     expect(entry.path).not.toContain('..');
@@ -224,6 +234,29 @@ test('G2-E2E-01: workspace shows history/validation/traceability and writes a ve
     expect(crypto.createHash('sha256').update(bytes).digest('hex')).toBe(entry.sha256);
   }
   expect(manifestPaths.has('manifest.json')).toBe(false);
+
+  // WO-D06 import: the written package verifies read-only, tampering is refused
+  // and neither action changes a single stored row.
+  const storedBeforeImport = await dump(page);
+  const storedCount = (dumpValue: ArtifactDbDump) =>
+    ['artifacts', 'revisions', 'validations', 'exports'].map(
+      (store) => (dumpValue.stores[store] ?? []).length,
+    );
+  await page.getByTestId('artifact-package-import-input').setInputFiles(file);
+  await expect(page.getByTestId('artifact-import-verdict')).toHaveAttribute('data-ok', 'true');
+  await expect(page.getByTestId('artifact-import-verdict')).toContainText('整合性 OK');
+  const tamperedFile = path.join(OUT, 'g2-shiori.tampered.package.zip');
+  const tamperedZip = await JSZip.loadAsync(fs.readFileSync(file));
+  await tamperedZip.file(manifest.files[0].path, '# Tampered\n');
+  fs.writeFileSync(
+    tamperedFile,
+    await tamperedZip.generateAsync({ type: 'uint8array' }),
+  );
+  await page.getByTestId('artifact-package-import-input').setInputFiles(tamperedFile);
+  const refusedImport = page.getByTestId('artifact-import-verdict');
+  await expect(refusedImport).toHaveAttribute('data-ok', 'false');
+  await expect(page.getByTestId('artifact-import-errors')).toContainText('hash does not match');
+  expect(storedCount(await dump(page))).toEqual(storedCount(storedBeforeImport));
 
   // The refreshed workspace reflects the stored export and the lifted trace.
   await expect(page.getByTestId('artifact-export-row')).toHaveCount(1);
@@ -334,4 +367,72 @@ test('G2-E2E-02: diff compares revisions and restore appends a validated revisio
   const rev1 = storedRevisions.find((revision) => revision.ordinal === 1)!;
   const rev3 = storedRevisions.find((revision) => revision.ordinal === 3)!;
   expect(primaryOf(rev3.revisionId)).toBe(primaryOf(rev1.revisionId));
+});
+
+test('G2-E2E-03: Haruhi and the Kotoha DOCX slot record revision-based dependency edges', async ({
+  page,
+}) => {
+  // Takane captures the source revision Haruhi will validate.
+  await page.goto('#/takane');
+  await page.getByTestId('takane-sample-payment-service.spec.md').click();
+  await page.getByTestId('takane-tab-code').click();
+  await expect(page.getByTestId('takane-output')).toContainText('def ', { timeout: 30_000 });
+  await expect(page.getByTestId('artifact-status-code')).toHaveAttribute('data-state', 'current', {
+    timeout: 30_000,
+  });
+
+  await page.goto('#/haruhi');
+  await page.getByTestId('source-editor').fill(SOURCE);
+  await expect(page.getByTestId('haruhi-output')).toContainText('expect(', { timeout: 30_000 });
+  await expect(page.getByTestId('artifact-status-tests')).toHaveAttribute('data-state', 'current', {
+    timeout: 30_000,
+  });
+
+  // Kotoha: the DOCX slot follows the Markdown slot captured in the same run.
+  await page.goto('#/kotoha');
+  await page.getByTestId('kotoha-sample').click();
+  await expect(page.getByTestId('source-editor')).toHaveValue(/# Kotoha Round-Trip Sample/, {
+    timeout: 20_000,
+  });
+  await expect(page.getByTestId('artifact-status-kotoha.markdown')).toHaveAttribute(
+    'data-state',
+    'current',
+    { timeout: 30_000 },
+  );
+  const [rebuilt] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('kotoha-rebuild').click(),
+  ]);
+  await rebuilt.cancel().catch(() => undefined);
+  await expect(page.getByTestId('artifact-status-kotoha.docx')).toHaveAttribute(
+    'data-state',
+    'current',
+    { timeout: 30_000 },
+  );
+
+  const stored = await dump(page);
+  const artifacts = rows<ArtifactRow>(stored, 'artifacts');
+  const source = artifacts.find((artifact) => artifact.artifactType === 'source-code')!;
+  const tests = artifacts.find((artifact) => artifact.artifactType === 'test-suite')!;
+  const markdown = artifacts.find((artifact) => artifact.artifactType === 'markdown-document')!;
+  const docx = artifacts.find((artifact) => artifact.artifactType === 'docx-document')!;
+  const revisions = rows<RevisionRow>(stored, 'revisions');
+  const currentRevision = (artifact: ArtifactRow) =>
+    revisions.find((revision) => revision.revisionId === artifact.currentRevisionId)!;
+
+  expect(currentRevision(tests).dependencies).toEqual([
+    { artifactId: source.artifactId, revisionId: source.currentRevisionId, relation: 'validates' },
+  ]);
+  expect(currentRevision(docx).dependencies).toEqual([
+    { artifactId: markdown.artifactId, revisionId: markdown.currentRevisionId, relation: 'derived-from' },
+  ]);
+
+  // The workspace resolves the edge against the stored target revision.
+  await openWorkspace(page);
+  await page.getByTestId('artifact-row').filter({ hasText: '春日' }).click();
+  const dependency = page.getByTestId('artifact-dependencies').locator('li').first();
+  await expect(dependency).toHaveAttribute('data-dependency-status', 'current');
+  await expect(dependency).toContainText('validates');
+  await expect(dependency).toContainText('貴音');
+  await expect(dependency).toContainText('現行リビジョン');
 });

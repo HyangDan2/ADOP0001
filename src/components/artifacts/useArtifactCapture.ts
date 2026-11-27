@@ -11,6 +11,7 @@ import type { ToolId } from '../../adapters/types';
 import type { ExecutionContext } from '../../engine/core/contracts';
 import type {
   ArtifactContentInput,
+  ArtifactDependency,
   ArtifactSlot,
   InputFingerprint,
 } from '../../engine/artifacts/types';
@@ -19,6 +20,7 @@ import type { ValidatorSelectionContext } from '../../engine/artifacts/validatio
 import {
   artifactCapture,
   composeCaptureFingerprint,
+  type ArtifactCaptureResult,
 } from '../../lib/artifacts/capture';
 
 export interface PaneCapturePlan {
@@ -30,11 +32,17 @@ export interface PaneCapturePlan {
   validationContext?: ValidatorSelectionContext;
   sourceName?: string;
   forceAppend?: boolean;
+  /** Resolved just before capture; an empty list omits the dependency edge. */
+  dependencies?: () => Promise<ArtifactDependency[]>;
 }
 
 export interface PaneArtifactCapture<K extends ToolId> {
   remember(context: ExecutionContext<K>): void;
-  capture(plan: PaneCapturePlan): void;
+  /**
+   * Fire-and-forget; the returned promise settles with the stored capture (or
+   * null when superseded), so a dependent slot can name the exact revision.
+   */
+  capture(plan: PaneCapturePlan): Promise<ArtifactCaptureResult | null>;
   liveFingerprint(
     binaryInputs?: ArtifactBinaryInputDigests,
     sourceName?: string,
@@ -57,15 +65,24 @@ export function useArtifactCapture<K extends ToolId>(slot: ArtifactSlot): PaneAr
   const capture = useCallback(
     (plan: PaneCapturePlan) => {
       const context = contextRef.current;
-      if (!context) return;
+      if (!context) return Promise.resolve(null);
       identityRef.current = { binaryInputs: plan.binaryInputs, sourceName: plan.sourceName };
-      void artifactCapture()
-        .capture({ slot, context, ...plan })
-        .catch((cause) => {
-          // The export guard surfaces the missing artifact to the user; the
-          // console keeps the underlying repository failure diagnosable.
-          console.warn('[artifact] capture failed', cause);
+      const { dependencies: resolveDependencies, ...capturePlan } = plan;
+      return (async () => {
+        const dependencies = resolveDependencies ? await resolveDependencies() : undefined;
+        if (!plan.isCurrent()) return null;
+        return artifactCapture().capture({
+          slot,
+          context,
+          ...capturePlan,
+          ...(dependencies && dependencies.length ? { dependencies } : {}),
         });
+      })().catch((cause) => {
+        // The export guard surfaces the missing artifact to the user; the
+        // console keeps the underlying repository failure diagnosable.
+        console.warn('[artifact] capture failed', cause);
+        return null;
+      });
     },
     [slot],
   );

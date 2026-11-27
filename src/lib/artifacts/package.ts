@@ -4,8 +4,10 @@
  * A package is built from one stored revision only. Every entry is decoded and
  * re-hashed before it enters the ZIP, the manifest lists each file's SHA-256 and
  * the revision/content identities it was built from, and the manifest itself is
- * hashed. The package bytes are then registered through the export guard like
- * any other export (format `package`, content type `application/zip`).
+ * hashed. `SHA256SUMS.txt` carries sha256sum-compatible lines for every entry in
+ * the archive (the manifest included) so the package can be verified with
+ * standard tooling. The package bytes are then registered through the export
+ * guard like any other export (format `package`, content type `application/zip`).
  */
 
 import JSZip from 'jszip';
@@ -22,6 +24,7 @@ import { decodeContentPayload, sha256Hex } from './hash';
 
 export const PACKAGE_MANIFEST_VERSION = 'adop0001.package.v1';
 export const PACKAGE_MANIFEST_FILE = 'manifest.json';
+export const PACKAGE_SUMS_FILE = 'SHA256SUMS.txt';
 
 const EXTENSION_BY_CONTENT_TYPE: Record<ArtifactContentType, string> = {
   'text/markdown': '.md',
@@ -178,7 +181,7 @@ function validationManifest(record: ValidationRecord | null): PackageManifest['v
 export async function buildArtifactPackage(input: BuildPackageInput): Promise<PackageBuildResult> {
   const { artifact, revision, validation } = input;
   const stem = sanitizeFileName(input.baseName ?? artifact.artifactId);
-  const used = new Set<string>([PACKAGE_MANIFEST_FILE]);
+  const used = new Set<string>([PACKAGE_MANIFEST_FILE, PACKAGE_SUMS_FILE]);
   const files: Array<{ path: string; bytes: Uint8Array }> = [];
   const manifestFiles: PackageFileEntry[] = [];
 
@@ -239,10 +242,15 @@ export async function buildArtifactPackage(input: BuildPackageInput): Promise<Pa
 
   const manifestText = canonicalJson(manifest);
   const manifestHash = await sha256Hex(new TextEncoder().encode(manifestText));
+  const sumsText = sha256SumsText([
+    ...manifestFiles.map((file) => ({ path: file.path, sha256: file.sha256 })),
+    { path: PACKAGE_MANIFEST_FILE, sha256: manifestHash },
+  ]);
   const date = new Date(revision.createdAt);
   const zipDate = Number.isNaN(date.getTime()) ? new Date('1980-01-01T00:00:00.000Z') : date;
   const zip = new JSZip();
   zip.file(PACKAGE_MANIFEST_FILE, manifestText, { date: zipDate });
+  zip.file(PACKAGE_SUMS_FILE, sumsText, { date: zipDate });
   for (const file of files) zip.file(file.path, file.bytes, { date: zipDate });
   const zipBytes = await zip.generateAsync({
     type: 'uint8array',
@@ -259,6 +267,11 @@ export async function buildArtifactPackage(input: BuildPackageInput): Promise<Pa
     zipHash: await sha256Hex(zipBytes),
     fileNameStem: stem,
   };
+}
+
+/** sha256sum format: `<hex>  <path>` — the manifest is listed too. */
+export function sha256SumsText(entries: ReadonlyArray<{ path: string; sha256: string }>): string {
+  return `${entries.map((entry) => `${entry.sha256}  ${entry.path}`).join('\n')}\n`;
 }
 
 export function packageFileName(base: string): string {

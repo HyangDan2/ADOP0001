@@ -14,6 +14,7 @@ import type { ExecutionContext } from '../../../src/engine/core/contracts';
 import type { ArtifactContentInput } from '../../../src/engine/artifacts/types';
 import {
   PACKAGE_MANIFEST_FILE,
+  PACKAGE_SUMS_FILE,
   buildArtifactPackage,
   packageFileName,
 } from '../../../src/lib/artifacts/package';
@@ -75,6 +76,7 @@ describe('artifact package', () => {
     const zip = await JSZip.loadAsync(built.zipBytes);
     const names = Object.keys(zip.files).sort();
     expect(names).toEqual([
+      PACKAGE_SUMS_FILE,
       PACKAGE_MANIFEST_FILE,
       'payment-metadata.json',
       'payment-primary.md',
@@ -100,6 +102,14 @@ describe('artifact package', () => {
     }
     expect(await sha256Hex(built.zipBytes)).toBe(built.zipHash);
     expect(await sha256Hex(new TextEncoder().encode(built.manifestText))).toBe(built.manifestHash);
+
+    const sums = (await zip.file(PACKAGE_SUMS_FILE)!.async('text')).trimEnd().split('\n');
+    expect(sums.sort()).toEqual(
+      [
+        ...manifest.files.map((file: { path: string; sha256: string }) => `${file.sha256}  ${file.path}`),
+        `${built.manifestHash}  ${PACKAGE_MANIFEST_FILE}`,
+      ].sort(),
+    );
   });
 
   it('is deterministic for the same revision', async () => {

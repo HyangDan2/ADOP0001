@@ -190,6 +190,55 @@ describe('artifact traceability', () => {
     expect(traceFor(report, 'REQ-G2-04').evidence[0].exports[0].format).toBe('package');
   });
 
+  it('resolves declared dependencies against stored revisions', () => {
+    const report = buildTraceabilityReport({
+      artifacts: [
+        artifact(),
+        artifact({
+          artifactId: 'art_takane',
+          toolId: 'takane',
+          documentSlotId: 'code',
+          artifactType: 'source-code',
+          currentRevisionId: 'rev_tk_2',
+          currentOrdinal: 2,
+          revisionCount: 2,
+          validationSummary: 'valid',
+        }),
+      ],
+      revisions: [
+        revision({
+          dependencies: [
+            { artifactId: 'art_takane', revisionId: 'rev_tk_2', relation: 'validates' },
+            { artifactId: 'art_takane', revisionId: 'rev_tk_1', relation: 'validates' },
+            { artifactId: 'art_gone', revisionId: 'rev_x', relation: 'derived-from' },
+          ],
+        }),
+        revision({
+          artifactId: 'art_takane',
+          revisionId: 'rev_tk_1',
+          ordinal: 1,
+          contentDigest: HASH_C,
+          revisionHash: HASH_D,
+        }),
+        revision({
+          artifactId: 'art_takane',
+          revisionId: 'rev_tk_2',
+          ordinal: 2,
+          contentDigest: HASH_D,
+          revisionHash: HASH_C,
+        }),
+      ],
+      validations: [validation()],
+      exports: [],
+    });
+    const links = traceFor(report, 'REQ-SH-01').evidence[0].dependencies;
+    expect(links.map((link) => link.status)).toEqual(['current', 'historical', 'missing']);
+    expect(links[0].targetArtifactId).toBe('art_takane');
+    expect(links[0].targetOrdinal).toBe(2);
+    expect(links[1].targetOrdinal).toBe(1);
+    expect(links[2].targetArtifactId).toBeNull();
+  });
+
   it('keeps the catalogue ids stable and unique', () => {
     const ids = REQUIREMENT_CATALOGUE.map((requirement) => requirement.id);
     expect(new Set(ids).size).toBe(ids.length);
