@@ -211,36 +211,54 @@ export async function kotohaBinaryInputs(
   return { 'input.docx': await sha256Hex(bytes) };
 }
 
+function comparableSource(text: string): string {
+  return text.replace(/\r\n?/g, '\n').trimEnd();
+}
+
 /**
- * WO-D05/D07 — links a new revision to the current revision of the artifact it
- * was actually derived from or validates. No target means no dependency; the
- * revision is still captured, just without the edge.
+ * G2-FIX-03 — a `validates` edge is only declared when the run's own input is
+ * the stored target code. The current revision of an unrelated artifact is
+ * never attached; a mismatch (or no source artifact) yields no edge. Selection
+ * is by exact content, so the edge names a revision that really exists.
  */
-export async function currentArtifactDependency(input: {
+export async function validatesArtifactDependency(input: {
   artifactType: ArtifactSlot['artifactType'];
-  relation: ArtifactDependency['relation'];
+  sourceText: string;
   repository?: ArtifactRepository;
 }): Promise<ArtifactDependency[]> {
+  const wanted = comparableSource(input.sourceText);
+  if (!wanted.trim()) return [];
   const repository =
     input.repository ??
     (await import('../../lib/artifacts/capture')).artifactRepository();
   const artifacts = await repository.listArtifacts();
-  const target = artifacts
+  const targets = artifacts
     .filter(
       (artifact) =>
         artifact.artifactType === input.artifactType &&
         artifact.lifecycle !== 'archived' &&
-        artifact.currentRevisionId !== null,
+        artifact.currentRevisionId !== null &&
+        !artifact.deletedAt,
     )
-    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))[0];
-  if (!target?.currentRevisionId) return [];
-  return [
-    {
-      artifactId: target.artifactId,
-      revisionId: target.currentRevisionId,
-      relation: input.relation,
-    },
-  ];
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+  for (const target of targets) {
+    const revision = await repository.getCurrentRevision(target.artifactId);
+    if (!revision) continue;
+    const matches = revision.contents.some((entry) => {
+      if (entry.encoding !== 'utf8') return false;
+      return comparableSource(entry.payload) === wanted;
+    });
+    if (matches) {
+      return [
+        {
+          artifactId: target.artifactId,
+          revisionId: revision.revisionId,
+          relation: 'validates',
+        },
+      ];
+    }
+  }
+  return [];
 }
 
 const SOURCE_LANGUAGE_BY_CONTENT_TYPE: Partial<Record<ArtifactContentType, string>> = {

@@ -26,7 +26,7 @@ export const PACKAGE_MANIFEST_VERSION = 'adop0001.package.v1';
 export const PACKAGE_MANIFEST_FILE = 'manifest.json';
 export const PACKAGE_SUMS_FILE = 'SHA256SUMS.txt';
 
-const EXTENSION_BY_CONTENT_TYPE: Record<ArtifactContentType, string> = {
+export const EXTENSION_BY_CONTENT_TYPE: Record<ArtifactContentType, string> = {
   'text/markdown': '.md',
   'text/plain': '.txt',
   'text/html': '.html',
@@ -119,7 +119,7 @@ export interface BuildPackageInput {
 
 const UNSAFE_NAME = /[\\/:*?"<>|\u0000-\u001f]+/g;
 
-function sanitizeFileName(name: string): string {
+export function sanitizeFileName(name: string): string {
   const cleaned = name.replace(UNSAFE_NAME, '-').replace(/^\.+/, '').trim();
   return cleaned || 'file';
 }

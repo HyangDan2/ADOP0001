@@ -1,11 +1,10 @@
 /**
- * WO-D05 — dependency producers.
+ * G2-FIX-03 — dependency producers.
  *
- * The traceability report can only link what a capture declared, so this suite
- * proves the two producers resolve a real stored revision at capture time:
- * Haruhi validates the current Takane source revision, and the Kotoha DOCX
- * slot is derived from the Markdown revision captured for the same document.
- * The report then judges those links as current/historical/missing.
+ * A Haruhi run only links the source revision whose stored code is exactly the
+ * text the run analysed; an unrelated current artifact is never attached, and
+ * the edge is not retargeted when the source later changes. The Kotoha DOCX
+ * slot stays derived from the Markdown revision captured by the same run.
  */
 import { describe, expect, it } from 'vitest';
 import type { ExecutionContext } from '../../../src/engine/core/contracts';
@@ -16,12 +15,13 @@ import { loadTraceabilityReport } from '../../../src/engine/artifacts/traceabili
 import { createArtifactCaptureService } from '../../../src/lib/artifacts/capture';
 import {
   ARTIFACT_SLOTS,
-  currentArtifactDependency,
+  validatesArtifactDependency,
 } from '../../../src/features/artifacts/tools';
 import { repositoryFixture, type RepositoryFixture } from '../repository/helpers';
 
+const CODE = 'def add(a, b):\n    return a + b\n';
 const SOURCE: ArtifactContentInput[] = [
-  { role: 'primary', contentType: 'text/x-python', encoding: 'utf8', payload: 'def add(a, b):\n    return a + b\n' },
+  { role: 'primary', contentType: 'text/x-python', encoding: 'utf8', payload: CODE },
 ];
 const MARKDOWN: ArtifactContentInput[] = [
   { role: 'primary', contentType: 'text/markdown', encoding: 'utf8', payload: '# 文書\n\n本文。\n' },
@@ -51,12 +51,17 @@ async function fixture(): Promise<RepositoryFixture & { service: ReturnType<type
   return { ...handle, service };
 }
 
-async function captureSource(service: ReturnType<typeof createArtifactCaptureService>) {
+async function captureSource(
+  service: ReturnType<typeof createArtifactCaptureService>,
+  payload = CODE,
+  forceAppend = false,
+) {
   const captured = await service.capture({
     slot: ARTIFACT_SLOTS.takane,
     context: context('takane'),
-    contents: SOURCE,
+    contents: [{ ...SOURCE[0], payload }],
     inputRevision: 1,
+    ...(forceAppend ? { forceAppend: true } : {}),
     isCurrent: () => true,
   });
   expect(captured.revision).not.toBeNull();
@@ -64,22 +69,52 @@ async function captureSource(service: ReturnType<typeof createArtifactCaptureSer
 }
 
 describe('dependency producers', () => {
-  it('Haruhi records a validates edge to the current Takane revision', async () => {
+  it('links the source revision whose stored code is exactly the analysed text', async () => {
     const { repo, service } = await fixture();
     const source = await captureSource(service);
 
-    const dependencies = await currentArtifactDependency({
+    const exact = await validatesArtifactDependency({
       artifactType: 'source-code',
-      relation: 'validates',
+      sourceText: CODE,
       repository: repo,
     });
-    expect(dependencies).toEqual([
+    expect(exact).toEqual([
       {
         artifactId: source.artifact!.artifactId,
         revisionId: source.revision!.revisionId,
         relation: 'validates',
       },
     ]);
+    expect(
+      await validatesArtifactDependency({
+        artifactType: 'source-code',
+        sourceText: CODE.replace(/\n/g, '\r\n'),
+        repository: repo,
+      }),
+      'CRLF input still names the same stored code',
+    ).toEqual(exact);
+
+    expect(
+      await validatesArtifactDependency({
+        artifactType: 'source-code',
+        sourceText: `${CODE}\nexport const unrelated = true;\n`,
+        repository: repo,
+      }),
+      'an unrelated current artifact is never attached',
+    ).toEqual([]);
+    expect(
+      await validatesArtifactDependency({ artifactType: 'source-code', sourceText: '   ', repository: repo }),
+    ).toEqual([]);
+  });
+
+  it('keeps a captured edge on its own revision and does not retarget it', async () => {
+    const { repo, service } = await fixture();
+    const source = await captureSource(service);
+    const dependencies = await validatesArtifactDependency({
+      artifactType: 'source-code',
+      sourceText: CODE,
+      repository: repo,
+    });
 
     const tests = await service.capture({
       slot: ARTIFACT_SLOTS.haruhi,
@@ -106,15 +141,11 @@ describe('dependency producers', () => {
       }),
     ]);
 
-    const next = await service.capture({
-      slot: ARTIFACT_SLOTS.takane,
-      context: context('takane'),
-      contents: [{ ...SOURCE[0], payload: 'def add(a, b):\n    return b + a\n' }],
-      inputRevision: 2,
-      forceAppend: true,
-      isCurrent: () => true,
-    });
-    expect(next.revision!.ordinal).toBe(2);
+    await captureSource(service, 'def add(a, b):\n    return b + a\n', true);
+    expect(
+      await validatesArtifactDependency({ artifactType: 'source-code', sourceText: CODE, repository: repo }),
+      'the replaced code no longer matches the current revision',
+    ).toEqual([]);
 
     const later = await loadTraceabilityReport(repo);
     const laterEvidence = later.requirements
@@ -124,14 +155,14 @@ describe('dependency producers', () => {
     expect(laterEvidence.dependencies[0].targetOrdinal).toBe(1);
   });
 
-  it('the producer yields no edge when the source artifact does not exist', async () => {
+  it('yields no edge when there is no source artifact at all', async () => {
     const { repo } = await fixture();
     expect(
-      await currentArtifactDependency({ artifactType: 'source-code', relation: 'validates', repository: repo }),
+      await validatesArtifactDependency({ artifactType: 'source-code', sourceText: CODE, repository: repo }),
     ).toEqual([]);
   });
 
-  it('the Kotoha DOCX slot records a derived-from edge to its Markdown revision', async () => {
+  it('the Kotoha DOCX slot still records the Markdown revision from its own run', async () => {
     const { repo, service } = await fixture();
     const markdown = await service.capture({
       slot: ARTIFACT_SLOTS.kotohaMarkdown,
@@ -139,11 +170,6 @@ describe('dependency producers', () => {
       contents: MARKDOWN,
       inputRevision: 1,
       isCurrent: () => true,
-    });
-    const dependencies = await currentArtifactDependency({
-      artifactType: 'markdown-document',
-      relation: 'derived-from',
-      repository: repo,
     });
     const docx = await service.capture({
       slot: ARTIFACT_SLOTS.kotohaDocx,
@@ -158,7 +184,13 @@ describe('dependency producers', () => {
         },
       ],
       inputRevision: 1,
-      dependencies,
+      dependencies: [
+        {
+          artifactId: markdown.artifact!.artifactId,
+          revisionId: markdown.revision!.revisionId,
+          relation: 'derived-from',
+        },
+      ],
       isCurrent: () => true,
     });
 

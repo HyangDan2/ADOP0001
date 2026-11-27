@@ -22,6 +22,7 @@ import {
 import {
   inspectArtifactPackage,
   PACKAGE_LIMITS,
+  isSelectablePackageSize,
   PACKAGE_VERIFICATION_VERSION,
 } from '../../../src/lib/artifacts/import';
 import { sha256Hex } from '../../../src/lib/artifacts/hash';
@@ -80,6 +81,49 @@ async function rebuild(zipBytes: Uint8Array, mutate: (zip: JSZip) => Promise<voi
   return zip.generateAsync({ type: 'uint8array' });
 }
 
+/** Minimal ZIP with one stored entry, used to craft raw-header attacks. */
+async function rawZip(): Promise<Uint8Array> {
+  const zip = new JSZip();
+  zip.file('keep.txt', 'keep');
+  return zip.generateAsync({ type: 'uint8array' });
+}
+
+/** Rewrites central-directory metadata without touching the entry bytes. */
+function patchCentralDirectory(
+  bytes: Uint8Array,
+  patch: { name: string; uncompressedSize: number },
+): Uint8Array {
+  const copy = new Uint8Array(bytes);
+  const view = new DataView(copy.buffer);
+  const needle = new TextEncoder().encode(patch.name);
+  for (let offset = 0; offset + 46 < copy.length; offset += 1) {
+    if (view.getUint32(offset, true) !== 0x02014b50) continue;
+    const nameLength = view.getUint16(offset + 28, true);
+    if (nameLength !== needle.length) continue;
+    const name = copy.subarray(offset + 46, offset + 46 + nameLength);
+    if (name.every((value, index) => value === needle[index])) {
+      view.setUint32(offset + 24, patch.uncompressedSize, true);
+      return copy;
+    }
+  }
+  throw new Error(`Central directory entry ${patch.name} was not found`);
+}
+
+/** Renames an entry in both the local and central headers (same byte length). */
+function renameEntry(bytes: Uint8Array, from: string, to: string): Uint8Array {
+  const source = Buffer.from(from);
+  const target = Buffer.from(to);
+  if (source.length !== target.length) throw new Error('renameEntry needs equal lengths');
+  const copy = Buffer.from(bytes);
+  let search = 0;
+  while (true) {
+    const index = copy.indexOf(source, search);
+    if (index < 0) return new Uint8Array(copy);
+    target.copy(copy, index);
+    search = index + target.length;
+  }
+}
+
 async function rebuiltPackage(manifest: PackageManifest, files: Record<string, string>) {
   const manifestText = canonicalJson(manifest);
   const manifestHash = await sha256Hex(new TextEncoder().encode(manifestText));
@@ -106,8 +150,10 @@ describe('package import verification', () => {
     expect(verdict.ok).toBe(true);
     expect(verdict.errors).toEqual([]);
     expect(verdict.version).toBe(PACKAGE_VERIFICATION_VERSION);
-    expect(verdict.manifest?.artifact.artifactId).toBe(manifest.artifact.artifactId);
-    expect(verdict.manifest?.revision.revisionId).toBe(manifest.revision.revisionId);
+    expect(verdict.kind).toBe('artifact');
+    const verified = verdict.manifest as PackageManifest;
+    expect(verified.artifact.artifactId).toBe(manifest.artifact.artifactId);
+    expect(verified.revision.revisionId).toBe(manifest.revision.revisionId);
     expect(verdict.manifestHash).toMatch(/^[0-9a-f]{64}$/);
     expect(verdict.zipHash).toMatch(/^[0-9a-f]{64}$/);
     expect(verdict.files.length).toBe(manifest.files.length);
@@ -214,9 +260,77 @@ describe('package import verification', () => {
     expect(crowdedVerdict.errors.join('\n')).toContain(`limit ${PACKAGE_LIMITS.maxEntries}`);
   });
 
+  it('rejects an over-compressed entry before decompression', async () => {
+    const { bytes, manifest } = await packageBytes();
+    const primary = manifest.files[0].path;
+    const loaded = await JSZip.loadAsync(bytes);
+    loaded.file(primary, 'x'.repeat(2 * 1024 * 1024));
+    const bomb = await loaded.generateAsync({
+      type: 'uint8array',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
+    });
+    const verdict = await inspectArtifactPackage(bomb);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toContain('compression limit');
+    // Pre-extraction refusal: no manifest/files were read.
+    expect(verdict.manifest).toBeNull();
+    expect(verdict.files).toEqual([]);
+  });
+
+  it('rejects a declared entry size above the limit before decompression', async () => {
+    const { bytes, manifest } = await packageBytes();
+    const declared = patchCentralDirectory(bytes, {
+      name: manifest.files[0].path,
+      uncompressedSize: PACKAGE_LIMITS.maxEntryBytes + 1,
+    });
+    const verdict = await inspectArtifactPackage(declared);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toContain(`limit ${PACKAGE_LIMITS.maxEntryBytes}`);
+    expect(verdict.manifest).toBeNull();
+  });
+
+  it('rejects duplicate raw entry names and original unsafe paths', async () => {
+    const duplicate = await JSZip.loadAsync(await rawZip());
+    duplicate.file('aa.txt', 'one');
+    duplicate.file('bb.txt', 'two');
+    const duplicated = renameEntry(await duplicate.generateAsync({ type: 'uint8array' }), 'bb.txt', 'aa.txt');
+    const duplicateVerdict = await inspectArtifactPackage(duplicated);
+    expect(duplicateVerdict.ok).toBe(false);
+    expect(duplicateVerdict.errors.join('\n')).toContain('repeats an entry name');
+
+    const traversal = await JSZip.loadAsync(await rawZip());
+    traversal.file('qq/aa.txt', 'body');
+    const escaped = renameEntry(
+      await traversal.generateAsync({ type: 'uint8array' }),
+      'qq/aa.txt',
+      '../aa.txt',
+    );
+    const traversalVerdict = await inspectArtifactPackage(escaped);
+    expect(traversalVerdict.ok).toBe(false);
+    expect(traversalVerdict.errors.join('\n')).toContain('unsafe path');
+  });
+
+  it('refuses a manifest whose schema is malformed and reports it safely', async () => {
+    const { manifest } = await packageBytes();
+    const files = Object.fromEntries(manifest.files.map((file) => [file.path, '# Spec\n']));
+    const malformed = { ...manifest, files: 'not-an-array' };
+    const verdict = await inspectArtifactPackage(
+      await rebuiltPackage(malformed as unknown as PackageManifest, files),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toContain('files must be an array');
+  });
+
   it('rejects bytes that are not a ZIP', async () => {
     const verdict = await inspectArtifactPackage(new TextEncoder().encode('not a zip'));
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors.join('\n')).toContain('not a readable ZIP');
+    expect(verdict.errors.join('\n')).toContain('not a ZIP archive');
+  });
+
+  it('refuses oversized selections before reading the file', () => {
+    expect(isSelectablePackageSize(0)).toBe(false);
+    expect(isSelectablePackageSize(PACKAGE_LIMITS.maxTotalBytes)).toBe(true);
+    expect(isSelectablePackageSize(PACKAGE_LIMITS.maxTotalBytes + 1)).toBe(false);
   });
 });

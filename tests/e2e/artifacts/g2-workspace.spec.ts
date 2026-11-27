@@ -420,9 +420,10 @@ test('G2-E2E-03: Haruhi and the Kotoha DOCX slot record revision-based dependenc
   const currentRevision = (artifact: ArtifactRow) =>
     revisions.find((revision) => revision.revisionId === artifact.currentRevisionId)!;
 
-  expect(currentRevision(tests).dependencies).toEqual([
-    { artifactId: source.artifactId, revisionId: source.currentRevisionId, relation: 'validates' },
-  ]);
+  // G2-FIX-03: the Takane revision was not produced from this Haruhi source,
+  // so no edge is invented. An unrelated current artifact is never auto-linked.
+  expect(currentRevision(tests).dependencies).toEqual([]);
+  expect(source.currentRevisionId).toBeTruthy();
 
   // The DOCX edge names the Markdown revision captured by the same run: the
   // first revisions of both slots come from the sample adoption. A later
@@ -447,12 +448,93 @@ test('G2-E2E-03: Haruhi and the Kotoha DOCX slot record revision-based dependenc
     );
   }
 
-  // The workspace resolves the edge against the stored target revision.
+  // The workspace resolves the same-run DOCX edge against its stored target.
   await openWorkspace(page);
-  await page.getByTestId('artifact-row').filter({ hasText: '春日' }).click();
+  await page.locator('[data-testid="artifact-row"][data-artifact-type="docx-document"]').click();
   const dependency = page.getByTestId('artifact-dependencies').locator('li').first();
   await expect(dependency).toHaveAttribute('data-dependency-status', 'current');
-  await expect(dependency).toContainText('validates');
-  await expect(dependency).toContainText('貴音');
+  await expect(dependency).toContainText('derived-from');
+  await expect(dependency).toContainText('琴葉');
   await expect(dependency).toContainText('現行リビジョン');
+});
+
+test('G2-E2E-04: project export bundles selected revisions and verifies on import', async ({
+  page,
+}) => {
+  await page.goto('#/takane');
+  await page.getByTestId('takane-sample-payment-service.spec.md').click();
+  await page.getByTestId('takane-tab-code').click();
+  await expect(page.getByTestId('artifact-status-code')).toHaveAttribute('data-state', 'current', {
+    timeout: 30_000,
+  });
+  await captureShiori(page, SOURCE);
+  await openWorkspace(page);
+
+  const run = page.getByTestId('artifact-project-export-run');
+  await expect(run).toBeDisabled();
+  const boxes = await page.getByTestId('artifact-project-select').all();
+  expect(boxes.length).toBeGreaterThanOrEqual(2);
+  await page.getByTestId('artifact-project-include-source').check();
+  await boxes[0].check();
+  await boxes[1].check();
+  await expect(run).toBeEnabled();
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    run.click(),
+  ]);
+  await expect(page.getByTestId('artifact-workspace-notice')).toHaveAttribute('data-kind', 'ok');
+  const file = path.join(OUT, 'g2-project.package.zip');
+  await download.saveAs(file);
+  expect(download.suggestedFilename()).toMatch(/\.zip$/);
+
+  const stored = await dump(page);
+  const artifacts = rows<ArtifactRow>(stored, 'artifacts');
+  const revisions = rows<RevisionRow>(stored, 'revisions');
+  const zip = await JSZip.loadAsync(fs.readFileSync(file));
+  const manifest = JSON.parse(
+    await zip.file('project-artifacts/manifest.json')!.async('text'),
+  ) as {
+    manifestVersion: string;
+    includeSource: boolean;
+    artifacts: Array<{ artifactId: string; artifactType: string; revision: { revisionId: string } }>;
+    requirements: string[];
+    files: Array<{ path: string; sha256: string; byteLength: number; role: string }>;
+  };
+  expect(manifest.manifestVersion).toBe('adop0001.project-package.v1');
+  expect(manifest.includeSource).toBe(true);
+  expect(manifest.artifacts).toHaveLength(2);
+  expect(manifest.requirements).toEqual(
+    expect.arrayContaining(['REQ-SH-01', 'REQ-TK-01', 'REQ-G2-04']),
+  );
+  for (const item of manifest.artifacts) {
+    const storedArtifact = artifacts.find((artifact) => artifact.artifactId === item.artifactId)!;
+    expect(storedArtifact).toBeTruthy();
+    expect(item.revision.revisionId).toBe(storedArtifact.currentRevisionId);
+    const nested = `project-artifacts/${item.artifactType}/${item.artifactId}/manifest.json`;
+    expect(zip.file(nested)).toBeTruthy();
+    expect(zip.file(nested.replace('manifest.json', 'SHA256SUMS.txt'))).toBeTruthy();
+    const revision = revisions.find((entry) => entry.revisionId === item.revision.revisionId)!;
+    expect(revision.revisionHash).toMatch(SHA256_HEX);
+  }
+  expect(manifest.files.some((entry) => entry.path.startsWith('project-artifacts/source/'))).toBe(true);
+  for (const entry of manifest.files) {
+    const bytes = await zip.file(entry.path)!.async('uint8array');
+    expect(bytes.byteLength).toBe(entry.byteLength);
+    expect(crypto.createHash('sha256').update(bytes).digest('hex')).toBe(entry.sha256);
+  }
+  const sums = (await zip.file('project-artifacts/SHA256SUMS.txt')!.async('text'))
+    .trimEnd()
+    .split('\n')
+    .map((line) => line.slice(66))
+    .sort();
+  expect(sums).toEqual(
+    [...manifest.files.map((entry) => entry.path), 'project-artifacts/manifest.json'].sort(),
+  );
+
+  // The written project package verifies read-only in the same workspace.
+  await page.getByTestId('artifact-package-import-input').setInputFiles(file);
+  const verdict = page.getByTestId('artifact-import-verdict');
+  await expect(verdict).toHaveAttribute('data-ok', 'true');
+  await expect(verdict).toContainText('プロジェクト · 2 成果物');
 });

@@ -25,7 +25,18 @@ import {
 } from '../../engine/artifacts/traceability';
 import { artifactTypeDescriptor } from '../../engine/artifacts/registry';
 import { buildArtifactPackage, packageFileName } from '../../lib/artifacts/package';
-import { inspectArtifactPackage, type PackageVerification } from '../../lib/artifacts/import';
+import {
+  inspectArtifactPackage,
+  isSelectablePackageSize,
+  type PackageVerification,
+} from '../../lib/artifacts/import';
+import type { PackageManifest } from '../../lib/artifacts/package';
+import {
+  buildProjectPackage,
+  projectPackageFileName,
+  type ProjectArtifactInput,
+  type ProjectPackageManifest,
+} from '../../lib/artifacts/projectPackage';
 import { artifactRepository } from '../../lib/artifacts/capture';
 import { downloadBlob } from '../../lib/util';
 import {
@@ -184,7 +195,17 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
     fileName: string;
     verdict: PackageVerification;
   } | null>(null);
+  const [projectIds, setProjectIds] = useState<string[]>([]);
+  const [includeSource, setIncludeSource] = useState(false);
   const dependencyLinks = traceabilityLinks(traceability);
+  const projectCandidates = useMemo(
+    () =>
+      artifacts.filter(
+        (artifact) =>
+          artifact.lifecycle !== 'archived' && !artifact.deletedAt && artifact.currentRevisionId !== null,
+      ),
+    [artifacts],
+  );
 
   useEffect(() => {
     if (!props.open) return;
@@ -193,6 +214,8 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
     setDebugReason('');
     setDeleteArmed(false);
     setVerification(null);
+    setProjectIds([]);
+    setIncludeSource(false);
   }, [props.open]);
 
   useEffect(() => {
@@ -277,7 +300,41 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
 
   const exportPackage = () => run(() => packagePlan(false));
 
+  const exportProject = useCallback(async () => {
+    if (projectIds.length < 2) throw new Error('プロジェクト書き出しには 2 件以上の成果物を選択してください。');
+    const repository = artifactRepository();
+    const selected: ProjectArtifactInput[] = [];
+    for (const artifactId of projectIds) {
+      const artifact = await repository.getArtifact(artifactId);
+      if (!artifact) throw new Error('選択した成果物が見つかりません。');
+      const revision = await repository.getCurrentRevision(artifactId);
+      if (!revision) throw new Error(`「${artifactTitle(artifact)}」に書き出せるリビジョンがありません。`);
+      const validations = await repository.listValidations({ artifactId });
+      const validation = validations.find((record) => record.validatedRevisionId === revision.revisionId);
+      if (!validation) {
+        throw new Error(`「${artifactTitle(artifact)}」の現行リビジョンに有効な検証記録がありません。`);
+      }
+      selected.push({ artifact, revision, validation });
+    }
+    const built = await buildProjectPackage({
+      artifacts: selected,
+      includeSource,
+      baseName: 'project',
+    });
+    const fileName = projectPackageFileName(built.fileNameStem);
+    downloadBlob(fileName, built.zipBytes, 'application/zip');
+    return `プロジェクトパッケージ ${fileName} を書き出しました（${selected.length} 成果物 / SHA-256 ${built.zipHash.slice(0, 12)}… / manifest ${built.manifestHash.slice(0, 12)}…）`;
+  }, [projectIds, includeSource]);
+
   const verifyPackage = async (file: File) => {
+    if (!isSelectablePackageSize(file.size)) {
+      setVerification(null);
+      announce({
+        kind: 'error',
+        message: `${file.name} は読み込み上限（50 MiB）を超えているため検証できません。`,
+      });
+      return;
+    }
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const verdict = await inspectArtifactPackage(bytes);
@@ -493,6 +550,51 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
                   )}
                 </div>
 
+                <div className="workspace-project" data-testid="artifact-project-export">
+                  <p className="muted">プロジェクト書き出し（選択した成果物の現行リビジョンをまとめて ZIP 化）</p>
+                  <ul className="workspace-project-selection">
+                    {projectCandidates.map((artifact) => (
+                      <li key={artifact.artifactId}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={projectIds.includes(artifact.artifactId)}
+                            onChange={(event) =>
+                              setProjectIds((current) =>
+                                event.target.checked
+                                  ? [...current, artifact.artifactId]
+                                  : current.filter((id) => id !== artifact.artifactId),
+                              )
+                            }
+                            data-testid="artifact-project-select"
+                            data-artifact-id={artifact.artifactId}
+                          />
+                          {artifactTitle(artifact)}{' '}
+                          <span className="muted">rev {artifact.currentOrdinal}</span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={includeSource}
+                      onChange={(event) => setIncludeSource(event.target.checked)}
+                      data-testid="artifact-project-include-source"
+                    />{' '}
+                    元ソースも含める（任意）
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={() => void run(exportProject)}
+                    disabled={busy || projectIds.length < 2}
+                    data-testid="artifact-project-export-run"
+                  >
+                    プロジェクト ZIP を書き出す
+                  </button>
+                </div>
+
                 <div className="workspace-import" data-testid="artifact-package-import">
                   <label className="field">
                     <span>パッケージ検証（ZIP・読み取り専用）</span>
@@ -519,10 +621,10 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
                       </p>
                       {verification.verdict.manifest ? (
                         <p>
-                          {verification.verdict.manifest.artifact.toolId} /{' '}
-                          {verification.verdict.manifest.artifact.artifactType} · rev{' '}
-                          {verification.verdict.manifest.revision.ordinal} ·{' '}
-                          {verification.verdict.files.length} ファイル
+                          {verification.verdict.kind === 'project'
+                            ? `プロジェクト · ${(verification.verdict.manifest as ProjectPackageManifest).artifacts.length} 成果物`
+                            : `${(verification.verdict.manifest as PackageManifest).artifact.toolId} / ${(verification.verdict.manifest as PackageManifest).artifact.artifactType} · rev ${(verification.verdict.manifest as PackageManifest).revision.ordinal}`}{' '}
+                          · {verification.verdict.files.length} ファイル
                         </p>
                       ) : null}
                       {verification.verdict.errors.length > 0 ? (
