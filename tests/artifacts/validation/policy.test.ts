@@ -360,6 +360,41 @@ describe('WO-D03 effective validation policy', () => {
     expect(hasRequiredUnavailability(record.results)).toBe(true);
   });
 
+  it('treats an unsupported-only REQUIRED set as complete but still blocks normal export', async () => {
+    const revision = specificationRevision();
+    const { plan, record } = await runValidation({ registry: registryOf(), revision });
+    expect(record.status).toBe('blocked');
+
+    const effectiveness = checkRecordEffectiveness(record, revision, plan);
+    expect(effectiveness).toEqual({ effective: true, reasons: [] });
+
+    const normal = decideExport({ record, revision, plan, policy: POLICY });
+    expect(normal).toMatchObject({ allowed: false, kind: 'none' });
+    expect(normal.reasons).toContain('validation-blocked');
+    expect(normal.reasons).not.toContain('required-result-missing');
+    expect(normal.reasons).not.toContain('required-result-mismatch');
+    expect(
+      decideExport({ record, revision, plan, policy: POLICY, debug: { reason: '確認用' } }),
+    ).toMatchObject({ allowed: true, kind: 'debug' });
+  });
+
+  it('treats a payload-skip-only REQUIRED set as complete but still blocks normal export', async () => {
+    const revision = specificationRevision();
+    const { plan, record } = await runValidation({
+      registry: registryOf(mdRegistration({ roles: ['rendered'] }), semanticRegistration()),
+      revision,
+    });
+    expect(record.status).toBe('blocked');
+
+    const effectiveness = checkRecordEffectiveness(record, revision, plan);
+    expect(effectiveness).toEqual({ effective: true, reasons: [] });
+    const normal = decideExport({ record, revision, plan, policy: POLICY });
+    expect(normal).toMatchObject({ allowed: false, kind: 'none' });
+    expect(normal.reasons).toContain('validation-blocked');
+    expect(normal.reasons).not.toContain('required-result-missing');
+    expect(normal.reasons).not.toContain('required-result-mismatch');
+  });
+
   it('synthesizes system.required-set when every required validator is unsupported', async () => {
     const { record } = await runValidation({ registry: registryOf() });
 

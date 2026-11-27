@@ -462,8 +462,10 @@ function identityKey(identity: Pick<RequiredIdentity, 'validatorId' | 'level' | 
  */
 function expectedRequiredIdentities(plan: ValidationPlan): RequiredIdentity[] {
   const selected: RequiredIdentity[] = [];
+  let hasSelectedRequired = false;
   for (const assignment of plan.selection.assignments) {
-    if (assignment.requirement !== 'REQUIRED' || assignment.gate !== 'match') continue;
+    if (assignment.requirement !== 'REQUIRED') continue;
+    if (assignment.gate === 'match') hasSelectedRequired = true;
     const descriptor = assignment.descriptor;
     selected.push({
       validatorId: descriptor?.validatorId ?? assignment.requirementSpec.validatorId,
@@ -474,16 +476,16 @@ function expectedRequiredIdentities(plan: ValidationPlan): RequiredIdentity[] {
       configHash: descriptor?.configHash ?? '',
     });
   }
-  if (selected.length) return selected;
-  return [
-    {
+  if (!hasSelectedRequired) {
+    selected.push({
       validatorId: 'system.required-set',
       level: plan.enabledLevels[0] ?? 'structure',
       scope: 'revision',
       validatorVersion: plan.policyVersion,
       configHash: '',
-    },
-  ];
+    });
+  }
+  return selected;
 }
 
 function checkRequiredCompleteness(record: ValidationRecord, plan: ValidationPlan): string[] {
