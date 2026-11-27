@@ -128,6 +128,8 @@ interface CoverageCase {
   descriptor: ArtifactTypeDescriptor;
   revision: ArtifactRevision;
   context: ValidatorSelectionContext;
+  /** Aggregate validators must never payload-skip on any supported variant. */
+  noSkipValidatorId?: string;
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -222,6 +224,20 @@ async function coverageCases(): Promise<CoverageCase[]> {
       ]),
       context: { framework },
     });
+    cases.push({
+      label: `haruhi ${framework} aggregate`,
+      descriptor: descriptorFor({
+        type: 'test-suite',
+        supportedContentTypes: ['text/x-typescript', 'text/x-python', 'text/x-java', 'text/x-go'],
+        supportedRoles: ['primary'],
+        requirements: [required('code.test-suite.structure')],
+      }),
+      revision: await revisionFor('haruhi', `rev_haruhi_aggregate_${framework}`, [
+        { contentType, role: 'primary', payload: output.code, fileName: output.fileName },
+      ]),
+      context: { language: 'typescript', framework },
+      noSkipValidatorId: 'code.test-suite.structure',
+    });
   }
 
   const languageValidator: Record<TakaneLanguage, string> = {
@@ -252,6 +268,27 @@ async function coverageCases(): Promise<CoverageCase[]> {
         })),
       ),
       context: { language },
+    });
+    cases.push({
+      label: `takane ${language} aggregate`,
+      descriptor: descriptorFor({
+        type: 'source-code',
+        supportedContentTypes: ['text/x-python', 'text/x-c', 'text/x-cpp'],
+        supportedRoles: ['source-file', 'header', 'implementation'],
+        requirements: [required('code.source.structure')],
+      }),
+      revision: await revisionFor(
+        'takane',
+        `rev_takane_aggregate_${language}`,
+        output.files.map((file) => ({
+          contentType,
+          role: file.role,
+          fileName: file.name,
+          payload: file.code,
+        })),
+      ),
+      context: { language },
+      noSkipValidatorId: 'code.source.structure',
     });
   }
 
@@ -331,6 +368,19 @@ describe('CP02 structural validator coverage', () => {
         record.results.some((result) => result.validatorId === 'system.required-set'),
         `${testCase.label} must select its REQUIRED validators`,
       ).toBe(false);
+
+      if (testCase.noSkipValidatorId) {
+        const aggregateResults = record.results.filter(
+          (result) => result.validatorId === testCase.noSkipValidatorId,
+        );
+        expect(aggregateResults.length, `${testCase.label} aggregate results`).toBe(
+          testCase.revision.contents.length,
+        );
+        expect(
+          aggregateResults.some((result) => result.executionStatus === 'SKIP'),
+          `${testCase.label} must not payload-skip`,
+        ).toBe(false);
+      }
 
       for (const content of testCase.revision.contents) {
         const result = record.results.find((item) => item.contentId === content.contentId);
