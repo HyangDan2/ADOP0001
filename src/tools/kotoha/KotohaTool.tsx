@@ -39,10 +39,12 @@ import { useArtifactCapture } from '../../components/artifacts/useArtifactCaptur
 import { ArtifactSlotStatus } from '../../components/artifacts/ArtifactStatus';
 import {
   NO_ARTIFACT_MESSAGE,
+  STALE_INPUT_MESSAGE,
   entryByRole,
   guardCopyText,
   guardExport,
 } from '../../components/artifacts/ExportGuard';
+import type { ArtifactSlotSnapshot } from '../../lib/artifacts/capture';
 const PRESET_KEY = 'adop0001.kotoha.presets';
 
 /** A document with warnings waits here, together with the request that produced it. */
@@ -225,7 +227,8 @@ export function KotohaTool() {
       bundle: outputValue.bundle,
     }, resetEpoch);
     if (request && !request.isCurrent()) return null;
-    if (saved.superseded || resetEpoch !== kotohaResetEpoch()) return null;
+    // An inspector edit supersedes the draft write but not the adopted document,
+    // so the artifact is still captured; the export guard checks its content.
     if (context) {
       const binaryInputs = await kotohaBinaryInputs(context.options as { bytes?: unknown });
       const isCurrent = () => (!request || request.isCurrent()) && resetEpoch === kotohaResetEpoch();
@@ -250,6 +253,7 @@ export function KotohaTool() {
         }
       }
     }
+    if (saved.superseded || resetEpoch !== kotohaResetEpoch()) return null;
     setStorage(
       saved.storage === 'indexeddb'
         ? `スタイルバンドルを ${storageName(saved.storage)} に保存 · ${new Date(saved.savedAt).toLocaleTimeString('ja-JP')}`
@@ -470,6 +474,26 @@ export function KotohaTool() {
     liveFingerprint: () => artifactMd.liveFingerprint(),
   };
 
+  /**
+   * The bundle export merges the inspector's live attributes (KOT-003), so it
+   * does not require a rebuilt output. It is still refused when the Markdown on
+   * screen no longer matches the stored artifact.
+   */
+  const bundleBinding = {
+    slot: ARTIFACT_SLOTS.kotohaMarkdown,
+    assertCurrent: () => {
+      if (!document) throw new Error(NO_ARTIFACT_MESSAGE);
+    },
+    liveFingerprint: () => artifactMd.liveFingerprint(),
+  };
+
+  const verifyBundleSnapshot = (snapshot: ArtifactSlotSnapshot) => {
+    const primary = snapshot.revision.contents.find((entry) => entry.role === 'primary');
+    if (!primary || primary.encoding !== 'utf8' || primary.payload !== markdown) {
+      throw new Error(STALE_INPUT_MESSAGE);
+    }
+  };
+
   const assertDocxCurrent = () => {
     if (!output?.docx) {
       throw new Error('先に「.docx を再構築」を実行してください。');
@@ -513,7 +537,7 @@ export function KotohaTool() {
   /** Export always merges the inspector's current values into the bundle (KOT-003). */
   const exportBundle = async (base?: string) => {
     if (!document) return;
-    markdownBinding.assertCurrent();
+    bundleBinding.assertCurrent();
     const source = withAttributes(document.bundle, attributes);
     const payload = {
       version: 1,
@@ -524,7 +548,7 @@ export function KotohaTool() {
     };
     const text = JSON.stringify(payload, null, 2);
     await guardExport(
-      markdownBinding,
+      bundleBinding,
       [
         {
           format: 'bundle',
@@ -536,6 +560,7 @@ export function KotohaTool() {
         },
       ],
       (bytes, name) => downloadBlob(name, bytes, 'application/json;charset=utf-8'),
+      { verifySnapshot: verifyBundleSnapshot },
     );
   };
 

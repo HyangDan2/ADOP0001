@@ -63,6 +63,8 @@ export interface ExportGuardDeps {
   snapshot?: ArtifactSlotSnapshot | null;
   /** How long a click waits for an in-flight capture (default 4 s). */
   waitMs?: number;
+  /** Extra check against the resolved snapshot (runs after the legacy check). */
+  verifySnapshot?: (snapshot: ArtifactSlotSnapshot) => void;
 }
 
 export function textBytes(text: string): Uint8Array {
@@ -112,6 +114,8 @@ export async function guardExport(
 
   const snapshot = deps.snapshot ?? (await waitForArtifactSlotSnapshot(binding.slot, deps.waitMs));
   if (!snapshot) throw new Error(NO_ARTIFACT_MESSAGE);
+  deps.verifySnapshot?.(snapshot);
+  binding.assertCurrent();
 
   const repository = deps.repository ?? artifactRepository();
 

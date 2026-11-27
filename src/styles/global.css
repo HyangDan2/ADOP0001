@@ -450,6 +450,8 @@ table.grid td code { font-family: var(--mono); font-size: 11.5px; color: var(--a
 }
 .badge.accent { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .badge.soft { color: var(--accent-2); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+/* The artifact badge carries a sentence; let it wrap on narrow viewports. */
+.artifact-status { white-space: normal; min-width: 0; max-width: 100%; flex-wrap: wrap; }
 .reason-list { margin: 0; padding-left: 16px; color: var(--muted); font-size: 11.5px; }
 
 /* ---------- inspector ---------- */
