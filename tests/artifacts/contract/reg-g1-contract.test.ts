@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type {
   ArtifactState,
+  ArtifactType,
   RevisionIntegrityHash,
   ValidatorIdentity,
 } from '../../../src/engine/artifacts/types';
@@ -166,6 +167,66 @@ describe('G1 artifact descriptor registry', () => {
         contentType: 'text/x-python',
       }),
     ).toBe(false);
+  });
+
+  it('binds each descriptor to content-entry structure requirements in the declared order', () => {
+    const expected: Record<
+      ArtifactType,
+      ReadonlyArray<readonly [string, 'REQUIRED' | 'OPTIONAL']>
+    > = {
+      specification: [
+        ['format.markdown', 'REQUIRED'],
+        ['format.html', 'OPTIONAL'],
+        ['format.json', 'OPTIONAL'],
+      ],
+      pseudocode: [
+        ['format.markdown', 'REQUIRED'],
+        ['format.text', 'REQUIRED'],
+        ['format.json', 'OPTIONAL'],
+      ],
+      'uml-diagram': [
+        ['format.mermaid', 'REQUIRED'],
+        ['format.svg', 'OPTIONAL'],
+        ['format.json', 'OPTIONAL'],
+      ],
+      'test-suite': [
+        ['code.test-suite.structure', 'REQUIRED'],
+        ['format.json', 'OPTIONAL'],
+      ],
+      'markdown-document': [
+        ['format.markdown', 'REQUIRED'],
+        ['format.json', 'REQUIRED'],
+      ],
+      'docx-document': [
+        ['format.docx', 'REQUIRED'],
+        ['format.markdown', 'REQUIRED'],
+        ['format.json', 'REQUIRED'],
+      ],
+      'source-code': [
+        ['code.source.structure', 'REQUIRED'],
+        ['format.json', 'OPTIONAL'],
+      ],
+      'multi-file-package': [],
+    };
+
+    for (const type of ARTIFACT_TYPES) {
+      const descriptor = artifactTypeDescriptor(type);
+      expect(
+        descriptor.validationRequirements.map((item) => [item.validatorId, item.requirement]),
+      ).toEqual(expected[type]);
+
+      const keys = new Set<string>();
+      for (const requirement of descriptor.validationRequirements) {
+        expect(requirement.level).toBe('structure');
+        expect(descriptor.validationLevels).toContain(requirement.level);
+        expect(requirement.scope).toBe('content-entry');
+        expect(requirement.validatorId.trim()).not.toBe('');
+
+        const key = `${requirement.validatorId}\u0000${requirement.level}\u0000${requirement.scope}`;
+        expect(keys.has(key)).toBe(false);
+        keys.add(key);
+      }
+    }
   });
 });
 
