@@ -153,6 +153,8 @@ export function KotohaTool() {
   const userTouched = useRef(false);
   /** A reset or adoption invalidates autosaves scheduled for an older document. */
   const documentEpoch = useRef(0);
+  /** Only a newer adoption/reset cancels a capture; inspector edits do not. */
+  const adoptionEpoch = useRef(0);
   /** FIX-003: a newer file/render/reset supersedes the run in flight. */
   const gate = useRequestGate();
   /** CP03: the two slots are captured independently and never authorize each other. */
@@ -206,6 +208,8 @@ export function KotohaTool() {
   ): Promise<KotohaSaveResult | null> => {
     if (request && !request.isCurrent()) return null;
     const resetEpoch = kotohaResetEpoch();
+    const adoption = adoptionEpoch.current + 1;
+    adoptionEpoch.current = adoption;
     documentEpoch.current += 1;
     setDocument({ bundle: outputValue.bundle, markdown: outputValue.markdown });
     setMarkdown(outputValue.markdown);
@@ -219,19 +223,13 @@ export function KotohaTool() {
     );
     setPending(null);
     setRestored(null);
-    // Latest bundle and working draft commit together, so a reload can never
-    // find the new bundle next to the previous document's Markdown (FIX-008).
-    const saved = await saveDocumentSnapshot({
-      markdown: outputValue.markdown,
-      attributes: outputValue.bundle.attributes,
-      bundle: outputValue.bundle,
-    }, resetEpoch);
-    if (request && !request.isCurrent()) return null;
-    // An inspector edit supersedes the draft write but not the adopted document,
-    // so the artifact is still captured; the export guard checks its content.
+    // The artifact belongs to the adopted output, not to the draft write, and
+    // an inspector edit (which cancels the request gate) must not drop it.
+    // Only a newer adoption or a reset supersedes the capture.
     if (context) {
       const binaryInputs = await kotohaBinaryInputs(context.options as { bytes?: unknown });
-      const isCurrent = () => (!request || request.isCurrent()) && resetEpoch === kotohaResetEpoch();
+      const isCurrent = () =>
+        adoptionEpoch.current === adoption && resetEpoch === kotohaResetEpoch();
       if (isCurrent()) {
         artifactMd.remember(context);
         artifactDocx.remember(context);
@@ -253,6 +251,14 @@ export function KotohaTool() {
         }
       }
     }
+    // Latest bundle and working draft commit together, so a reload can never
+    // find the new bundle next to the previous document's Markdown (FIX-008).
+    const saved = await saveDocumentSnapshot({
+      markdown: outputValue.markdown,
+      attributes: outputValue.bundle.attributes,
+      bundle: outputValue.bundle,
+    }, resetEpoch);
+    if (request && !request.isCurrent()) return null;
     if (saved.superseded || resetEpoch !== kotohaResetEpoch()) return null;
     setStorage(
       saved.storage === 'indexeddb'

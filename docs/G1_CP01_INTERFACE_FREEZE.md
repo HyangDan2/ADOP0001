@@ -1,7 +1,7 @@
 # G1-CP01 Interface Freeze Candidate
 
-- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02 milestone complete; CP03 in progress (Lean v1.1)
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00/01/02 complete (`8ecf0aa` contract, integration `80048cb`, CI `45916061189` success); CP03 runtime integration in progress; G1 close pending; CP02~CP04 are milestones, not approval gates (Supervisor Lean Engineering v1.1, 2026-11-27)
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP03 milestone complete; CP04 verification pending (Lean v1.1)
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00/01/02 complete (`8ecf0aa` contract, integration `80048cb`, CI `45916061189` success); CP03 runtime integration complete (integration `19dff86`, E2E 70/70 locally); CP04 verification and G1 close pending; CP02~CP04 are milestones, not approval gates (Supervisor Lean Engineering v1.1, 2026-11-27)
 - **Baseline:** `04dd2fc` (merged tree identical to approved `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Scope:** WO-D01~D04 and SUP-D01~D07 only
@@ -1430,4 +1430,4 @@ Work Order text.
 - CP02-00 is complete at `8ecf0aa`; CP02-01 parallel implementation is authorized
   on the per-agent worktrees created from that SHA.
 
-**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02 milestone complete (contract `8ecf0aa`, integration `80048cb`, CI `45916061189`); CP03 runtime integration in progress under Lean v1.1; G1 close pending.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02 milestone complete (contract `8ecf0aa`, integration `80048cb`, CI `45916061189`); CP03 runtime integration complete at `19dff86`; CP04 verification and G1 close pending under Lean v1.1.**

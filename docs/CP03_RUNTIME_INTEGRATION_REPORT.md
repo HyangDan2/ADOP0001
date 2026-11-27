@@ -45,7 +45,7 @@ pre-check; Takane `すべて` compares each rebuilt file.
 
 | Test | Cause | Fix |
 | --- | --- | --- |
-| REG-09 (bundle export after inspector edits) | `exportBundle` required a rebuilt `output`, which any inspector edit clears; capture was also skipped when an edit superseded the draft write, leaving no slot artifact | bundle export uses its own binding that needs the document, not the rebuilt output; capture still runs for the adopted document; a `verifySnapshot` hook on `guardExport` refuses export when the stored Markdown differs from the editor |
+| REG-09 (bundle export after inspector edits) | `exportBundle` required a rebuilt `output`, which any inspector edit clears; capture was also skipped on slow machines because `beginEdit()` cancels the request gate and capture waited for the draft write | bundle export uses its own binding that needs the document, not the rebuilt output; a `verifySnapshot` hook on `guardExport` refuses export when the stored Markdown differs from the editor; capture runs before the draft write and is scoped to an adoption token, so only a newer adoption or reset cancels it |
 | UI-002, QA-002, REG-5C-12, C-FIX-010 (320 px overflow) | the artifact status badge forced a single line (`white-space: nowrap`), widening the workspace to 346–384 px | `.artifact-status` wraps and shrinks (`max-width: 100%`) |
 
 No contract change and no test expectation was modified; Q05's BL-08 harness

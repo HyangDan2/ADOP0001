@@ -1,7 +1,7 @@
 # G1 Agent Assignments and Collaboration Protocol
 
-- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP02 milestone complete
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00/01/02 complete (`8ecf0aa` contract, integration `80048cb`, CI `45916061189` success); CP03 runtime integration in progress; G1 close pending. CP02~CP04 are milestones, not approval gates (Supervisor Lean Engineering v1.1, 2026-11-27).
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP03 milestone complete
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00/01/02 complete (`8ecf0aa` contract, integration `80048cb`, CI `45916061189` success); CP03 runtime integration complete (integration `19dff86`, E2E 70/70 locally); CP04 verification and G1 close pending. CP02~CP04 are milestones, not approval gates (Supervisor Lean Engineering v1.1, 2026-11-27).
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -201,7 +201,8 @@ fixed contract SHA. See the freeze document §11.3.
 5. Qoder-00 integrated CP02-01 at `80048cb`; CI `45916061189` passed (840 unit,
    generated QA 59/0/5, E2E 70).
 6. CP03 runtime integration (capture, validation execution, ExportGuard, artifact
-   UI) proceeds under Supervisor Lean Engineering v1.1; CP02~CP04 are milestones.
+   UI) is complete at `19dff86`; CP04 verification proceeds under Supervisor Lean
+   Engineering v1.1, and CP02~CP04 are milestones.
 7. Independent G1 QA runs at G1 closure, not per milestone.
 
-**Current state: CP02 milestone complete at `80048cb`. CP03 runtime integration in progress. G1 close pending.**
+**Current state: CP03 milestone complete at `19dff86`. CP04 verification and G1 close pending.**
