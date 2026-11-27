@@ -25,6 +25,7 @@ import { exportByteHash } from '../../lib/artifacts/hash';
 import {
   ARTIFACT_SCOPE_EPOCH,
   artifactRepository,
+  getArtifactSlotSnapshot,
   waitForArtifactSlotSnapshot,
   type ArtifactSlotSnapshot,
 } from '../../lib/artifacts/capture';
@@ -183,4 +184,70 @@ export async function guardExport(
     await write(payloads[index], record.fileName);
   }
   return records;
+}
+
+/**
+ * Copy path. The modal copies synchronously, so integrity is checked against
+ * the stored payload before returning the text; registration is queued and a
+ * failure is reported to the console instead of pretending the copy failed.
+ */
+export function guardCopyText(
+  binding: ExportGuardBinding,
+  options: {
+    format: string;
+    fileName: string;
+    contentType: ArtifactContentType;
+    entry: (revision: ArtifactRevision) => ArtifactContentEntry;
+    text: string;
+    snapshot?: ArtifactSlotSnapshot | null;
+    repository?: ArtifactRepositoryImpl;
+  },
+): string {
+  binding.assertCurrent();
+  const snapshot = options.snapshot ?? getArtifactSlotSnapshot(binding.slot);
+  if (!snapshot) throw new Error(NO_ARTIFACT_MESSAGE);
+  const entry = options.entry(snapshot.revision);
+  if (entry.encoding !== 'utf8' || entry.payload !== options.text) {
+    throw new Error(CONTENT_MISMATCH_MESSAGE);
+  }
+  const bytes = textBytes(options.text);
+  const repository = options.repository ?? artifactRepository();
+  void (async () => {
+    const artifact = await repository.getArtifact(snapshot.artifact.artifactId);
+    const revision = await repository.getCurrentRevision(snapshot.artifact.artifactId);
+    if (
+      !artifact ||
+      !revision ||
+      revision.revisionId !== snapshot.revision.revisionId ||
+      artifact.currentRevisionId !== revision.revisionId
+    ) {
+      return;
+    }
+    const hash = await exportByteHash(bytes);
+    if (hash !== entry.contentHash) return;
+    await repository.registerExport({
+      artifactId: artifact.artifactId,
+      revisionId: revision.revisionId,
+      revisionHash: revision.revisionHash,
+      contentDigest: revision.contentDigest,
+      format: options.format,
+      exportContentType: options.contentType,
+      exportByteHash: hash,
+      exportByteLength: bytes.byteLength,
+      derivation: {
+        kind: 'direct',
+        sourceContentId: entry.contentId,
+        sourceContentHash: entry.contentHash,
+      },
+      fileName: options.fileName,
+      kind: 'normal',
+      guard: {
+        expectedScopeEpoch: ARTIFACT_SCOPE_EPOCH,
+        expectedHistoryEpoch: artifact.historyEpoch,
+        expectedCurrentRevisionId: revision.revisionId,
+      },
+      exportBytes: bytes,
+    });
+  })().catch((cause) => console.warn('[artifact] copy export was not registered', cause));
+  return options.text;
 }

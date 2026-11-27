@@ -16,6 +16,10 @@ import { SAMPLE_BY_EXT } from '../samples';
 import { ALL_SECTIONS, type ShioriOutput, type SpecSection } from './adapter';
 import { runEngine } from '../../engine/core/runner';
 import { HybridAssist } from '../../components/HybridAssist';
+import { ARTIFACT_SLOTS, shioriContents } from '../../features/artifacts/tools';
+import { useArtifactCapture } from '../../components/artifacts/useArtifactCapture';
+import { ArtifactSlotStatus } from '../../components/artifacts/ArtifactStatus';
+import { entryByRole, guardCopyText, guardExport } from '../../components/artifacts/ExportGuard';
 
 const SECTION_LABEL: Record<SpecSection, string> = {
   overview: '概要',
@@ -56,6 +60,8 @@ export function ShioriTool() {
   /** PATCH-006: the input an output belongs to, and the input it was built from. */
   const inputRevision = useRef(0);
   const outputRevision = useRef<number | null>(null);
+  /** CP03: every successful run is captured before the Shiori publish. */
+  const artifact = useArtifactCapture<'shiori'>(ARTIFACT_SLOTS.shiori);
 
 
   const run = async (text: string, name: string, activeSections: SpecSection[]) => {
@@ -87,6 +93,12 @@ export function ShioriTool() {
       setDiagnostics(result.diagnostics);
       setElapsed(result.elapsedMs);
       outputRevision.current = revision;
+      artifact.remember(result.context);
+      artifact.capture({
+        contents: shioriContents(result.output),
+        inputRevision: revision,
+        isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
+      });
       try {
         localStorage.setItem(
           'adop0001.shiori.latest',
@@ -150,12 +162,32 @@ export function ShioriTool() {
 
   const baseName = fileName.replace(/\.[^.]+$/, '') || 'specification';
 
-  const download = (kind: 'md' | 'html', base: string) => {
-    // PATCH-006: the download is only allowed for the artifact of the current input.
-    assertArtifactRevision(inputRevision.current, output ? outputRevision.current : null);
+  const binding = {
+    slot: ARTIFACT_SLOTS.shiori,
+    assertCurrent: () => assertArtifactRevision(inputRevision.current, output ? outputRevision.current : null),
+    liveFingerprint: () => artifact.liveFingerprint(),
+  };
+
+  const download = async (kind: 'md' | 'html', base: string) => {
+    // PATCH-006 first; the artifact guard then proves the bytes still describe
+    // the stored revision before anything is written.
+    binding.assertCurrent();
     if (!output) return;
-    if (kind === 'md') downloadBlob(`${base}.spec.md`, output.markdown, 'text/markdown;charset=utf-8');
-    else downloadBlob(`${base}.spec.html`, output.html, 'text/html;charset=utf-8');
+    const isMarkdown = kind === 'md';
+    await guardExport(
+      binding,
+      [
+        {
+          format: isMarkdown ? 'markdown' : 'html',
+          fileName: isMarkdown ? `${base}.spec.md` : `${base}.spec.html`,
+          contentType: isMarkdown ? 'text/markdown' : 'text/html',
+          entry: entryByRole(isMarkdown ? 'primary' : 'rendered'),
+          payload: () => (isMarkdown ? output.markdown : output.html),
+        },
+      ],
+      (bytes, name) =>
+        downloadBlob(name, bytes, isMarkdown ? 'text/markdown;charset=utf-8' : 'text/html;charset=utf-8'),
+    );
   };
 
   const toggleSection = (section: SpecSection) => {
@@ -410,6 +442,16 @@ export function ShioriTool() {
         localOutput={output}
         onApplied={(next, note) => {
           setOutput(next);
+          // CP03: the AI proposal changed the artifact, not the input; append a
+          // revision instead of re-registering the base.
+          const revision = inputRevision.current;
+          outputRevision.current = revision;
+          artifact.capture({
+            contents: shioriContents(next),
+            inputRevision: revision,
+            forceAppend: true,
+            isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
+          });
           showToast(note);
         }}
       />
@@ -417,6 +459,11 @@ export function ShioriTool() {
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
         <DraftStateBadge state={draftState} />
+        <ArtifactSlotStatus
+          slot={ARTIFACT_SLOTS.shiori}
+          label="仕様書"
+          stale={outputRevision.current === null || outputRevision.current !== inputRevision.current}
+        />
         <span className={error ? 'err' : 'ok'} data-testid="status-message" data-state={error ? 'error' : busy ? 'busy' : 'ok'}>
           {error ? `エラー: ${error}` : busy ? '処理中' : 'エラーなし'}
         </span>
@@ -435,10 +482,14 @@ export function ShioriTool() {
               description: '契約表・振る舞い・エラー経路を含む Markdown 仕様書',
               fileName: (base) => `${base}.spec.md`,
               run: (base) => download('md', base),
-              copy: () => {
-                assertArtifactRevision(inputRevision.current, outputRevision.current);
-                return output.markdown;
-              },
+              copy: () =>
+                guardCopyText(binding, {
+                  format: 'markdown',
+                  fileName: `${baseName}.spec.md`,
+                  contentType: 'text/markdown',
+                  entry: entryByRole('primary'),
+                  text: output.markdown,
+                }),
             },
             {
               id: 'html',
@@ -446,10 +497,14 @@ export function ShioriTool() {
               description: 'そのまま配布できるスタンドアロン HTML 仕様書',
               fileName: (base) => `${base}.spec.html`,
               run: (base) => download('html', base),
-              copy: () => {
-                assertArtifactRevision(inputRevision.current, outputRevision.current);
-                return output.html;
-              },
+              copy: () =>
+                guardCopyText(binding, {
+                  format: 'html',
+                  fileName: `${baseName}.spec.html`,
+                  contentType: 'text/html',
+                  entry: entryByRole('rendered'),
+                  text: output.html,
+                }),
             },
           ]}
         />

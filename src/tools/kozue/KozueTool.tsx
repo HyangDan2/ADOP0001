@@ -17,6 +17,10 @@ import { runEngine } from '../../engine/core/runner';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { loadMermaid, type MermaidTheme } from './mermaid';
 import { HybridAssist } from '../../components/HybridAssist';
+import { ARTIFACT_SLOTS, kozueContents } from '../../features/artifacts/tools';
+import { useArtifactCapture } from '../../components/artifacts/useArtifactCapture';
+import { ArtifactSlotStatus } from '../../components/artifacts/ArtifactStatus';
+import { entryByRole, guardCopyText, guardExport } from '../../components/artifacts/ExportGuard';
 
 const KINDS: UmlKind[] = ['sequence', 'class', 'state', 'activity', 'component'];
 
@@ -68,6 +72,8 @@ export function KozueTool() {
   // PATCH-006: input/output revisions so a stale result can never be exported.
   const inputRevision = useRef(0);
   const outputRevision = useRef<number | null>(null);
+  /** CP03: only the Mermaid sources are captured; SVG/PNG are rendered exports. */
+  const artifact = useArtifactCapture<'kozue'>(ARTIFACT_SLOTS.kozue);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -99,6 +105,12 @@ export function KozueTool() {
           outputRevision.current = revision;
           setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
+          artifact.remember(result.context);
+          artifact.capture({
+            contents: kozueContents(result.output),
+            inputRevision: revision,
+            isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
+          });
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
@@ -193,16 +205,40 @@ export function KozueTool() {
     showToast(`${opened.path} を開きました`);
   });
 
-  const exportSvg = (base: string) => {
-    assertArtifactRevision(inputRevision.current, outputRevision.current);
-    if (!svg) return;
-    downloadBlob(`${base}-${activeKind}.svg`, svg, 'image/svg+xml;charset=utf-8');
+  const binding = {
+    slot: ARTIFACT_SLOTS.kozue,
+    assertCurrent: () => assertArtifactRevision(inputRevision.current, outputRevision.current),
+    liveFingerprint: () => artifact.liveFingerprint(),
   };
 
-  const exportPng = async (base: string) => {
-    assertArtifactRevision(inputRevision.current, outputRevision.current);
+  /** Serialises the live diagram; the guard hashes these bytes at click time. */
+  const serializedSvg = (): string => {
     const element = diagramRef.current?.querySelector('svg');
-    if (!element) return;
+    return element ? new XMLSerializer().serializeToString(element) : svg;
+  };
+
+  const exportSvg = async (base: string) => {
+    binding.assertCurrent();
+    if (!svg) return;
+    await guardExport(
+      binding,
+      [
+        {
+          format: 'svg',
+          fileName: `${base}-${activeKind}.svg`,
+          contentType: 'image/svg+xml',
+          entry: entryByRole('diagram-source', activeKind),
+          payload: () => serializedSvg(),
+          derivation: 'rendered',
+        },
+      ],
+      (bytes, name) => downloadBlob(name, bytes, 'image/svg+xml;charset=utf-8'),
+    );
+  };
+
+  const buildPng = async (): Promise<Uint8Array> => {
+    const element = diagramRef.current?.querySelector('svg');
+    if (!element) throw new Error('図がまだ描画されていません。');
     const clone = element.cloneNode(true) as SVGSVGElement;
     const viewBox = clone.getAttribute('viewBox') ?? '0 0 960 640';
     const [, , vbWidth, vbHeight] = viewBox.split(/\s+/).map(Number);
@@ -232,14 +268,29 @@ export function KozueTool() {
       context.fillRect(0, 0, width, height);
       context.drawImage(image, 0, 0, width, height);
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
-      if (blob) downloadBlob(`${base}-${activeKind}.png`, blob, 'image/png');
-    } catch (cause) {
-      // The modal reports the failure; swallowing it here would announce a success
-      // for a file that was never written (UI-001).
-      throw cause instanceof Error ? cause : new Error('PNG の書き出しに失敗しました。');
+      if (!blob) throw new Error('PNG の書き出しに失敗しました。');
+      return new Uint8Array(await blob.arrayBuffer());
     } finally {
       URL.revokeObjectURL(url);
     }
+  };
+
+  const exportPng = async (base: string) => {
+    binding.assertCurrent();
+    await guardExport(
+      binding,
+      [
+        {
+          format: 'png',
+          fileName: `${base}-${activeKind}.png`,
+          contentType: 'image/png',
+          entry: entryByRole('diagram-source', activeKind),
+          payload: buildPng,
+          derivation: 'rendered',
+        },
+      ],
+      (bytes, name) => downloadBlob(name, bytes, 'image/png'),
+    );
   };
 
   const detection = output?.detection;
@@ -403,6 +454,14 @@ export function KozueTool() {
         localOutput={output}
         onApplied={(next, note) => {
           setOutput(next);
+          const revision = inputRevision.current;
+          outputRevision.current = revision;
+          artifact.capture({
+            contents: kozueContents(next),
+            inputRevision: revision,
+            forceAppend: true,
+            isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
+          });
           showToast(note);
         }}
       />
@@ -410,6 +469,11 @@ export function KozueTool() {
         <span className="dot" /> <span>Mermaid レンダラー</span>
         <span>{Math.round(scale * 100)}% ズーム</span>
         <DraftStateBadge state={draftState} />
+        <ArtifactSlotStatus
+          slot={ARTIFACT_SLOTS.kozue}
+          label="UML"
+          stale={outputRevision.current === null || outputRevision.current !== inputRevision.current}
+        />
         <span
           className={analysisError || renderError ? 'err' : 'ok'}
           data-testid="status-message"
@@ -451,14 +515,30 @@ export function KozueTool() {
               label: '.mmd',
               description: 'Mermaid ソース（テキスト）',
               fileName: (base) => `${base}-${activeKind}.mmd`,
-              run: (base) => {
-                assertArtifactRevision(inputRevision.current, outputRevision.current);
-                downloadBlob(`${base}-${activeKind}.mmd`, mermaidCode, 'text/plain;charset=utf-8');
+              run: async (base) => {
+                binding.assertCurrent();
+                await guardExport(
+                  binding,
+                  [
+                    {
+                      format: 'mmd',
+                      fileName: `${base}-${activeKind}.mmd`,
+                      contentType: 'text/x-mermaid',
+                      entry: entryByRole('diagram-source', activeKind),
+                      payload: () => mermaidCode,
+                    },
+                  ],
+                  (bytes, name) => downloadBlob(name, bytes, 'text/plain;charset=utf-8'),
+                );
               },
-              copy: () => {
-                assertArtifactRevision(inputRevision.current, outputRevision.current);
-                return mermaidCode;
-              },
+              copy: () =>
+                guardCopyText(binding, {
+                  format: 'mmd',
+                  fileName: `${fileName.replace(/\.[^.]+$/, '') || 'diagram'}-${activeKind}.mmd`,
+                  contentType: 'text/x-mermaid',
+                  entry: entryByRole('diagram-source', activeKind),
+                  text: mermaidCode,
+                }),
             },
           ]}
         />

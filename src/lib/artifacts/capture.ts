@@ -73,6 +73,11 @@ export interface ArtifactCaptureRequest<K extends ToolId = ToolId> {
   inputRevision: number;
   /** False once the pane has produced a newer result or unmounted. */
   isCurrent: () => boolean;
+  /**
+   * AI apply: the input did not change but the artifact content did, so the
+   * usual unchanged-fingerprint no-op must be skipped.
+   */
+  forceAppend?: boolean;
 }
 
 export type ArtifactCaptureStatus = 'created' | 'appended' | 'unchanged' | 'superseded';
@@ -318,7 +323,11 @@ export function createArtifactCaptureService(options: CaptureServiceOptions): Ar
               expectedScopeEpoch: ARTIFACT_SCOPE_EPOCH,
             });
       artifact = current;
-      if (current.currentRevisionId && current.currentInputFingerprint === fingerprint) {
+      if (
+        !request.forceAppend &&
+        current.currentRevisionId &&
+        current.currentInputFingerprint === fingerprint
+      ) {
         revision = await repository.getCurrentRevision(current.artifactId);
         status = 'unchanged';
         break;

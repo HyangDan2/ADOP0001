@@ -16,6 +16,10 @@ import { type PseudoDepth, type PseudoLine, type PseudoStyle, type YayoiOutput }
 import { runEngine } from '../../engine/core/runner';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { HybridAssist } from '../../components/HybridAssist';
+import { ARTIFACT_SLOTS, yayoiContents } from '../../features/artifacts/tools';
+import { useArtifactCapture } from '../../components/artifacts/useArtifactCapture';
+import { ArtifactSlotStatus } from '../../components/artifacts/ArtifactStatus';
+import { entryByRole, guardCopyText, guardExport } from '../../components/artifacts/ExportGuard';
 
 const STYLES: { value: PseudoStyle; label: string }[] = [
   { value: 'standard', label: '標準構造化' },
@@ -55,6 +59,8 @@ export function YayoiTool() {
   // PATCH-006: input/output revisions so a stale result can never be exported.
   const inputRevision = useRef(0);
   const outputRevision = useRef<number | null>(null);
+  /** CP03: one capture per successful run, keyed by the input revision. */
+  const artifact = useArtifactCapture<'yayoi'>(ARTIFACT_SLOTS.yayoi);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -86,6 +92,12 @@ export function YayoiTool() {
           outputRevision.current = revision;
           setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
+          artifact.remember(result.context);
+          artifact.capture({
+            contents: yayoiContents(result.output),
+            inputRevision: revision,
+            isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
+          });
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
@@ -148,11 +160,30 @@ export function YayoiTool() {
 
   const baseName = fileName.replace(/\.[^.]+$/, '') || 'pseudocode';
 
-  const download = (kind: 'md' | 'txt', base: string) => {
-    assertArtifactRevision(inputRevision.current, output ? outputRevision.current : null);
+  const binding = {
+    slot: ARTIFACT_SLOTS.yayoi,
+    assertCurrent: () => assertArtifactRevision(inputRevision.current, output ? outputRevision.current : null),
+    liveFingerprint: () => artifact.liveFingerprint(),
+  };
+
+  const download = async (kind: 'md' | 'txt', base: string) => {
+    binding.assertCurrent();
     if (!output) return;
-    if (kind === 'md') downloadBlob(`${base}.pseudo.md`, output.markdown, 'text/markdown;charset=utf-8');
-    else downloadBlob(`${base}.pseudo.txt`, output.plain, 'text/plain;charset=utf-8');
+    const isMarkdown = kind === 'md';
+    await guardExport(
+      binding,
+      [
+        {
+          format: isMarkdown ? 'markdown' : 'text',
+          fileName: isMarkdown ? `${base}.pseudo.md` : `${base}.pseudo.txt`,
+          contentType: isMarkdown ? 'text/markdown' : 'text/plain',
+          entry: entryByRole(isMarkdown ? 'primary' : 'alternate'),
+          payload: () => (isMarkdown ? output.markdown : output.plain),
+        },
+      ],
+      (bytes, name) =>
+        downloadBlob(name, bytes, isMarkdown ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8'),
+    );
   };
 
   return (
@@ -285,6 +316,14 @@ export function YayoiTool() {
         localOutput={output}
         onApplied={(next, note) => {
           setOutput(next);
+          const revision = inputRevision.current;
+          outputRevision.current = revision;
+          artifact.capture({
+            contents: yayoiContents(next),
+            inputRevision: revision,
+            forceAppend: true,
+            isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
+          });
           showToast(note);
         }}
       />
@@ -292,6 +331,11 @@ export function YayoiTool() {
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
         <DraftStateBadge state={draftState} />
+        <ArtifactSlotStatus
+          slot={ARTIFACT_SLOTS.yayoi}
+          label="擬似コード"
+          stale={outputRevision.current === null || outputRevision.current !== inputRevision.current}
+        />
         <span
           className={error ? 'err' : 'ok'}
           data-testid="status-message"
@@ -314,10 +358,14 @@ export function YayoiTool() {
               description: '擬似コードと対応付けの Markdown',
               fileName: (base) => `${base}.pseudo.md`,
               run: (base) => download('md', base),
-              copy: () => {
-                assertArtifactRevision(inputRevision.current, outputRevision.current);
-                return output.markdown;
-              },
+              copy: () =>
+                guardCopyText(binding, {
+                  format: 'markdown',
+                  fileName: `${baseName}.pseudo.md`,
+                  contentType: 'text/markdown',
+                  entry: entryByRole('primary'),
+                  text: output.markdown,
+                }),
             },
             {
               id: 'text',
@@ -325,10 +373,14 @@ export function YayoiTool() {
               description: '擬似コードだけのプレーンテキスト',
               fileName: (base) => `${base}.pseudo.txt`,
               run: (base) => download('txt', base),
-              copy: () => {
-                assertArtifactRevision(inputRevision.current, outputRevision.current);
-                return output.plain;
-              },
+              copy: () =>
+                guardCopyText(binding, {
+                  format: 'text',
+                  fileName: `${baseName}.pseudo.txt`,
+                  contentType: 'text/plain',
+                  entry: entryByRole('alternate'),
+                  text: output.plain,
+                }),
             },
           ]}
         />

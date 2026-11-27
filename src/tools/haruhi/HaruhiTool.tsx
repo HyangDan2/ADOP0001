@@ -16,6 +16,15 @@ import { FRAMEWORK_LABEL, outputFileName, type Framework, type HaruhiOutput } fr
 import { runEngine } from '../../engine/core/runner';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { HybridAssist } from '../../components/HybridAssist';
+import {
+  ARTIFACT_SLOTS,
+  haruhiContents,
+  haruhiValidationContext,
+} from '../../features/artifacts/tools';
+import { contentTypeForHaruhiFramework, type HaruhiFramework } from '../../engine/artifacts/contentTypes';
+import { useArtifactCapture } from '../../components/artifacts/useArtifactCapture';
+import { ArtifactSlotStatus } from '../../components/artifacts/ArtifactStatus';
+import { entryByRole, guardCopyText, guardExport } from '../../components/artifacts/ExportGuard';
 
 /** Japanese explanation for a branch that no running test reaches. */
 function branchReasonLabel(item: { reasonCode?: string; reason?: string }): string {
@@ -61,6 +70,8 @@ export function HaruhiTool() {
   // PATCH-006: input/output revisions so a stale result can never be exported.
   const inputRevision = useRef(0);
   const outputRevision = useRef<number | null>(null);
+  /** CP03: framework is both output identity and validator selection. */
+  const artifact = useArtifactCapture<'haruhi'>(ARTIFACT_SLOTS.haruhi);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -92,6 +103,13 @@ export function HaruhiTool() {
           outputRevision.current = revision;
           setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
+          artifact.remember(result.context);
+          artifact.capture({
+            contents: haruhiContents(result.output, framework),
+            validationContext: haruhiValidationContext(framework),
+            inputRevision: revision,
+            isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
+          });
         })
         .catch((cause) => {
           if (!request.isCurrent()) return;
@@ -111,6 +129,12 @@ export function HaruhiTool() {
       gate.invalidate();
     };
   }, [source, fileName, framework]);
+
+  const binding = {
+    slot: ARTIFACT_SLOTS.haruhi,
+    assertCurrent: () => assertArtifactRevision(inputRevision.current, outputRevision.current),
+    liveFingerprint: () => artifact.liveFingerprint(),
+  };
 
   const showToast = (message: string) => {
     setToast(message);
@@ -281,6 +305,15 @@ export function HaruhiTool() {
         targetLanguage={framework}
         onApplied={(next, note) => {
           setOutput(next);
+          const revision = inputRevision.current;
+          outputRevision.current = revision;
+          artifact.capture({
+            contents: haruhiContents(next, framework),
+            validationContext: haruhiValidationContext(framework),
+            inputRevision: revision,
+            forceAppend: true,
+            isCurrent: () => outputRevision.current === revision && inputRevision.current === revision,
+          });
           showToast(note);
         }}
       />
@@ -288,6 +321,11 @@ export function HaruhiTool() {
         <span className="dot" /> <span>ローカル静的解析</span>
         <span>{busy ? '処理中' : '待機中'}</span>
         <DraftStateBadge state={draftState} />
+        <ArtifactSlotStatus
+          slot={ARTIFACT_SLOTS.haruhi}
+          label="テスト"
+          stale={outputRevision.current === null || outputRevision.current !== inputRevision.current}
+        />
         <span
           className={error ? 'err' : 'ok'}
           data-testid="status-message"
@@ -309,14 +347,30 @@ export function HaruhiTool() {
               label: `.${output.fileName.split('.').slice(1).join('.')}`,
               description: `${FRAMEWORK_LABEL[framework]} 向けのテストファイル`,
               fileName: (base) => outputFileName(framework, base),
-              run: (base) => {
-                assertArtifactRevision(inputRevision.current, outputRevision.current);
-                downloadBlob(outputFileName(framework, base), output.code, 'text/plain;charset=utf-8');
+              run: async (base) => {
+                binding.assertCurrent();
+                await guardExport(
+                  binding,
+                  [
+                    {
+                      format: 'test',
+                      fileName: outputFileName(framework, base),
+                      contentType: contentTypeForHaruhiFramework(framework as HaruhiFramework),
+                      entry: entryByRole('primary'),
+                      payload: () => output.code,
+                    },
+                  ],
+                  (bytes, name) => downloadBlob(name, bytes, 'text/plain;charset=utf-8'),
+                );
               },
-              copy: () => {
-                assertArtifactRevision(inputRevision.current, outputRevision.current);
-                return output.code;
-              },
+              copy: () =>
+                guardCopyText(binding, {
+                  format: 'test',
+                  fileName: outputFileName(framework, fileName.replace(/\.[^.]+$/, '') || 'source'),
+                  contentType: contentTypeForHaruhiFramework(framework as HaruhiFramework),
+                  entry: entryByRole('primary'),
+                  text: output.code,
+                }),
             },
           ]}
         />
