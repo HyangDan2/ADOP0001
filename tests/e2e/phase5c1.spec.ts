@@ -14,6 +14,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import http from 'node:http';
+import { PREVIEW_ORIGIN } from './previewOrigin';
 
 const PORT = 43127;
 const BASE_URL = `http://127.0.0.1:${PORT}/v1`;
@@ -52,7 +53,7 @@ function sseBody(answer: string): string {
 test.beforeAll(async () => {
   server = http.createServer((request, response) => {
     const cors = {
-      'access-control-allow-origin': 'http://127.0.0.1:4173',
+      'access-control-allow-origin': PREVIEW_ORIGIN,
       'access-control-allow-methods': 'POST, OPTIONS',
       'access-control-allow-headers': 'authorization, content-type, accept',
       'access-control-max-age': '600',
