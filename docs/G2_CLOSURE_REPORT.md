@@ -3,8 +3,11 @@
 - **Milestone:** G2 (artifact traceability, package integrity, workspace)
 - **Policy:** Supervisor Lean Engineering v1.1 (CP02–CP04 are milestones, not approval gates)
 - **Baseline:** `66fc35c` (G1 CLOSED docs) / verified source `ee0156a` (CI `45934354640`)
-- **Implementation HEAD:** `61b361b` (`feature/phase5d-artifact-pipeline`)
-- **CI:** `45938190252` (`workflow_dispatch`, `61b361b`) — **success**
+- **Implementation HEAD:** `e767881` (`feature/phase5d-artifact-pipeline`; QA
+  corrections `8772bbc` + test hardening `e767881` on top of `61b361b`)
+- **CI:** `45940751505` (`workflow_dispatch`, `e767881`) — **success**
+  (implementation-only run `45938190252` on `61b361b`; a first corrective run
+  `45940169154` failed one new E2E assertion and was fixed in `e767881`)
 - **Date:** 2026-11-27
 - **Disposition:** G2 deliverables complete on the feature branch. **No main merge,
   no production deploy, no Phase 5E.** Independent QA is the standing order's
@@ -198,6 +201,13 @@ Focused verification on the corrected tree (full regression not repeated per the
 order; unchanged paths reuse `61b361b` evidence): `npx tsc --noEmit` pass;
 `npx vitest run tests/artifacts` **26 files / 251 tests pass**; `npm run build`
 pass; `g2-workspace.spec.ts` 3/3; `g1-closure-artifact-export.spec.ts` 13/13.
+CI `45940751505` on `e767881`: **92 files / 931 Vitest tests**, generated QA
+**59 PASS · 0 FAIL · 5 SKIP**, Playwright **88 passed**, build pass, deploy
+skipped (main-only). The first run failed only the new DOCX-edge assertion: a
+later Markdown revision legitimately leaves an already captured DOCX edge on
+the revision it was derived from; the assertion now uses each slot's first
+revision and proves every DOCX edge names a stored Markdown revision (no
+expectation weakened — the edge semantics are stronger).
 
 QA classification: **no P0, no blocking P1**. New P3 items `G2-BL-06`
 (import cannot recompute `contentDigest`/`revisionHash`), `G2-BL-07`
