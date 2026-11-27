@@ -1,7 +1,7 @@
 # G1 Regression Matrix (REG-G1-01~29)
 
-- **Status:** APPROVED — CP02-00 complete; CP02-01 QA contract audit merged (§12)
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 complete at `8ecf0aa` (tag `cp02-contract-foundation`); CP02-01 authorized; CP02-01 QA contract audit complete; CP03 locked
+- **Status:** APPROVED — CP02-00 complete; CP02-01 QA contract audit merged (§12); CP02-02 integrated verification recorded (§13)
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 complete at `8ecf0aa` (tag `cp02-contract-foundation`); CP02-01 authorized; CP02-01 QA contract audit complete; CP02-02 integrated verification recorded at `80048cb` (engine level); CP03 locked
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -286,7 +286,7 @@ unrelated behavior.
 - CP01 is approved with the C01~C06 implementation conditions.
 - CP02-00 is complete at `8ecf0aa`; CP02-01 started from that SHA.
 
-**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 complete; CP02-01 authorized; CP02-01 QA contract audit recorded in §12; no G1 behavior test has run.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 complete; CP02-01 QA contract audit recorded in §12; CP02-02 integrated verification recorded in §13; no G1 end-to-end product behavior test has run (CP03 locked).**
 
 ---
 
@@ -427,3 +427,90 @@ Summary: 24 CONTRACT-AUDITED, 10 IMPLEMENTATION-DEPENDENT, 0 PASS.
 | G1-CP02-B3 | Policy fingerprint canonicalization (freeze §8.3) has no executable yet | Q02 |
 | G1-CP02-B4 | Real prior artifact schema does not exist; migration failure beyond an unknown-version gate is untestable at G1 | Q03/Q00 |
 | G1-CP02-B5 | ExportGuard injection point (outside `ExportModal.tsx`) is not implemented, so REG-G1-08/18/28 stay unverifiable | Q04 |
+
+---
+
+## 13. CP02-02 integrated verification record (Q05, 2026-11-27)
+
+Integrated branch `feature/phase5d-artifact-pipeline` at
+`80048cb` (merges `b6e2890`, `0961420`, `5723be0`, `faea97c`, `09d4b58`;
+fixes `b25478c`, `b399820`, `551ecc5`, `848ff62`, `770b2a2`). Contract SHA
+remains `8ecf0aa`. Worktree `ADOP0001-wt/qa`, branch `agent/g1-qa`, reset
+`--hard` to `80048cb` after confirming `8cc9f38` was an ancestor. No rebase, no
+`src` edit, no expected-value change, no dependence change, no live gateway.
+
+### 13.1 Commands actually executed
+
+| Command | Result |
+| --- | --- |
+| `npx tsc --noEmit` | PASS — no diagnostics |
+| `npm test` | 79 files / 853 tests PASS (840 at `80048cb` + 13 new) |
+| `npm run build` | PASS — Vite production build emitted |
+| `npm run qa:generated` | PASS 54 · FAIL 0 · SKIP 8 (`environment` 4 · `artifact` 4) |
+| `npm run test:e2e` on 4273, `workers: 1` | 65 passed / 5 failed (exit 1) — all 5 are the hybrid-AI specs whose loopback stub hardcodes `access-control-allow-origin: http://127.0.0.1:4173` ([phase5c1.spec.ts:55](tests/e2e/phase5c1.spec.ts#L55), [phase5c-stage3.spec.ts:66](tests/e2e/phase5c-stage3.spec.ts#L66)); origin mismatch sends the app to `local-fallback`. Test-harness port coupling, not an integration regression |
+| `npm run test:e2e` on 4173, `workers: 1` | **70 passed / 70**, exit 0, 2.5 min — same suite, same SHA |
+
+Toolchains seen by `qa:generated`: python=yes pytest=yes gcc=yes g++=yes
+javac=yes jest=yes, go=no, junit=no. The four `environment` SKIPs are the
+missing Go/JUnit toolchains; they are SKIP, not PASS.
+
+### 13.2 New independent test file
+
+`tests/artifacts/contract/qa-cp02-conditions.test.ts` — 13 tests. Fixtures are
+built from the real local engines (Shiori/Yayoi/Kozue/Haruhi/Kotoha/Takane) and
+the real hash layer (`hashContentPayload` → `buildContentDigest` →
+`buildRevisionIntegrityHash`); expected values come from the supervisor order
+and freeze §8.2/§8.4/§8.5, not from another agent's tests. No Q02 fixture or
+`expectedRequiredIdentities` is imported.
+
+### 13.3 Condition results
+
+| Condition | Executed observation |
+| --- | --- |
+| 1 — intact vitest test-suite record | `status: valid`; all REQUIRED `PASS`; `checkRecordEffectiveness = { effective: true, reasons: [] }`; `decideExport = { allowed: true, kind: 'normal' }` |
+| 1 — exactly one REQUIRED result removed | `effective: false`, reasons `['required-result-missing']`; normal export `{ allowed: false, kind: 'none', reasons: ['required-result-missing'] }`; debug path `{ allowed: true, kind: 'debug' }` with warning label, kept separate |
+| 1 — completely unregistered REQUIRED validator | `selection.unsupportedRequired = 1`; every REQUIRED assignment `gate: 'unsupported'`, `descriptor: null`; no REQUIRED result is `PASS` (results `UNSUPPORTED/BLOCKED/unsupported` + `system.required-set`); `status: blocked`; export denied `['validation-blocked']` |
+| 2/3 (a) fully passing vitest | Plan-derived REQUIRED key set (validatorId/level/scope/contentId) equals the record's REQUIRED results; versions/configHashes equal for `match` assignments; `effective: true`; export normal allowed |
+| 2/3 (b) unsupported-only descriptor | Expected set = the unsupported requirement + synthetic `system.required-set` (§8.2 step 5); actual results match; `status: blocked`; `effective: true`; export denied `['validation-blocked']` (§8.5) |
+| 2/3 (c) payload-skip-only descriptor | Expected set = the skipped requirement + synthetic `system.required-set`; skip result `SKIP/skipped`; `unsupportedRequired = []`; `status: blocked`; export denied `['validation-blocked']` (§8.5) |
+| 2/3 — record binding | `revision-id-mismatch`, `content-digest-mismatch`, `revision-hash-mismatch`, `policy-fingerprint-mismatch`, `policy-version-mismatch`, `validator-set-mismatch` (changed configHash and empty set) each invalidate the record; a drifted record cannot export |
+| 4 — registration | `registerStructuralValidators` returns exactly 16 document-derived IDs (7 `format.*`, `code.test-suite.structure`, `code.source.structure`, 4 framework dispatch IDs, 3 language dispatch IDs); capabilities match freeze §8.4 (TS↔vitest/jest, Python↔pytest, Java↔junit5, Go, Python/C(mcu)/C++) |
+| 4 — execution | `format.markdown/html/json/text/mermaid×5/svg/docx` all `PASS` on real engine output (SVG is a constructed minimal SVG, no adapter emits SVG); `code.test-suite.structure` PASS for vitest, jest, pytest, junit5, go; `code.source.structure` PASS for python, c, cpp, mcu |
+| 5 — real-descriptor smoke | specification, pseudocode, uml-diagram, test-suite, markdown-document, docx-document, source-code: every REQUIRED assignment `gate: 'match'`, `unsupportedRequired = []`, no synthetic result, `status: 'valid'`, `decideExport = { allowed: true, kind: 'normal' }` |
+
+No divergence from freeze §8.2/§8.5 was found at engine level. The synthetic
+identity is required only when no REQUIRED assignment has `gate: 'match'`, and
+the synthetic version is the policy version with an empty config hash, as
+specified.
+
+### 13.4 Status changes actually evidenced
+
+"PARTIAL" means the engine-level path is executed and PASS, but the
+capture/repository/UI path is NOT RUN because CP03 is locked.
+
+| Row | New status | Evidence |
+| --- | --- | --- |
+| REG-G1-07 | PARTIAL | Unsupported REQUIRED → `blocked`, export denied (condition 1/2b) |
+| REG-G1-08 | PARTIAL | Normal export denied with a reason at `decideExport`; no UI/ExportGuard path |
+| REG-G1-09 | PARTIAL | Debug export returns `kind: 'debug'` + warning label; file naming/UI/history NOT RUN |
+| REG-G1-24 | PARTIAL | Validator id/version/configHash + policy fingerprint binding executed; repository storage NOT RUN |
+| INV-14 | PARTIAL | Content-digest / revision-hash mismatch makes the record non-effective and export denied |
+| INV-16 | PARTIAL | Record binds artifact/revision/digest/hash/policy/fingerprint/validator set; every drift reason exercised |
+| INV-17 | PARTIAL | REQUIRED SKIP/UNSUPPORTED is `blocked`, never valid; export denied |
+| INV-25 | PARTIAL | REQUIRED incomplete blocks normal export; debug path marked with warning; file-level marker NOT RUN |
+| INV-30 | PARTIAL | Validator configHash change and policy fingerprint/version change invalidate the prior record |
+
+All other rows keep their §12.4 status. Rows marked IMPLEMENTATION-DEPENDENT
+there (REG-G1-01, 02, 03, 05, 06, 10, 11, 12, 13, 16, 17, 18, 27, 28; INV rows
+needing repository/UI/E2E) remain NOT RUN; REG-G1-15 stays BLOCKED. No row is
+promoted to product PASS.
+
+### 13.5 Remaining limitations
+
+- CP03 is locked: no capture wiring, no repository-backed export guard, no UI,
+  so REG-G1-01~06/10~18/21~29 and most INV rows stay NOT RUN.
+- The Phase 5C hybrid-AI E2E specs hardcode the preview origin `4173` in their
+  loopback CORS stub, so a port-isolated (4273) run produces 5 false failures.
+  Owner: E2E harness (not edited by Q05). Full-suite evidence uses 4173.
+- Go and JUnit toolchains are absent locally; the four `environment` SKIPs in
+  `qa:generated` are SKIP, not PASS.
