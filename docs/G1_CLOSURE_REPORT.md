@@ -8,9 +8,11 @@
 - **Independent QA:** Qoder-05, branch `agent/g1-qa`, matrix §14 (`docs/G1_REGRESSION_MATRIX.md`)
 - **Date:** 2026-11-27
 - **Verdict:** **G1 closure QA PASS** — 0 P0, 0 reproducible P1, 2 P2 moved to backlog
-- **Supervisor review:** CONDITIONAL PASS — corrections BL-14 and BL-09 applied (see §7).
-- **Disposition:** G1 closure pending re-review. Main merge, deployment and G2
-  implementation remain locked.
+- **Supervisor reviews:** CONDITIONAL PASS (`2e7adf1`, `6e88a8e`), then final approval
+  of BL-09 and the core BL-14 connection; the two remaining BL-14 contracts were
+  closed at `ee0156a` (see §8).
+- **Disposition:** **G1 CLOSED** at `ee0156a` (CI `45934354640`). Main merge,
+  deployment and G2 implementation remain locked pending a separate order.
 
 ---
 
@@ -112,3 +114,25 @@ TESTED rows were not promoted, and Q05 re-verifies only the changed features.
 Residual risk: switching Takane languages appends a revision per language
 (distinct input fingerprints); Copy refuses when the stored revision/record
 cannot be read instead of silently skipping registration.
+
+---
+
+## 8. Final review — remaining BL-14 contracts closed
+
+The final review required two contracts before G1 could close. Both were
+verified and, where needed, tightened in `ee0156a`.
+
+| Contract | Result |
+| --- | --- |
+| A normal export is blocked when no stored Validation Record exists | The guard now uses only the repository record for the stored revision; the in-memory snapshot is no longer a fallback. Download and Copy both refuse with `検証記録なし` when the record is absent. |
+| Copy executes only with valid Revision, Fingerprint and CAS | Copy compares the live input fingerprint to the snapshot, re-checks the pane revision, verifies the stored revision and current pointer, applies the same validation decision, hashes the entry, and awaits the CAS-guarded `registerExport` before returning the text. A moved fingerprint or a CAS failure refuses the copy. |
+
+Evidence: guard unit tests (record-absent refusal, copy fingerprint move,
+copy registration before return), artifact suites 210/210, `PATCH-006` copy E2E,
+`npx tsc --noEmit`, `npm run build`, and CI `45934354640` (`ee0156a`) with
+84 files / 890 tests, generated QA 59/0/5 and Playwright 85 passed. Existing
+PASS evidence was reused; no full regression or independent QA was repeated.
+
+Backlog: BL-13 (badge display), BL-15 (debug export path/UI, G2 condition) and
+the P3 items remain. §14 verdicts are unchanged — no PARTIAL or NOT TESTED row
+was promoted. G1 is CLOSED; main merge, deployment and G2 stay locked.

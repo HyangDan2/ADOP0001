@@ -1430,4 +1430,4 @@ Work Order text.
 - CP02-00 is complete at `8ecf0aa`; CP02-01 parallel implementation is authorized
   on the per-agent worktrees created from that SHA.
 
-**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02 milestone complete (contract `8ecf0aa`, integration `80048cb`, CI `45916061189`); CP03 CLOSED at `5154035` (CI `45925519226`); G1 at `e723302` (CI `45927895810`, closure QA PASS); Supervisor review CONDITIONAL PASS with corrections BL-14 `2e7adf1` / BL-09 `6e88a8e`, re-review pending.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02 milestone complete (contract `8ecf0aa`, integration `80048cb`, CI `45916061189`); CP03 CLOSED at `5154035` (CI `45925519226`); G1 CLOSED at `ee0156a` (CI `45934354640`, QA PASS) after Supervisor final review; corrections BL-14 `2e7adf1`/`ee0156a`, BL-09 `6e88a8e`.**

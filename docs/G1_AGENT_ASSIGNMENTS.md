@@ -205,4 +205,4 @@ fixed contract SHA. See the freeze document §11.3.
    Supervisor Lean Engineering v1.1, and CP02~CP04 are milestones.
 7. Independent G1 QA runs at G1 closure, not per milestone.
 
-**Current state: Supervisor G1 review — CONDITIONAL PASS. P1 corrections BL-14 (`2e7adf1`) and BL-09 (`6e88a8e`) applied; Q05 re-verifies the changed features only. G1 closure remains pending re-review; G2 implementation, main merge and deploy remain locked.**
+**Current state: G1 CLOSED at `ee0156a` (CI `45934354640` success). BL-09 `6e88a8e`; BL-14 `2e7adf1` + remaining contracts `ee0156a`. BL-13/BL-15 and P3 items remain in the backlog; G2 implementation, main merge and deploy remain locked.**

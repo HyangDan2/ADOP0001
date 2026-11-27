@@ -731,3 +731,25 @@ Residual risk: each Takane language switch appends a revision (distinct input
 fingerprint per language); Copy now refuses when the stored revision/record
 cannot be read instead of registering in the background; the badge eligibility
 display (BL-13) is unchanged.
+
+---
+
+## 16. Q05 remaining BL-14 contract checks (Supervisor final review)
+
+The final review confirmed the BL-09 correction and the core BL-14 policy
+connection, and asked Q05 to check only two remaining contracts. Both were
+tightened in `ee0156a`; nothing else in §14/§15 changed and no full regression
+or independent QA pass was repeated.
+
+| Contract | Implementation | Evidence |
+| --- | --- | --- |
+| A normal export is blocked when the stored Validation Record is absent | `exportValidationDecision` no longer falls back to the in-memory `snapshot.validation`; only the repository record for the stored revision counts | Unit: `listValidations` mocked to `[]` while the snapshot still carries a record → Download and Copy refuse with `検証記録なし`, no file, no export row / no revision is written. |
+| Copy is only executed while Revision, Fingerprint and CAS are all valid | `guardCopyText` now compares the live input fingerprint with the snapshot, re-checks the pane revision, verifies the stored revision/current pointer, applies the same `decideExport` gate, hashes the entry and awaits `registerExport` (repository CAS guard) before returning the text; a CAS failure refuses the copy | Unit: a moved live fingerprint refuses with the stale message and writes no export row; the valid copy returns only after its CAS-checked row exists. Browser: `PATCH-006` copy refusal and guarded re-export still pass. |
+
+| Command | Result |
+| --- | --- |
+| `npx tsc --noEmit` | pass |
+| `npx vitest run tests/artifacts` | 210 tests pass (guard suite 13) |
+| `npx playwright test tests/e2e/phase5.spec.ts -g "PATCH-006 …"` | pass |
+| `npm run build` | pass |
+| CI `45934354640` (`ee0156a`) | **success** — 84 files / 890 tests, generated QA 59/0/5, Playwright 85 passed |
