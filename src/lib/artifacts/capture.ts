@@ -148,6 +148,30 @@ function publish(snapshot: ArtifactSlotSnapshot): void {
   for (const listener of listeners) listener();
 }
 
+export interface CaptureFingerprintInput<K extends ToolId = ToolId> {
+  context: ExecutionContext<K>;
+  binaryInputs?: ArtifactBinaryInputDigests;
+  sourceName?: string;
+}
+
+/** Same composition the capture uses; panes call this for live drift checks. */
+export async function composeCaptureFingerprint(
+  input: CaptureFingerprintInput,
+): Promise<InputFingerprint> {
+  return composeInputFingerprint({
+    cacheKey: input.context.cacheKey,
+    sourceName: input.sourceName ?? input.context.sourceName,
+    sourceHash: input.context.sourceHash,
+    options: input.context.options,
+    binaryInputs: input.binaryInputs,
+    engineConfig: {
+      engineVersion: input.context.engineVersion,
+      adapterId: input.context.toolId,
+      providerMode: input.context.providerMode,
+    },
+  });
+}
+
 export interface CaptureServiceOptions {
   repository: ArtifactRepository;
   registry: ValidatorRegistry | Promise<ValidatorRegistry>;
@@ -187,18 +211,7 @@ export function createArtifactCaptureService(options: CaptureServiceOptions): Ar
   const registry = Promise.resolve(options.registry);
 
   async function fingerprintFor(request: ArtifactCaptureRequest): Promise<InputFingerprint> {
-    return composeInputFingerprint({
-      cacheKey: request.context.cacheKey,
-      sourceName: request.sourceName ?? request.context.sourceName,
-      sourceHash: request.context.sourceHash,
-      options: request.context.options,
-      binaryInputs: request.binaryInputs,
-      engineConfig: {
-        engineVersion: request.context.engineVersion,
-        adapterId: request.context.toolId,
-        providerMode: request.context.providerMode,
-      },
-    });
+    return composeCaptureFingerprint(request);
   }
 
   function draftFor(
