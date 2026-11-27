@@ -532,7 +532,7 @@ unverified paths were executed.
 | --- | --- |
 | `npx tsc --noEmit` (at `8183e89` + new spec) | PASS — no diagnostics |
 | `npm run build` | PASS — Vite production build emitted |
-| `npm run preview` + `npx playwright test tests/e2e/artifacts/g1-closure-artifact-export.spec.ts` (`E2E_BASE_URL=http://127.0.0.1:4173/ADOP0001/`, `PW_CHROMIUM=Google Chrome`, `workers: 1`) | **11 tests: 10 PASS + 1 expected-fail** (G1-BL-13), 43 s, exit 0 |
+| `npm run preview` + `npx playwright test tests/e2e/artifacts/g1-closure-artifact-export.spec.ts` (`E2E_BASE_URL=http://127.0.0.1:4173/ADOP0001/`, `PW_CHROMIUM=Google Chrome`, `workers: 1`) | **13 tests: 12 PASS + 1 expected-fail** (G1-BL-13), 45 s, exit 0; supersedes the 11-test run (10 PASS + 1 expected-fail, 43 s) taken before ART-E2E-12/13 were added |
 | Reused: CI `45925519226` at `5154035` | success — typecheck, Vitest (84 files / 884 tests as recorded by CP03), `qa:generated`, build, Playwright E2E all green; deploy skipped |
 
 ### 14.2 New independent E2E (`tests/e2e/artifacts/g1-closure-artifact-export.spec.ts`)
@@ -552,18 +552,20 @@ a fresh browser context, keeps the context request log, and fails on any
 | ART-E2E-09 | Edit + re-run: same slot advances to `rev 2`, the newer revision/bytes are exported, the export row names the new revision |
 | ART-E2E-10 | Artifact status element fits at 320 px and 1440 px (`scrollWidth ≤ innerWidth + 1`) with no console errors |
 | ART-E2E-11 | **Expected fail (G1-BL-13):** a fresh capture reports `data-export=blocked` while `guardExport` writes the same export normally |
+| ART-E2E-12 | Stall simulation: every connection to the Kotoha draft DB (`adop0001-kotoha`) delays `onsuccess` by 1.5 s (harness-only `addInitScript`, no `src` change). Attribute edit while the draft write is stalled → immediate bundle export succeeds, `Meiryo` merged, export row hash equals the file; immediate body edit → refused with the exact stale message, no file, no row |
+| ART-E2E-13 | Adoption boundary: document A (sample) captured and exported; document B imported (different Markdown + file name). An export click racing B's capture either writes B's bytes or is refused as stale — never A. Once B is captured, the export names B's revision, the current revision holds exactly B's Markdown, A's revision is retained but no `second-document` export is registered against it |
 
 ### 14.3 CP03 attack results (c037496 correction + 5154035 scoping)
 
 | Attack | Result |
 | --- | --- |
-| `.kotoha.json` immediately after attribute edit (KOT-003) | PASS — export authorized; live attribute merged; new export row correct (ART-E2E-07) |
-| `.kotoha.json` after Markdown body edit | PASS — refused with `入力が変更されています。…`, zero rows written (ART-E2E-07) |
-| Document switch / reload / import → export | PASS — reload + import re-captures and exports; rows survive (ART-E2E-08) |
+| `.kotoha.json` immediately after attribute edit (KOT-003) | PASS — export authorized; live attribute merged; new export row correct (ART-E2E-07); also under a stalled draft write with no settle (ART-E2E-12) |
+| `.kotoha.json` after Markdown body edit | PASS — refused with `入力が変更されています。…`, zero rows written (ART-E2E-07, and immediately after the edit in ART-E2E-12) |
+| Document switch / reload / import → export | PASS — reload + import re-captures and exports; rows survive (ART-E2E-08); the pre-switch artifact never authorizes the new document (ART-E2E-13, §14.7) |
 | Capture superseded / pane artifacts authorize the current document | PASS — attribute edit drops the `.docx` result but the stored Markdown artifact still authorizes the bundle export (ART-E2E-07, `5154035` adoption-scoped capture) |
 | `verifySnapshot` regressions in other tools | PASS — all five non-Kotoha tools export through the same guard without `verifySnapshot` (ART-E2E-01..05) |
 | 320–1440 px overflow / console errors | PASS for the new status element (ART-E2E-10); existing UI-002/QA-002/REG-5C-12/C-FIX-010 evidence reused |
-| Security: no external transmission / credentials / auto-execution | PASS — zero non-app origins across 11 contexts; export payloads contain engine output only; G0 credential evidence reused |
+| Security: no external transmission / credentials / auto-execution | PASS — zero non-app origins across 13 contexts; export payloads contain engine output only; G0 credential evidence reused |
 | Data integrity: hash/digest/revision identity | PASS — file SHA-256 equals `exportByteHash`; `contentDigest`/`revisionHash` equal the stored revision and its validation record; exported revision is the current tip |
 | Revision/Transaction C01/C02/C04 | PASS at engine level (repository/contract tests) and observed at UI level: capture commits artifact+revision+validation, export writes exactly one `exports` row and no revision/artifact, guard tuple (`expectedScopeEpoch=1`, `historyEpoch`, `currentRevisionId`) accepted; stale/moved refusals persist no row |
 | Export Gate §8.5 enforcement at the export trigger | **Gap (G1-BL-14, P2):** `guardExport` does not consult `validationSummary`/`decideExport`; eligibility is display-only. Not reproducible through product paths today (capture validates before publish and shipped validators pass), so no observed bad export |
@@ -660,7 +662,28 @@ capture landed between the readiness check and the click is the intended
 `MOVED_ARTIFACT` behaviour (retry succeeds); the spec settles before clicking
 instead of masking it.
 
-### 14.7 G1 closure verdict
+### 14.7 Supplementary checks at 5154035 (Qoder-00 follow-up)
+
+Requested after CP03 closed: the Kotoha capture moved from the request gate /
+draft write to the adoption token (5154035), so the slow-runner attribute-edit
+scenario and the document-switch boundary were re-judged on that tip.
+
+| Check | Method | Result |
+| --- | --- | --- |
+| Slow environment: attribute edit → immediate export | Harness stalls the draft DB (`adop0001-kotoha` opens deliver `onsuccess` 1.5 s late) and clicks export with no settle after the edit (ART-E2E-12) | PASS — export succeeds, capture independent of the draft write |
+| Slow environment: Markdown body edit → immediate export | Same stall, body edit then click (ART-E2E-12) | PASS — refused with the exact stale message; no file, no row |
+| Document switch: previous document artifact must not authorize the new document | Document B imported through the bundle input; export clicked while B's capture may still be in flight, then again after capture (ART-E2E-13) | PASS — the race either writes B's bytes or is refused as stale, never A; settled export names B's revision, current revision holds exactly B's Markdown, A's revision retained but never named by a B export |
+| Capture superseded but current document still authorizes | Attribute edit during/after capture, no rebuild (ART-E2E-07, ART-E2E-12) | PASS — the stored Markdown artifact authorizes the bundle export; the stale `.docx` result is not written |
+| `verifySnapshot` regression on other tools | ART-E2E-01..05 through the same guard | PASS — no regression |
+
+Conservative interpretations: (a) "document switch" is exercised through the
+supported bundle-import input, because the docx-upload path routes structurally
+limited documents through a pre-import approval step that G1 does not expose
+headless; (b) the stall is simulated in the harness (IDB latency) because the
+pre-fix build must not be checked out — the assertion is the post-fix contract
+(capture independent of the draft write), not a bisect.
+
+### 14.8 G1 closure verdict
 
 - **P0:** 0. **P1:** 0 (reproducible). **P2:** 2 (BL-13, BL-14, both backlog).
 - Six-tool capture → ExportGuard → registerExport → download, the CP03 Kotoha
@@ -670,6 +693,9 @@ instead of masking it.
 - Remaining PARTIAL rows are flows G1 does not expose in the product UI
   (restore, delete/reset, debug export, multi-tab, quota/schema) and are green
   at repository/contract level; they do not block closure under Lean v1.1.
+- The 5154035 supplementary checks (§14.7) do not change the verdict or add a
+  defect; no P0/P1 was observed under the stalled-draft and document-switch
+  scenarios, and no row regressed from a previously recorded PASS.
 - **Verdict: G1 closure QA PASS** with BL-13/BL-14 carried in
   `docs/G1_BACKLOG.md`. Lead merges; Q05 does not merge, deploy, or call the
   gateway.

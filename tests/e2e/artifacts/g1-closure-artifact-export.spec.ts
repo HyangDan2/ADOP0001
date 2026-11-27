@@ -6,10 +6,16 @@
  * artifact IndexedDB back, so the assertions come from stored records and the
  * written files instead of the implementation's own return values.
  *
- * CP03 attack (c037496): Kotoha `.kotoha.json` must stay exportable after an
- * inspector edit (KOT-003), must be refused as stale after a Markdown body
- * edit, and must keep working after a reload/import; the new `verifySnapshot`
- * path must not disturb the other tools' exports (ART-E2E-01..05).
+ * CP03 attack (c037496, re-judged on the CP03-closed tip 5154035): Kotoha
+ * `.kotoha.json` must stay exportable after an inspector edit (KOT-003), must
+ * be refused as stale after a Markdown body edit, and must keep working after
+ * a reload/import; the new `verifySnapshot` path must not disturb the other
+ * tools' exports (ART-E2E-01..05).
+ *
+ * Supplementary checks requested by Qoder-00 on 5154035: ART-E2E-12 stalls the
+ * Kotoha draft store and exports right after an inspector edit, and ART-E2E-13
+ * switches documents through a bundle import and proves the previous document's
+ * artifact cannot authorize the new one (adoption-token boundary).
  */
 import { expect, test, type Page } from '@playwright/test';
 import crypto from 'node:crypto';
@@ -50,6 +56,15 @@ interface RevisionRow {
   revisionHash: string;
   contentDigest: string;
   ordinal: number;
+}
+
+interface ContentRow {
+  contentId: string;
+  revisionId: string;
+  role: string;
+  encoding: string;
+  payload: string;
+  contentHash: string;
 }
 
 interface ArtifactRow {
@@ -523,6 +538,223 @@ test('ART-E2E-10: the artifact status stays inside the layout at 320px and 1440p
       expect(metrics.scrollWidth, `${tool} at ${width}px`).toBeLessThanOrEqual(metrics.innerWidth + 1);
     }
   }
+});
+
+/* ------------------------------------------------------------------ */
+/* 5154035 supplementary checks (Qoder-00)                             */
+/* ------------------------------------------------------------------ */
+
+function primaryPayload(db: ArtifactDbDump, revisionId: string): string {
+  const entry = rows<ContentRow>(db, 'contents').find(
+    (item) => item.revisionId === revisionId && item.role === 'primary',
+  );
+  expect(entry, 'the revision must carry a primary content entry').toBeTruthy();
+  return (entry as ContentRow).payload;
+}
+
+test('ART-E2E-12: a stalled draft store does not cancel the Kotoha capture — the immediate export after an inspector edit succeeds, a body edit is refused immediately', async ({
+  page,
+}) => {
+  // Slow environment simulation: every connection opened for the Kotoha draft
+  // database ('adop0001-kotoha') delivers `onsuccess` 1.5 s late, so the draft
+  // write is still in flight while the user edits and exports. On the pre-fix
+  // capture (tied to the request gate / draft save) this window cancelled the
+  // capture; on 5154035 the capture belongs to the adoption token.
+  await page.addInitScript(() => {
+    const open = IDBFactory.prototype.open;
+    const STALL_DB = 'adop0001-kotoha';
+    const DELAY_MS = 1500;
+    IDBFactory.prototype.open = function (name: string, version?: number) {
+      const request = open.call(this, name, version);
+      if (name !== STALL_DB) return request;
+      const descriptor = Object.getOwnPropertyDescriptor(IDBRequest.prototype, 'onsuccess');
+      if (!descriptor?.get || !descriptor.set) return request;
+      Object.defineProperty(request, 'onsuccess', {
+        configurable: true,
+        get() {
+          return descriptor.get?.call(this);
+        },
+        set(handler: ((this: IDBRequest, event: Event) => void) | null) {
+          const wrapped = handler
+            ? function (this: IDBRequest, event: Event) {
+                setTimeout(() => handler.call(this, event), DELAY_MS);
+              }
+            : handler;
+          descriptor.set?.call(this, wrapped);
+        },
+      });
+      return request;
+    };
+  });
+
+  const downloads: string[] = [];
+  page.on('download', (download) => downloads.push(download.suggestedFilename()));
+
+  await page.goto('#/kotoha');
+  await page.getByTestId('kotoha-sample').click();
+  await expect(page.getByTestId('source-editor')).toHaveValue(/# Kotoha Round-Trip Sample/, { timeout: 30_000 });
+
+  // Edit the inspector and export at once — no settle, the draft save is stalled.
+  await page.getByTestId('attr-font').fill('Meiryo');
+  await page.getByTestId('attr-font').blur();
+  await openExport(page, 'kotoha');
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 30_000 }),
+    page.getByTestId('export-bundle').click(),
+  ]);
+  await expect(page.getByTestId('export-feedback')).toHaveAttribute('data-kind', 'ok', { timeout: 20_000 });
+  const stalledFile = path.join(OUT, 'g1-kotoha-stalled-draft.kotoha.json');
+  await download.saveAs(stalledFile);
+  const stalledPayload = JSON.parse(fs.readFileSync(stalledFile, 'utf8')) as {
+    markdown: string;
+    bundle: { attributes: { baseFont?: string } };
+  };
+  expect(stalledPayload.markdown, 'the capture survived the stalled draft write').toContain(
+    '# Kotoha Round-Trip Sample',
+  );
+  expect(stalledPayload.bundle.attributes.baseFont, 'the live inspector value is merged').toBe('Meiryo');
+
+  const stalledDump = await dump(page);
+  const markdownArtifact = rows<ArtifactRow>(stalledDump, 'artifacts').find(
+    (item) => item.artifactType === 'markdown-document',
+  );
+  expect(markdownArtifact, 'the stalled draft write did not prevent the capture').toBeTruthy();
+  const stalledRow = rows<ExportRow>(stalledDump, 'exports')
+    .filter((item) => item.fileName === download.suggestedFilename() && item.format === 'bundle')
+    .reduce<ExportRow | null>((newest, item) => (!newest || item.createdAt >= newest.createdAt ? item : newest), null);
+  expect(stalledRow).not.toBeNull();
+  expect((stalledRow as ExportRow).exportByteHash).toBe(sha256File(stalledFile));
+
+  // A body edit immediately afterwards is still refused as stale.
+  const exportsAfterStall = rows<ExportRow>(stalledDump, 'exports').length;
+  await closeExport(page);
+  await page.getByTestId('source-editor').fill('# Body edited while the draft store is stalled.');
+  await openExport(page, 'kotoha');
+  await page.getByTestId('export-bundle').click();
+  await expect(page.getByTestId('export-feedback')).toHaveAttribute('data-kind', 'error', { timeout: 20_000 });
+  await expect(page.getByTestId('export-feedback')).toContainText(
+    '入力が変更されています。再生成してから書き出してください。',
+  );
+  await page.waitForTimeout(300);
+  expect(downloads.length, 'the stale refusal writes no file').toBe(1);
+  expect(rows<ExportRow>(await dump(page), 'exports').length, 'the stale refusal writes no row').toBe(
+    exportsAfterStall,
+  );
+  await closeExport(page);
+});
+
+test('ART-E2E-13: after a document switch the previous document artifact cannot authorize the export (adoption boundary)', async ({
+  page,
+}) => {
+  await page.goto('#/kotoha');
+  await page.getByTestId('kotoha-sample').click();
+  await expect(page.getByTestId('source-editor')).toHaveValue(/# Kotoha Round-Trip Sample/, { timeout: 30_000 });
+  await expectSlotReady(page, 'kotoha.markdown');
+
+  await openExport(page, 'kotoha');
+  const first = await exportAndVerify(page, {
+    formatId: 'bundle',
+    saveName: 'g1-kotoha-document-a.kotoha.json',
+    format: 'bundle',
+    derivation: 'rendered',
+    artifactType: 'markdown-document',
+  });
+  await closeExport(page);
+
+  const beforeSwitch = await dump(page);
+  const artifactBefore = rows<ArtifactRow>(beforeSwitch, 'artifacts').find(
+    (item) => item.artifactType === 'markdown-document',
+  );
+  expect(artifactBefore).toBeTruthy();
+  const revisionBefore = rows<RevisionRow>(beforeSwitch, 'revisions').find(
+    (item) => item.revisionId === artifactBefore?.currentRevisionId,
+  );
+  expect(revisionBefore, 'document A has a captured revision').toBeTruthy();
+  expect(primaryPayload(beforeSwitch, revisionBefore?.revisionId ?? '')).toContain('# Kotoha Round-Trip Sample');
+
+  // Document B: the exported bundle with a different body and file name.
+  const payloadA = JSON.parse(fs.readFileSync(first.file, 'utf8')) as {
+    version: number;
+    tool: string;
+    markdown: string;
+    bundle: { fileName: string };
+  };
+  const docB = '# Second Document\n\nThis document was switched in through an import.';
+  const switchFile = path.join(OUT, 'g1-kotoha-document-b.kotoha.json');
+  fs.writeFileSync(
+    switchFile,
+    JSON.stringify(
+      {
+        ...payloadA,
+        markdown: docB,
+        bundle: { ...payloadA.bundle, fileName: 'second-document.docx' },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const downloads: string[] = [];
+  page.on('download', (download) => downloads.push(download.suggestedFilename()));
+  await page.getByTestId('kotoha-bundle-file').setInputFiles(switchFile);
+  await expect(page.getByTestId('source-editor')).toHaveValue(/# Second Document/, { timeout: 30_000 });
+
+  // An export click that races the new capture must never emit document A.
+  await openExport(page, 'kotoha');
+  const racedDownload = page.waitForEvent('download', { timeout: 30_000 }).catch(() => null);
+  await page.getByTestId('export-bundle').click();
+  const feedback = page.getByTestId('export-feedback');
+  await expect(feedback).toHaveAttribute('data-kind', /^(ok|error)$/, { timeout: 20_000 });
+  if ((await feedback.getAttribute('data-kind')) === 'error') {
+    await expect(feedback).toContainText('入力が変更されています。再生成してから書き出してください。');
+    expect(downloads.length, 'the refused race writes no file').toBe(0);
+  } else {
+    const download = await racedDownload;
+    expect(download, 'an ok feedback must come with the written file').not.toBeNull();
+    const raced = path.join(OUT, 'g1-kotoha-switch-race.kotoha.json');
+    await (download as NonNullable<typeof download>).saveAs(raced);
+    const racedText = fs.readFileSync(raced, 'utf8');
+    expect(racedText, 'a successful race must be authorized by document B').toContain('# Second Document');
+    expect(racedText).not.toContain('# Kotoha Round-Trip Sample');
+  }
+
+  // Once document B is captured, the export binds to B's revision, not A's.
+  await expectSlotReady(page, 'kotoha.markdown');
+  const switched = await exportAndVerify(page, {
+    formatId: 'bundle',
+    saveName: 'g1-kotoha-document-b-export.kotoha.json',
+    format: 'bundle',
+    derivation: 'rendered',
+    artifactType: 'markdown-document',
+  });
+  expect(switched.row.revisionId, 'the export names a new revision, not document A').not.toBe(
+    revisionBefore?.revisionId,
+  );
+  expect(fs.readFileSync(switched.file, 'utf8')).toContain('# Second Document');
+  expect(fs.readFileSync(switched.file, 'utf8')).not.toContain('# Kotoha Round-Trip Sample');
+
+  const afterSwitch = await dump(page);
+  const artifactAfter = rows<ArtifactRow>(afterSwitch, 'artifacts').find(
+    (item) => item.artifactType === 'markdown-document',
+  );
+  expect(artifactAfter?.currentRevisionId).toBe(switched.row.revisionId);
+  expect(primaryPayload(afterSwitch, switched.row.revisionId), 'the current revision holds document B').toBe(docB);
+  const revisionAStillStored = rows<RevisionRow>(afterSwitch, 'revisions').some(
+    (item) => item.revisionId === revisionBefore?.revisionId,
+  );
+  expect(revisionAStillStored, 'document A history is kept, but it is no longer current').toBe(true);
+
+  const switchedExports = rows<ExportRow>(afterSwitch, 'exports').filter(
+    (item) => item.fileName === 'second-document.kotoha.json',
+  );
+  expect(switchedExports.length).toBeGreaterThan(0);
+  for (const row of switchedExports) {
+    expect(
+      row.revisionId === switched.row.revisionId,
+      'no export of document B may be registered against document A',
+    ).toBe(true);
+  }
+  await closeExport(page);
 });
 
 /**
