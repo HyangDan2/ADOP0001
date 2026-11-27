@@ -1,7 +1,7 @@
 # G1 Regression Matrix (REG-G1-01~29)
 
-- **Status:** APPROVED — CP02-00 contract foundation
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00 in progress; CP02-01 locked until the contract SHA is fixed
+- **Status:** CP02-00 contract foundation frozen at `8ecf0aa`; CP02-01 QA contract audit executed (§12)
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-01 audit complete; no G1 behavior test has run
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -286,4 +286,144 @@ unrelated behavior.
 - CP01 is approved with the C01~C06 implementation conditions.
 - CP02-01 parallel implementation starts only after the contract SHA is fixed.
 
-**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-00 contract foundation in progress; no G1 behavior test has run.**
+**CP01 state: APPROVED WITH IMPLEMENTATION CONDITIONS. CP02-01 contract audit recorded in §12; no G1 behavior test has run.**
+
+---
+
+## 12. CP02-01 execution record (Q05, 2026-11-27)
+
+Contract SHA `8ecf0aa3aeaf715e4dbcc16a614209d0fbc2c683` (tag
+`cp02-contract-foundation`), branch `agent/g1-qa`. No rebase, no implementation
+edit, no expected-value change, no E2E run, no live gateway.
+
+### 12.1 Commands actually executed
+
+| Command | Result |
+| --- | --- |
+| `npx tsc --noEmit` | PASS — no diagnostics |
+| `npx vitest run tests/artifacts/contract tests/artifacts/helpers` | 3 files / 61 tests PASS |
+| `npm test` | 69 files / 741 tests PASS (baseline 687 at `8ecf0aa` + 54 new) |
+
+New test counts: `qa-contract-invariants.test.ts` 40 tests;
+`e2e-helpers.test.ts` 14 tests. No existing test was modified, skipped, or
+weakened.
+
+### 12.2 Files added by Q05
+
+```text
+tests/artifacts/contract/qa-contract-invariants.test.ts
+tests/artifacts/helpers/e2e-helpers.test.ts
+tests/e2e/artifacts/helpers/port.ts
+tests/e2e/artifacts/helpers/networkLog.ts
+tests/e2e/artifacts/helpers/idbDump.ts
+tests/e2e/artifacts/helpers/twoTab.ts
+tests/e2e/artifacts/helpers/index.ts
+```
+
+The helper unit tests live under `tests/artifacts/helpers/` because
+`vite.config.ts` excludes `tests/e2e/**` from Vitest; the helper sources stay in
+the Q05-owned `tests/e2e/artifacts/helpers/**`.
+
+### 12.3 What the executed tests establish
+
+Contract surface only: the eight artifact types, ten content roles, fourteen
+content types, validation vocabularies, record/lifecycle/freshness/persistence
+statuses, the thirteen repository error names, the seven stores, the eleven
+transaction operations (C01/C02 exact scopes), the nine guard paths and their
+guard tuple (C04), hash-role separation and draft hygiene (C03), C05 mapping
+completeness against the tools' own labels, delete/reset/purge separation (C06),
+slot identity, draft link shape, revision lineage fields, resource-policy limits,
+and static type-only hygiene of the contract modules.
+
+These tests do **not** execute hashing, repository CAS, validator policy,
+persistence, UI, or network behavior; none exists at `8ecf0aa`.
+
+### 12.4 REG-G1-01~29 coverage map
+
+Statuses are `CONTRACT-READY` (contract surface audited; behavior NOT RUN),
+`IMPLEMENTATION-DEPENDENT` (module absent at this SHA), or `BLOCKED`.
+No row is PASS.
+
+| REG | Status | Reason |
+| --- | --- | --- |
+| 01 | IMPLEMENTATION-DEPENDENT | No capture/repository module; six-tool E2E not run |
+| 02 | IMPLEMENTATION-DEPENDENT | AI Apply revision append absent |
+| 03 | IMPLEMENTATION-DEPENDENT | Revision immutability needs repository behavior |
+| 04 | CONTRACT-READY | Restore-as-new-revision fields audited; repository absent |
+| 05 | IMPLEMENTATION-DEPENDENT | Stale/fingerprint runtime absent |
+| 06 | IMPLEMENTATION-DEPENDENT | Validation/revision race needs runtime |
+| 07 | CONTRACT-READY | Validator identity + SKIP/NOT_RUN/UNSUPPORTED vocabulary audited; registry absent |
+| 08 | CONTRACT-READY | `blocked` status and export-kind contract audited; ExportGuard absent |
+| 09 | CONTRACT-READY | `ExportRecord.kind` normal/debug audited; debug UI absent |
+| 10 | IMPLEMENTATION-DEPENDENT | IDB dump helper tested; artifact DB absent |
+| 11 | IMPLEMENTATION-DEPENDENT | Abort semantics need repository |
+| 12 | IMPLEMENTATION-DEPENDENT | Quota path needs repository |
+| 13 | IMPLEMENTATION-DEPENDENT | Open/transaction failure needs repository |
+| 14 | CONTRACT-READY | `memory-only` mode + reasons audited; runtime absent |
+| 15 | BLOCKED | No prior artifact schema exists; only an unknown-version gate will be testable |
+| 16 | IMPLEMENTATION-DEPENDENT | Reset/autosave race needs runtime |
+| 17 | IMPLEMENTATION-DEPENDENT | Two-tab harness tested; conflict semantics need repository |
+| 18 | IMPLEMENTATION-DEPENDENT | Existing export freshness is G0 evidence; revision binding absent |
+| 19 | CONTRACT-READY | No credential fields on export/validation contracts; G0 E2E reuse stands |
+| 20 | CONTRACT-READY | Request-log helper implemented and unit-tested; product run NOT RUN |
+| 21 | CONTRACT-READY | Slot key + input-fingerprint fields audited; composition absent |
+| 22 | CONTRACT-READY | Hash roles separated; algorithm vectors owned by Q01 test |
+| 23 | CONTRACT-READY | Restore lineage types audited; repository absent |
+| 24 | CONTRACT-READY | Validator id/version/config + policyFingerprint bindings audited; policy engine absent |
+| 25 | CONTRACT-READY | Guard tuple + C01/C02 scopes audited; epoch CAS needs repository |
+| 26 | CONTRACT-READY | Export derivation + three hashes audited; export bytes need runtime |
+| 27 | IMPLEMENTATION-DEPENDENT | Kotoha two-slot capture absent |
+| 28 | IMPLEMENTATION-DEPENDENT | Async export guard needs ExportGuard |
+| 29 | CONTRACT-READY | C05 mapping matches Haruhi/Takane labels; validator selection absent |
+
+Summary: 14 CONTRACT-READY, 14 IMPLEMENTATION-DEPENDENT, 1 BLOCKED, 0 PASS.
+
+### 12.5 INV-01~34 coverage map
+
+`CONTRACT-AUDITED` means the type/contract surface is pinned by the executed
+tests; it does not mean the invariant was verified at runtime.
+
+| INV | Status | INV | Status |
+| --- | --- | --- | --- |
+| 01 | CONTRACT-AUDITED | 18 | IMPLEMENTATION-DEPENDENT |
+| 02 | CONTRACT-AUDITED | 19 | CONTRACT-AUDITED |
+| 03 | IMPLEMENTATION-DEPENDENT | 20 | CONTRACT-AUDITED |
+| 04 | IMPLEMENTATION-DEPENDENT | 21 | IMPLEMENTATION-DEPENDENT |
+| 05 | IMPLEMENTATION-DEPENDENT | 22 | IMPLEMENTATION-DEPENDENT |
+| 06 | CONTRACT-AUDITED | 23 | CONTRACT-AUDITED |
+| 07 | CONTRACT-AUDITED | 24 | IMPLEMENTATION-DEPENDENT |
+| 08 | IMPLEMENTATION-DEPENDENT | 25 | CONTRACT-AUDITED |
+| 09 | CONTRACT-AUDITED | 26 | CONTRACT-AUDITED |
+| 10 | IMPLEMENTATION-DEPENDENT | 27 | CONTRACT-AUDITED |
+| 11 | CONTRACT-AUDITED | 28 | CONTRACT-AUDITED |
+| 12 | CONTRACT-AUDITED | 29 | CONTRACT-AUDITED |
+| 13 | CONTRACT-AUDITED | 30 | CONTRACT-AUDITED |
+| 14 | IMPLEMENTATION-DEPENDENT | 31 | CONTRACT-AUDITED |
+| 15 | CONTRACT-AUDITED | 32 | CONTRACT-AUDITED |
+| 16 | CONTRACT-AUDITED | 33 | CONTRACT-AUDITED |
+| 17 | CONTRACT-AUDITED | 34 | CONTRACT-AUDITED |
+
+Summary: 24 CONTRACT-AUDITED, 10 IMPLEMENTATION-DEPENDENT, 0 PASS.
+
+### 12.6 NOT RUN
+
+- Every product E2E in §3~§6A (no artifact runtime exists at `8ecf0aa`; the
+  instruction forbids E2E unless the feature exists).
+- All repository behavior: IDB schema, CAS/epoch, abort/quota/migration,
+  retention, export history, hashing vectors, policy fingerprint computation.
+- All UI: ExportGuard, revision history, stale/validation/persistence display,
+  debug-export labeling, artifact-history reset confirmation.
+- Live gateway: never called; no credentials used.
+- Port isolation: no Playwright run was started. `ARTIFACTS_E2E_PORT = 4273` and
+  `assertDedicatedE2EPort` reject 4173; the rule `workers: 1`,
+  `fullyParallel: false` remains in `playwright.config.ts`.
+
+### 12.7 Blockers for behavior verification
+
+| ID | Blocker | Owner |
+| --- | --- | --- |
+| G1-CP02-B1 | Repository, hash, validation-policy, capture, and UI modules do not exist at `8ecf0aa` | Q03/Q02/Q04 |
+| G1-CP02-B2 | Content-digest / revision-hash known vectors live in Q01's `reg-g1-contract.test.ts`; Q05 must not reuse it as an oracle | Q01 |
+| G1-CP02-B3 | Policy fingerprint canonicalization (freeze §8.3) has no executable yet | Q02 |
+| G1-CP02-B4 | Real prior artifact schema does not exist; migration failure beyond an unknown-version gate is untestable at G1 | Q03/Q00 |
+| G1-CP02-B5 | ExportGuard injection point (outside `ExportModal.tsx`) is not implemented, so REG-G1-08/18/28 stay unverifiable | Q04 |
