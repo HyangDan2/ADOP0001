@@ -8,8 +8,9 @@
 - **Independent QA:** Qoder-05, branch `agent/g1-qa`, matrix §14 (`docs/G1_REGRESSION_MATRIX.md`)
 - **Date:** 2026-11-27
 - **Verdict:** **G1 closure QA PASS** — 0 P0, 0 reproducible P1, 2 P2 moved to backlog
-- **Disposition:** G1 CLOSED at `e723302`. Main merge, deployment and G2 implementation
-  remain locked pending Supervisor G1 closure review.
+- **Supervisor review:** CONDITIONAL PASS — corrections BL-14 and BL-09 applied (see §7).
+- **Disposition:** G1 closure pending re-review. Main merge, deployment and G2
+  implementation remain locked.
 
 ---
 
@@ -86,3 +87,28 @@ or weakened, no dependency upgrade. The CP02 contract files are identical to
 
 G1 closure review by the Supervisor. G2 implementation, main merge and
 production deployment stay locked until that review closes.
+
+---
+
+## 7. Supervisor G1 review — CONDITIONAL PASS corrections
+
+The Supervisor accepted the closure evidence and required two P1 corrections
+before G1 closes.
+
+| Item | Correction | Commit |
+| --- | --- | --- |
+| G1-BL-14 | Download and Copy now re-resolve the validation plan for the stored revision and apply `decideExport` to the newest committed record. A failed or not-run REQUIRED validator, an ineffective record, or a policy change since capture blocks a normal export. Copy is asynchronous so it cannot bypass the decision. | `2e7adf1` |
+| G1-BL-09 | A Takane export for any supported language is now rebuilt from the current input, captured with its language validation context, validated and exported through `guardExport`. File names, content types and code are unchanged; header and implementation share one language revision. | `6e88a8e` |
+
+Required results on the corrected tree: `npx tsc --noEmit` pass; `npm test` 888
+pass (884 + 4 guard-gating tests); `npm run build` pass; `npm run test:e2e` 85/85
+(83 + ART-E2E-14/15, Q05's artifact spec unchanged at 12 PASS + 1 expected-fail).
+
+Backlog disposition: BL-09/BL-14 fixed; BL-13 (badge display) and the P3 items
+remain; Debug export UI and the `decideExport` debug path are recorded as G2
+completion conditions (G1-BL-15). §14 verdicts are unchanged — PARTIAL and NOT
+TESTED rows were not promoted, and Q05 re-verifies only the changed features.
+
+Residual risk: switching Takane languages appends a revision per language
+(distinct input fingerprints); Copy refuses when the stored revision/record
+cannot be read instead of silently skipping registration.

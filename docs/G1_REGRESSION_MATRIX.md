@@ -699,3 +699,35 @@ pre-fix build must not be checked out — the assertion is the post-fix contract
 - **Verdict: G1 closure QA PASS** with BL-13/BL-14 carried in
   `docs/G1_BACKLOG.md`. Lead merges; Q05 does not merge, deploy, or call the
   gateway.
+
+---
+
+## 15. G1 Supervisor review — P1 correction record (Q02/Q04)
+
+The Supervisor accepted the §14 evidence as a **CONDITIONAL PASS** and ordered
+two P1 corrections before G1 closes: BL-14 (validation policy must gate the
+Download/Copy export paths) and BL-09 (Takane non-current-language exports must
+not bypass the artifact guard). BL-13 and the P3 items stay in the backlog;
+PARTIAL/NOT TESTED rows are unchanged and no unverified row was promoted.
+
+| Item | Correction | Commit |
+| --- | --- | --- |
+| G1-BL-14 | Capture publishes the validator selection context; the guard re-resolves the plan against the stored revision/current registry/policy and applies `decideExport` to the newest committed record on Download and Copy. Copy is asynchronous end-to-end (modal accepts async copy handlers). | `2e7adf1` |
+| G1-BL-09 | Every Takane language export is rebuilt from the current input, captured with its language context, validated and exported through `guardExport`; header/implementation of one language share a revision. | `6e88a8e` |
+| G1-BL-15 | Debug export path/UI does not exist; recorded as a G2 completion condition. | — |
+
+Required verification on the corrected tree (implementation side; Q05 verifies
+only the changed features):
+
+| Command | Result |
+| --- | --- |
+| `npx tsc --noEmit` | pass |
+| `npm test` | 84 files / 888 tests pass (884 + 4 new guard-gating tests) |
+| `npm run build` | pass |
+| `npm run test:e2e` (`workers: 1`, 4173) | 85 passed (83 + ART-E2E-14/15); Q05's 13-test artifact spec still 12 PASS + 1 expected-fail |
+| New coverage | `tests/artifacts/export-guard/guard.test.ts` (invalid record, policy version change, no REQUIRED run, copy refusal/success), `tests/e2e/artifacts/takane-language-guard.spec.ts` (C/header/Python round trip, stale refusal) |
+
+Residual risk: each Takane language switch appends a revision (distinct input
+fingerprint per language); Copy now refuses when the stored revision/record
+cannot be read instead of registering in the background; the badge eligibility
+display (BL-13) is unchanged.
