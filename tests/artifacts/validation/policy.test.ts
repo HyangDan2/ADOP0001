@@ -67,6 +67,7 @@ async function runValidation(input: {
   registry: ReturnType<typeof createValidatorRegistry>;
   revision?: ArtifactRevision;
   descriptor?: ReturnType<typeof specificationDescriptor>;
+  policy?: ValidationPolicyOptions;
   contentChecks?: Readonly<Record<string, 'match' | 'mismatch' | 'missing'>>;
 }): Promise<{ plan: ValidationPlan; record: ValidationRecord }> {
   const revision = input.revision ?? specificationRevision();
@@ -74,6 +75,7 @@ async function runValidation(input: {
     registry: input.registry,
     revision,
     descriptor: input.descriptor,
+    policy: input.policy,
   });
   const record = await executeValidation({
     artifactId: revision.artifactId,
@@ -331,6 +333,71 @@ describe('WO-D03 effective validation policy', () => {
     expect(
       decideExport({ record, revision, plan, policy: disabled, debug: { reason: '確認用' } }).reasons,
     ).toContain('debug-disabled');
+  });
+
+  it('synthesizes system.required-set when the descriptor declares no requirements', async () => {
+    const revision = specificationRevision();
+    const { plan, record } = await runValidation({
+      registry: registryOf(),
+      revision,
+      descriptor: specificationDescriptor({ validationRequirements: [] }),
+    });
+
+    const synthesized = record.results.filter((result) => result.validatorId === 'system.required-set');
+    expect(synthesized).toHaveLength(1);
+    expect(synthesized[0]).toMatchObject({
+      validatorVersion: plan.policyVersion,
+      validatorConfigHash: '',
+      level: plan.enabledLevels[0],
+      severity: 'BLOCKED',
+      executionStatus: 'UNSUPPORTED',
+      requirement: 'REQUIRED',
+      scope: 'revision',
+      reason: 'unsupported',
+    });
+    expect(record.status).toBe('blocked');
+    expect(record.validatorSet).toEqual([]);
+    expect(hasRequiredUnavailability(record.results)).toBe(true);
+  });
+
+  it('synthesizes system.required-set when every required validator is unsupported', async () => {
+    const { record } = await runValidation({ registry: registryOf() });
+
+    expect(record.results.filter((result) => result.validatorId === 'system.required-set')).toHaveLength(1);
+    expect(record.status).toBe('blocked');
+  });
+
+  it('synthesizes system.required-set when enabled levels filter out every requirement', async () => {
+    const { plan, record } = await runValidation({
+      registry: registryOf(mdRegistration(), semanticRegistration()),
+      policy: { ...POLICY, enabledLevels: ['compile'] },
+    });
+
+    expect(plan.enabledLevels).toEqual([]);
+    expect(record.results).toHaveLength(1);
+    expect(record.results[0]).toMatchObject({
+      validatorId: 'system.required-set',
+      level: 'structure',
+      executionStatus: 'UNSUPPORTED',
+    });
+    expect(record.status).toBe('blocked');
+  });
+
+  it('keeps the synthesized required-set result on the debug path only', async () => {
+    const revision = specificationRevision();
+    const { plan, record } = await runValidation({
+      registry: registryOf(),
+      revision,
+      descriptor: specificationDescriptor({ validationRequirements: [] }),
+    });
+
+    expect(decideExport({ record, revision, plan, policy: POLICY })).toMatchObject({
+      allowed: false,
+      kind: 'none',
+    });
+    const debug = decideExport({ record, revision, plan, policy: POLICY, debug: { reason: '確認用' } });
+    expect(debug).toMatchObject({ allowed: true, kind: 'debug', warning: POLICY.debugExport.label });
+    expect(debug.kind).not.toBe('normal');
   });
 
   it('allows a normal export for an effective valid record', async () => {

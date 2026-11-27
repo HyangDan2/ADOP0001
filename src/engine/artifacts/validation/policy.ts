@@ -331,6 +331,32 @@ async function runAssignment(
 }
 
 /**
+ * §8.2 step 5 / D-23: the selected REQUIRED set must never be empty and silent.
+ * This synthetic result is revision-scoped (it describes the whole revision),
+ * uses the first enabled descriptor level in sorted order so the level is
+ * deterministic, and falls back to `structure` when the policy enables no level
+ * at all. It is not a registered validator: it is excluded from
+ * `effectiveValidators` and therefore never changes the policy fingerprint.
+ */
+function synthesizeRequiredSetResult(plan: ValidationPlan): ValidationResult {
+  const level = plan.enabledLevels[0] ?? 'structure';
+  return {
+    validatorId: 'system.required-set',
+    validatorVersion: plan.policyVersion,
+    validatorConfigHash: '',
+    level,
+    severity: 'BLOCKED',
+    executionStatus: 'UNSUPPORTED',
+    requirement: 'REQUIRED',
+    scope: 'revision',
+    // The contract's reason union has no `required-set-empty`; `unsupported`
+    // is the closest legal value and the message states the actual cause.
+    reason: 'unsupported',
+    message: '必須バリデータ集合が空です。検証済みとして扱いません。',
+  };
+}
+
+/**
  * Fail-closed status derivation. No result set — including an empty one — is
  * `valid` unless every REQUIRED result is PASS.
  */
@@ -365,6 +391,11 @@ export async function executeValidation(input: ValidationExecutionInput): Promis
   for (const assignment of plan.selection.assignments) {
     results.push(await runAssignment(assignment, input));
   }
+
+  const hasSelectedRequired = plan.selection.assignments.some(
+    (assignment) => assignment.requirement === 'REQUIRED' && assignment.gate === 'match',
+  );
+  if (!hasSelectedRequired) results.push(synthesizeRequiredSetResult(plan));
 
   const clock = input.now ?? (() => new Date());
   return {
