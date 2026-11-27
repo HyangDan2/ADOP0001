@@ -19,6 +19,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PREVIEW_ORIGIN } from './previewOrigin';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DOWNLOADS = process.env.E2E_DOWNLOADS ?? path.resolve(HERE, '../../../../downloads');
@@ -63,7 +64,7 @@ function sseBody(answer: string): string {
 test.beforeAll(async () => {
   server = http.createServer((request, response) => {
     const cors = {
-      'access-control-allow-origin': 'http://127.0.0.1:4173',
+      'access-control-allow-origin': PREVIEW_ORIGIN,
       'access-control-allow-methods': 'POST, OPTIONS',
       'access-control-allow-headers': 'authorization, content-type, accept',
       'access-control-max-age': '600',
