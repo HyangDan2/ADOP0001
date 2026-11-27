@@ -1,9 +1,9 @@
 # CP03 Runtime Integration Milestone Report
 
-- **Status:** MILESTONE COMPLETE
+- **Status:** CLOSED — CI `45925519226` success
 - **Milestone:** CP03 (not an approval gate; Supervisor Lean Engineering v1.1)
 - **Contract SHA:** `8ecf0aa3aeaf715e4dbcc16a614209d0fbc2c683`
-- **Integration HEAD:** `c037496` (CP03 merge `4d64c9d`, BL-08 merge `5110e0a`, E2E fix `c037496`)
+- **Integration HEAD:** `5154035` (CP03 merge `4d64c9d`, BL-08 merge `5110e0a`, E2E fixes `c037496`, `5154035`)
 - **Agent branch:** `agent/g1-ui` (`e6d5ad8`, commits `da6949c`, `f798063`, `48c3f71`, `c4126fc`)
 - **Date:** 2026-11-27
 - **Scope:** six-tool capture, validation execution, ExportGuard, minimal artifact status UI
@@ -38,7 +38,9 @@ pre-check; Takane `すべて` compares each rebuilt file.
 | `tests/artifacts/{capture,export-guard,status,wiring}` | 5 files / 31 tests pass |
 | `npm run build` | pass |
 | CI `45918603344` (`workflow_dispatch`, `4d64c9d`) | failed: Playwright 65/70 (typecheck, Vitest, generated QA, build passed) |
-| `npm run test:e2e` (`c037496`) | 70 / 70 pass |
+| CI `45924531728` (`workflow_dispatch`, `19dff86`) | failed: REG-09 only (capture skipped on the slow runner) |
+| CI `45925519226` (`workflow_dispatch`, `5154035`) | **success**: typecheck, Vitest 84/884, generated QA, build, Playwright 70/70; deploy skipped (non-main) |
+| `npm run test:e2e` (`c037496`, `5154035`) | 70 / 70 pass |
 | `npm test` (`c037496`) | 84 files / 884 tests pass |
 
 ### 2.1 E2E regressions found by CI and fixed in `c037496`

@@ -1,7 +1,7 @@
 # G1 Agent Assignments and Collaboration Protocol
 
-- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP03 milestone complete
-- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00/01/02 complete (`8ecf0aa` contract, integration `80048cb`, CI `45916061189` success); CP03 runtime integration complete (integration `19dff86`, E2E 70/70 locally); CP04 verification and G1 close pending. CP02~CP04 are milestones, not approval gates (Supervisor Lean Engineering v1.1, 2026-11-27).
+- **Status:** APPROVED WITH IMPLEMENTATION CONDITIONS — CP03 CLOSED
+- **Gate:** G0 recorded; CP01 approved (2026-11-27); CP02-00/01/02 complete (`8ecf0aa` contract, integration `80048cb`, CI `45916061189` success); CP03 closed (integration `5154035`, CI `45925519226` success, E2E 70/70); G1 closure QA in progress with Q05. CP02~CP04 are milestones, not approval gates (Supervisor Lean Engineering v1.1, 2026-11-27).
 - **Baseline:** `04dd2fc` (approved candidate `3af2427`; tag `g0-baseline`)
 - **Supersedes:** `c5d2221`
 - **Date:** 2026-11-27
@@ -205,4 +205,4 @@ fixed contract SHA. See the freeze document §11.3.
    Engineering v1.1, and CP02~CP04 are milestones.
 7. Independent G1 QA runs at G1 closure, not per milestone.
 
-**Current state: CP03 milestone complete at `19dff86`. CP04 verification and G1 close pending.**
+**Current state: CP03 CLOSED at `5154035` (CI `45925519226` success). G1 closure QA in progress; G1 close pending.**
