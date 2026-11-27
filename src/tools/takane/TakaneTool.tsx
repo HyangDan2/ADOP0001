@@ -14,12 +14,12 @@ import type { EngineDiagnostic } from '../../adapters/types';
 import {
   LANGUAGE_EXTENSION,
   LANGUAGE_LABEL,
-  buildTakane,
   type TakaneLanguage,
   type TakaneOutput,
 } from './adapter';
 import { TAKANE_SAMPLES } from './samples';
 import { runEngine } from '../../engine/core/runner';
+import type { ExecutionContext } from '../../engine/core/contracts';
 import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { HybridAssist } from '../../components/HybridAssist';
 import {
@@ -30,7 +30,17 @@ import {
 import { contentTypeForTakaneLanguage, type TakaneLanguage as ArtifactTakaneLanguage } from '../../engine/artifacts/contentTypes';
 import { useArtifactCapture } from '../../components/artifacts/useArtifactCapture';
 import { ArtifactSlotStatus } from '../../components/artifacts/ArtifactStatus';
-import { entryByRole, guardCopyText, guardExport } from '../../components/artifacts/ExportGuard';
+import {
+  STALE_INPUT_MESSAGE,
+  entryByRole,
+  guardCopyText,
+  guardExport,
+} from '../../components/artifacts/ExportGuard';
+import {
+  artifactCapture,
+  composeCaptureFingerprint,
+  getArtifactSlotSnapshot,
+} from '../../lib/artifacts/capture';
 const SHIORI_KEY = 'adop0001.shiori.latest';
 
 const LANGUAGES: { value: TakaneLanguage; label: string }[] = [
@@ -104,6 +114,8 @@ export function TakaneTool() {
   const outputRevision = useRef<number | null>(null);
   /** CP03: generated files are the artifact; language selects validators. */
   const artifact = useArtifactCapture<'takane'>(ARTIFACT_SLOTS.takane);
+  /** G1-BL-09: the context of the run whose output is on screen. */
+  const engineContext = useRef<ExecutionContext<'takane'> | null>(null);
 
   useEffect(() => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -135,6 +147,7 @@ export function TakaneTool() {
           outputRevision.current = revision;
           setDiagnostics(result.diagnostics);
           setElapsed(result.elapsedMs);
+          engineContext.current = result.context;
           artifact.remember(result.context);
           artifact.capture({
             contents: takaneContents(result.output),
@@ -229,22 +242,59 @@ export function TakaneTool() {
   };
 
   /**
-   * A scaffold for the current language has a stored revision and is guarded.
-   * Exporting another language is a fresh generation the artifact does not
-   * contain, so it keeps the legacy revision check (CP03 gap: per-language
-   * capture is not part of the frozen G1 slot).
+   * G1-BL-09: every export is authorized by its own captured revision. The
+   * pane output is reused without another run; another language is regenerated
+   * from the current input and captured before the guard runs, so no supported
+   * language falls back to an unguarded write.
    */
+  const captureTarget = async (target: TakaneLanguage) => {
+    const revision = inputRevision.current;
+    let targetOutput: TakaneOutput;
+    let targetContext: ExecutionContext<'takane'>;
+    if (output && target === output.language && engineContext.current) {
+      targetOutput = output;
+      targetContext = engineContext.current;
+    } else {
+      const result = await runEngine('takane', {
+        sourceName: fileName,
+        source,
+        options: { language: target },
+        mode: 'local-static',
+      });
+      targetOutput = result.output;
+      targetContext = result.context;
+    }
+    const captured = await artifactCapture().capture({
+      slot: ARTIFACT_SLOTS.takane,
+      context: targetContext,
+      contents: takaneContents(targetOutput),
+      validationContext: takaneValidationContext(target),
+      inputRevision: revision,
+      isCurrent: () => inputRevision.current === revision,
+    });
+    if (captured.status === 'superseded' || !captured.revision) {
+      throw new Error(STALE_INPUT_MESSAGE);
+    }
+    return {
+      output: targetOutput,
+      binding: {
+        slot: ARTIFACT_SLOTS.takane,
+        assertCurrent: binding.assertCurrent,
+        liveFingerprint: () => composeCaptureFingerprint({ context: targetContext }),
+      },
+      snapshot: getArtifactSlotSnapshot(ARTIFACT_SLOTS.takane),
+    };
+  };
+
   const download = async (target: TakaneLanguage, base: string, role: 'header' | 'implementation') => {
     binding.assertCurrent();
-    const built = buildTakane(fileName, source, target);
-    const file = built.files.find((item) => item.role === role) ?? built.files[built.files.length - 1];
+    const resolved = await captureTarget(target);
+    const file =
+      resolved.output.files.find((item) => item.role === role) ??
+      resolved.output.files[resolved.output.files.length - 1];
     const fileNameFor = artifactName(target, base, role);
-    if (!output || target !== output.language) {
-      downloadBlob(fileNameFor, file.code, 'text/plain;charset=utf-8');
-      return;
-    }
     await guardExport(
-      binding,
+      resolved.binding,
       [
         {
           format: formatIdFor(target, role),
@@ -255,6 +305,7 @@ export function TakaneTool() {
         },
       ],
       (bytes, name) => downloadBlob(name, bytes, 'text/plain;charset=utf-8'),
+      resolved.snapshot ? { snapshot: resolved.snapshot } : undefined,
     );
   };
 
@@ -546,14 +597,18 @@ export function TakaneTool() {
               description: 'Python スキャフォールド（dataclass・型ヒント・docstring）',
               fileName: (base) => takaneFileName('python', base),
               run: (base) => download('python', base, 'implementation'),
-              copy: () =>
-                guardCopyText(binding, {
+              copy: async () => {
+                binding.assertCurrent();
+                const resolved = await captureTarget('python');
+                return guardCopyText(resolved.binding, {
                   format: 'python',
                   fileName: takaneFileName('python', fileName.replace(/(\.spec)?\.md$/i, '').replace(/\.[^.]+$/, '') || 'module'),
                   contentType: 'text/x-python',
                   entry: entryByRole('implementation'),
-                  text: output.code,
-                }),
+                  text: resolved.output.code,
+                  snapshot: resolved.snapshot,
+                });
+              },
             },
             {
               id: 'c',
@@ -604,24 +659,18 @@ export function TakaneTool() {
               fileName: (base) => takaneFileName(language, base),
               run: async (base) => {
                 binding.assertCurrent();
-                const target = language;
-                const built = buildTakane(fileName, source, target);
-                if (!output || target !== output.language) {
-                  for (const file of built.files) {
-                    downloadBlob(artifactName(target, base, file.role), file.code, 'text/plain;charset=utf-8');
-                  }
-                  return;
-                }
+                const resolved = await captureTarget(language);
                 await guardExport(
-                  binding,
-                  built.files.map((file) => ({
+                  resolved.binding,
+                  resolved.output.files.map((file) => ({
                     format: 'all',
-                    fileName: artifactName(target, base, file.role),
-                    contentType: contentTypeForTakaneLanguage(target as ArtifactTakaneLanguage),
+                    fileName: artifactName(language, base, file.role),
+                    contentType: contentTypeForTakaneLanguage(language as ArtifactTakaneLanguage),
                     entry: entryByRole(file.role),
                     payload: () => file.code,
                   })),
                   (bytes, name) => downloadBlob(name, bytes, 'text/plain;charset=utf-8'),
+                  resolved.snapshot ? { snapshot: resolved.snapshot } : undefined,
                 );
               },
             },
