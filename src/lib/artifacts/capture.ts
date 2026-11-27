@@ -115,6 +115,34 @@ export function getArtifactSlotSnapshot(
   return snapshots.get(slotKey(slot)) ?? null;
 }
 
+/**
+ * Resolves with the next capture of this slot (or the existing one). Export
+ * clicks may race the asynchronous capture; the guard waits briefly instead of
+ * refusing an artifact that is already being registered.
+ */
+export function waitForArtifactSlotSnapshot(
+  slot: Pick<ArtifactSlot, 'toolId' | 'documentSlotId'>,
+  timeoutMs = 4000,
+): Promise<ArtifactSlotSnapshot | null> {
+  const existing = getArtifactSlotSnapshot(slot);
+  if (existing) return Promise.resolve(existing);
+  const key = slotKey(slot);
+  return new Promise((resolve) => {
+    let unsubscribe = () => {};
+    const finish = () => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(getArtifactSlotSnapshot(slot));
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    unsubscribe = subscribeArtifactSlots(() => {
+      if (snapshots.has(key)) finish();
+    });
+    // A capture that landed between the check above and the subscription.
+    if (snapshots.has(key)) finish();
+  });
+}
+
 function publish(snapshot: ArtifactSlotSnapshot): void {
   snapshots.set(slotKey(snapshot.slot), snapshot);
   for (const listener of listeners) listener();
