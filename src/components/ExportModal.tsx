@@ -16,7 +16,7 @@ export interface ExportFormat {
    */
   run: (base: string) => void | Promise<void>;
   /** Text copied by the copy button, when this format can be copied. */
-  copy?: (base: string) => string;
+  copy?: (base: string) => string | Promise<string>;
 }
 
 interface Feedback {
@@ -109,11 +109,11 @@ export function ExportModal(props: {
                     className="btn btn-sm"
                     data-testid={`export-copy-${format.id}`}
                     onClick={() => {
-                      // A stale artifact refuses to copy the same way it refuses
-                      // to download (PATCH-006).
-                      let text: string;
+                      // A stale or unvalidated artifact refuses to copy the same
+                      // way it refuses to download (PATCH-006, G1-BL-14).
+                      let pending: string | Promise<string>;
                       try {
-                        text = format.copy?.(cleanBase) ?? '';
+                        pending = format.copy?.(cleanBase) ?? '';
                       } catch (cause) {
                         announce({
                           kind: 'error',
@@ -121,13 +121,21 @@ export function ExportModal(props: {
                         });
                         return;
                       }
-                      void copyText(text).then((ok) =>
-                        announce(
-                          ok
-                            ? { kind: 'ok', message: `${format.label} をコピーしました` }
-                            : { kind: 'error', message: 'コピーに失敗しました' },
-                        ),
-                      );
+                      void Promise.resolve(pending)
+                        .then((text) => copyText(text))
+                        .then(
+                          (ok) =>
+                            announce(
+                              ok
+                                ? { kind: 'ok', message: `${format.label} をコピーしました` }
+                                : { kind: 'error', message: 'コピーに失敗しました' },
+                            ),
+                          (cause) =>
+                            announce({
+                              kind: 'error',
+                              message: `コピーできませんでした: ${cause instanceof Error ? cause.message : '不明な理由'}`,
+                            }),
+                        );
                     }}
                   >
                     コピー

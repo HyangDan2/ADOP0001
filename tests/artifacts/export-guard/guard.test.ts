@@ -8,6 +8,7 @@ import type { ArtifactContentInput } from '../../../src/engine/artifacts/types';
 import { createValidatorRegistry } from '../../../src/engine/artifacts/validation/registry';
 import { registerStructuralValidators } from '../../../src/engine/artifacts/validation/formats';
 import {
+  ARTIFACT_VALIDATION_POLICY,
   __resetArtifactCaptureRuntimeForTests,
   createArtifactCaptureService,
   getArtifactSlotSnapshot,
@@ -18,7 +19,9 @@ import {
   MOVED_ARTIFACT_MESSAGE,
   NO_ARTIFACT_MESSAGE,
   STALE_INPUT_MESSAGE,
+  VALIDATION_BLOCKED_MESSAGE,
   entryByRole,
+  guardCopyText,
   guardExport,
   textBytes,
   type ExportGuardBinding,
@@ -268,5 +271,132 @@ describe('export guard', () => {
       ),
     ).rejects.toThrow(NO_ARTIFACT_MESSAGE);
     expect(write).not.toHaveBeenCalled();
+  });
+});
+
+describe('export guard — validation policy gating (G1-BL-14)', () => {
+  const MARKDOWN_PLAN = {
+    format: 'markdown',
+    fileName: 'payment.spec.md',
+    contentType: 'text/markdown' as const,
+    entry: entryByRole('primary'),
+    payload: () => '# Spec\n',
+  };
+
+  async function invalidateLatestRecord(
+    repo: Awaited<ReturnType<typeof fixture>>['repo'],
+    captured: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>['request']>>,
+  ) {
+    const [record] = await repo.listValidations({
+      artifactId: captured.artifact!.artifactId,
+      revisionId: captured.revision!.revisionId,
+    });
+    await repo.commitValidation({
+      artifactId: captured.artifact!.artifactId,
+      revisionId: captured.revision!.revisionId,
+      record: {
+        ...record,
+        recordId: 'val_invalid',
+        validatedAt: '2099-01-01T00:00:00.000Z',
+        status: 'invalid',
+      },
+      guard: {
+        expectedScopeEpoch: 1,
+        expectedHistoryEpoch: captured.artifact!.historyEpoch,
+        expectedCurrentRevisionId: captured.revision!.revisionId,
+      },
+    });
+  }
+
+  it('blocks a download when the newest stored record is invalid', async () => {
+    const { repo, request } = await fixture();
+    const captured = await request();
+    const snapshot = getArtifactSlotSnapshot(SLOT)!;
+    await invalidateLatestRecord(repo, captured);
+    const write = vi.fn();
+
+    await expect(
+      guardExport(binding(snapshot.fingerprint), [MARKDOWN_PLAN], write, {
+        repository: repo,
+        snapshot,
+      }),
+    ).rejects.toThrow(`${VALIDATION_BLOCKED_MESSAGE}（検証エラー）`);
+    expect(write).not.toHaveBeenCalled();
+    expect(await repo.listExports({ artifactId: captured.artifact!.artifactId })).toHaveLength(0);
+  });
+
+  it('blocks a download when the policy changed after capture', async () => {
+    const { repo, request } = await fixture();
+    await request();
+    const snapshot = getArtifactSlotSnapshot(SLOT)!;
+    const write = vi.fn();
+
+    await expect(
+      guardExport(binding(snapshot.fingerprint), [MARKDOWN_PLAN], write, {
+        repository: repo,
+        snapshot,
+        policy: { ...ARTIFACT_VALIDATION_POLICY, policyVersion: 'adop0001.artifacts.validation.v2' },
+      }),
+    ).rejects.toThrow('検証ポリシー版変更');
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('blocks a download when no REQUIRED validator ran', async () => {
+    const { repo } = await fixture();
+    const empty = createValidatorRegistry();
+    const service = createArtifactCaptureService({ repository: repo, registry: empty });
+    const captured = await service.capture({
+      slot: SLOT,
+      context: context(),
+      contents: CONTENTS,
+      inputRevision: 1,
+      isCurrent: () => true,
+    });
+    expect(captured.validation?.status).toBe('blocked');
+    const snapshot = getArtifactSlotSnapshot(SLOT)!;
+    const write = vi.fn();
+
+    await expect(
+      guardExport(binding(snapshot.fingerprint), [MARKDOWN_PLAN], write, {
+        repository: repo,
+        snapshot,
+        registry: empty,
+      }),
+    ).rejects.toThrow(`${VALIDATION_BLOCKED_MESSAGE}（検証ブロック）`);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('refuses to copy an invalid record and copies a valid one', async () => {
+    const { repo, request } = await fixture();
+    const captured = await request();
+    const snapshot = getArtifactSlotSnapshot(SLOT)!;
+
+    await expect(
+      guardCopyText(binding(snapshot.fingerprint), {
+        format: 'markdown',
+        fileName: 'payment.spec.md',
+        contentType: 'text/markdown',
+        entry: entryByRole('primary'),
+        text: '# Spec\n',
+        repository: repo,
+        snapshot,
+        policy: { ...ARTIFACT_VALIDATION_POLICY, policyVersion: 'adop0001.artifacts.validation.v2' },
+      }),
+    ).rejects.toThrow(VALIDATION_BLOCKED_MESSAGE);
+
+    const text = await guardCopyText(binding(snapshot.fingerprint), {
+      format: 'markdown',
+      fileName: 'payment.spec.md',
+      contentType: 'text/markdown',
+      entry: entryByRole('primary'),
+      text: '# Spec\n',
+      repository: repo,
+      snapshot,
+    });
+    expect(text).toBe('# Spec\n');
+    await vi.waitFor(async () => {
+      const exports = await repo.listExports({ artifactId: captured.artifact!.artifactId });
+      expect(exports).toHaveLength(1);
+    });
   });
 });

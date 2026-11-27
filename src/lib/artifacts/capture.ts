@@ -98,6 +98,12 @@ export interface ArtifactSlotSnapshot {
   revision: ArtifactRevision;
   validation: ValidationRecord | null;
   fingerprint: InputFingerprint;
+  /**
+   * Selection context the plan was resolved with (language/framework). The
+   * export guard re-resolves the plan with it so a registry or policy change
+   * after capture is detected instead of trusting the stored record.
+   */
+  validationContext?: ValidatorSelectionContext;
 }
 
 type Listener = () => void;
@@ -404,6 +410,7 @@ export function createArtifactCaptureService(options: CaptureServiceOptions): Ar
       revision,
       validation: validated.record,
       fingerprint,
+      validationContext: request.validationContext,
     });
     return result;
   }

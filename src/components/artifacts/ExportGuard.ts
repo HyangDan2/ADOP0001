@@ -6,25 +6,37 @@
  * live input. `ExportModal` stays untouched: this module produces the bytes and
  * the modal's run callback stays the only writer.
  *
- * Order (mapping §4): legacy revision check → payload → live fingerprint →
- * stored revision/entry identity → payload hash → registerExport → write. Every
- * await re-checks the pane's own revision counter, and the repository guard
- * re-checks the epoch/pointer tuple inside the write transaction.
+ * Order (mapping §4 + G1 correction BL-14): legacy revision check → payload →
+ * live fingerprint → stored revision/entry identity → validation policy
+ * decision → payload hash → registerExport → write. Every await re-checks the
+ * pane's own revision counter, and the repository guard re-checks the
+ * epoch/pointer tuple inside the write transaction.
  */
 
 import type {
   ArtifactContentEntry,
   ArtifactContentType,
+  ArtifactRecord,
   ArtifactRevision,
   ArtifactSlot,
   ExportRecord,
   InputFingerprint,
 } from '../../engine/artifacts/types';
+import { artifactTypeDescriptor } from '../../engine/artifacts/registry';
+import {
+  decideExport,
+  resolveValidationPlan,
+  type ExportDecision,
+  type ValidationPolicyOptions,
+} from '../../engine/artifacts/validation/policy';
+import type { ValidatorRegistry } from '../../engine/artifacts/validation/registry';
 import type { ArtifactRepositoryImpl } from '../../lib/artifacts';
 import { exportByteHash } from '../../lib/artifacts/hash';
 import {
   ARTIFACT_SCOPE_EPOCH,
+  ARTIFACT_VALIDATION_POLICY,
   artifactRepository,
+  artifactValidatorRegistry,
   getArtifactSlotSnapshot,
   waitForArtifactSlotSnapshot,
   type ArtifactSlotSnapshot,
@@ -34,6 +46,30 @@ export const NO_ARTIFACT_MESSAGE = 'まだ書き出せる成果物がありま�
 export const STALE_INPUT_MESSAGE = '入力が変更されています。再生成してから書き出してください。';
 export const MOVED_ARTIFACT_MESSAGE = '成果物が更新されました。再生成してから書き出してください。';
 export const CONTENT_MISMATCH_MESSAGE = '保存された成果物と書き出す内容が一致しません。再生成してください。';
+export const VALIDATION_BLOCKED_MESSAGE = '検証を通過していないため書き出せません。';
+
+/** Japanese labels for `decideExport` reasons (policy authority, not the badge). */
+export const EXPORT_DECISION_LABEL: Record<string, string> = {
+  'no-validation-record': '検証記録なし',
+  'validation-not-final': '検証中',
+  'validation-invalid': '検証エラー',
+  'validation-blocked': '検証ブロック',
+  'required-incomplete': '必須検証が未合格または未実行',
+  'revision-id-mismatch': 'リビジョン不一致',
+  'content-digest-mismatch': '内容ダイジェスト不一致',
+  'revision-hash-mismatch': 'リビジョンハッシュ不一致',
+  'policy-fingerprint-mismatch': '検証ポリシー変更',
+  'policy-version-mismatch': '検証ポリシー版変更',
+  'validator-set-mismatch': '検証器構成変更',
+  'required-result-missing': '必須検証結果なし',
+  'required-result-mismatch': '必須検証結果不一致',
+  'validation-unavailable': '検証を実行できません',
+};
+
+function decisionMessage(decision: ExportDecision): string {
+  const labels = decision.reasons.map((reason) => EXPORT_DECISION_LABEL[reason] ?? reason);
+  return `${VALIDATION_BLOCKED_MESSAGE}（${labels.join('・')}）`;
+}
 
 export interface ExportGuardBinding {
   slot: ArtifactSlot;
@@ -65,6 +101,43 @@ export interface ExportGuardDeps {
   waitMs?: number;
   /** Extra check against the resolved snapshot (runs after the legacy check). */
   verifySnapshot?: (snapshot: ArtifactSlotSnapshot) => void;
+  /** Validation policy/registry override for tests and non-default runtimes. */
+  policy?: ValidationPolicyOptions;
+  registry?: ValidatorRegistry | Promise<ValidatorRegistry>;
+}
+
+/**
+ * G1 correction (BL-14): the export decision is re-derived from the stored
+ * record, the current revision and a freshly resolved plan. A record that was
+ * effective at capture but is not (policy version/fingerprint, validator set)
+ * or whose REQUIRED results are not all PASS blocks a normal export.
+ */
+export async function exportValidationDecision(
+  snapshot: ArtifactSlotSnapshot,
+  artifact: ArtifactRecord,
+  revision: ArtifactRevision,
+  deps: Pick<ExportGuardDeps, 'repository' | 'policy' | 'registry'> = {},
+): Promise<ExportDecision> {
+  const repository = deps.repository ?? artifactRepository();
+  const policy = deps.policy ?? ARTIFACT_VALIDATION_POLICY;
+  const [record] = await repository.listValidations({
+    artifactId: artifact.artifactId,
+    revisionId: revision.revisionId,
+    limit: 1,
+  });
+  try {
+    const plan = await resolveValidationPlan({
+      descriptor: artifactTypeDescriptor(artifact.artifactType),
+      revision,
+      registry: await (deps.registry ?? artifactValidatorRegistry()),
+      policy,
+      context: snapshot.validationContext,
+    });
+    return decideExport({ record: record ?? snapshot.validation ?? null, revision, plan, policy });
+  } catch (cause) {
+    console.warn('[artifact] validation plan could not be resolved', cause);
+    return { allowed: false, kind: 'none', reasons: ['validation-unavailable'] };
+  }
 }
 
 export function textBytes(text: string): Uint8Array {
@@ -141,6 +214,10 @@ export async function guardExport(
   }
   binding.assertCurrent();
 
+  const decision = await exportValidationDecision(snapshot, artifact, revision, deps);
+  if (!decision.allowed) throw new Error(decisionMessage(decision));
+  binding.assertCurrent();
+
   const prepared = await Promise.all(
     plans.map(async (plan, index) => {
       const entry = plan.entry(revision);
@@ -191,11 +268,13 @@ export async function guardExport(
 }
 
 /**
- * Copy path. The modal copies synchronously, so integrity is checked against
- * the stored payload before returning the text; registration is queued and a
- * failure is reported to the console instead of pretending the copy failed.
+ * Copy path. G1 correction (BL-14): the copy button now waits for the same
+ * stored-identity and validation-policy decision as a download before the text
+ * is returned, so Copy cannot bypass the gate. Registration stays queued; a
+ * registration failure is reported to the console instead of failing a copy
+ * whose bytes were already verified against the stored entry.
  */
-export function guardCopyText(
+export async function guardCopyText(
   binding: ExportGuardBinding,
   options: {
     format: string;
@@ -205,8 +284,10 @@ export function guardCopyText(
     text: string;
     snapshot?: ArtifactSlotSnapshot | null;
     repository?: ArtifactRepositoryImpl;
+    policy?: ValidationPolicyOptions;
+    registry?: ValidatorRegistry | Promise<ValidatorRegistry>;
   },
-): string {
+): Promise<string> {
   binding.assertCurrent();
   const snapshot = options.snapshot ?? getArtifactSlotSnapshot(binding.slot);
   if (!snapshot) throw new Error(NO_ARTIFACT_MESSAGE);
@@ -214,19 +295,27 @@ export function guardCopyText(
   if (entry.encoding !== 'utf8' || entry.payload !== options.text) {
     throw new Error(CONTENT_MISMATCH_MESSAGE);
   }
-  const bytes = textBytes(options.text);
   const repository = options.repository ?? artifactRepository();
+  const artifact = await repository.getArtifact(snapshot.artifact.artifactId);
+  const revision = await repository.getCurrentRevision(snapshot.artifact.artifactId);
+  if (
+    !artifact ||
+    !revision ||
+    revision.revisionId !== snapshot.revision.revisionId ||
+    artifact.currentRevisionId !== revision.revisionId
+  ) {
+    throw new Error(MOVED_ARTIFACT_MESSAGE);
+  }
+  const decision = await exportValidationDecision(snapshot, artifact, revision, {
+    repository,
+    policy: options.policy,
+    registry: options.registry,
+  });
+  if (!decision.allowed) throw new Error(decisionMessage(decision));
+  binding.assertCurrent();
+
+  const bytes = textBytes(options.text);
   void (async () => {
-    const artifact = await repository.getArtifact(snapshot.artifact.artifactId);
-    const revision = await repository.getCurrentRevision(snapshot.artifact.artifactId);
-    if (
-      !artifact ||
-      !revision ||
-      revision.revisionId !== snapshot.revision.revisionId ||
-      artifact.currentRevisionId !== revision.revisionId
-    ) {
-      return;
-    }
     const hash = await exportByteHash(bytes);
     if (hash !== entry.contentHash) return;
     await repository.registerExport({
