@@ -214,3 +214,27 @@ QA classification: **no P0, no blocking P1**. New P3 items `G2-BL-06`
 (verification-only import, no adoption), `G2-BL-08` (deleted dependency target
 renders `missing`). `G2-BL-04` updated (status resolution added). No main merge,
 no production deploy, no Phase 5E.
+
+## 11. Supervisor P1 corrections — FIX-01 / FIX-02 / FIX-03
+
+The Supervisor issued a CONDITIONAL PASS accepting CI `45940751505` and ordered
+three P1 corrections only. Correction commit: `10b7609` on
+`feature/phase5d-artifact-pipeline`; CI `45943084923` — **success**
+(93 Vitest files, generated QA **59 PASS · 0 FAIL · 5 SKIP**, Playwright
+**89 passed**, build 162 modules, deploy skipped as main-only).
+
+| Fix | Change | Evidence |
+| --- | --- | --- |
+| FIX-01 project ZIP | `buildProjectPackage` (`src/lib/artifacts/projectPackage.ts`) reuses `buildArtifactPackage` verbatim and re-inflates each result under `project-artifacts/<type>/<artifactId>/`; the project manifest (`adop0001.project-package.v1`) carries every selected revision (id/ordinal/digest/hash), its dependency edges, requirement ids and per-artifact package manifest hash; `project-artifacts/SHA256SUMS.txt` covers all files + the project manifest; the stored source snapshot is added only with `includeSource: true`. Workspace multi-select export requires ≥2 artifacts, each with a validation record matching its current revision | `tests/artifacts/workspace/project-package.test.ts` 4 tests; `G2-E2E-04` (multi-select + opt-in source, project manifest/sums/nested dirs re-read in Node, import verdict `data-ok="true"` · `プロジェクト · 2 成果物`) |
+| FIX-02 import hardening | Central-directory preflight before any decompression: entry count, declared compressed/uncompressed sizes, compression ratio, raw-path safety and raw/duplicate-name checks; extraction enforces per-entry and total output caps; manifest schema validation is bounded and returns verdicts instead of throwing; nested package manifests are re-validated and their `SHA256SUMS.txt` is now accepted; file selection is refused above 50 MiB before the bytes are read | `tests/artifacts/workspace/package-import.test.ts` 14 tests (declared-size patch, ratio bomb, duplicate raw names, `../`, malformed schema, non-ZIP, size gate); `G2-E2E-01` valid/tampered import unchanged |
+| FIX-03 validation links | Haruhi links a Takane revision only when a stored UTF-8 entry equals the analysed source text (CRLF-normalised); an unrelated current artifact is never auto-linked; the edge means "these tests target exactly this source revision" and does not assert test execution success (`G2-BL-09`); Kotoha DOCX keeps the same-run Markdown revision edge | `tests/artifacts/wiring/dependency-links.test.ts` 4 tests; `G2-E2E-03` now proves the negative (unrelated Takane revision → no edge) and the retained Kotoha `derived-from` edge resolves `current` in the workspace |
+
+Focused verification on `10b7609` (existing PASS evidence reused; only the
+affected paths re-run): `npx tsc --noEmit` pass; `npx vitest run tests/artifacts`
+**26 files / 261 tests pass**; `npm run build` pass; `g2-workspace.spec.ts`
+4/4; `g1-closure-artifact-export.spec.ts` 13/13.
+
+New backlog entries: `G2-BL-09` (edge ≠ execution success), `G2-BL-10` (project
+export registers no per-artifact export row), `G2-BL-11` (project export uses
+current validated revisions only). No main merge, no production deploy, no
+Phase 5E.

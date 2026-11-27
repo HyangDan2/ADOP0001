@@ -15,3 +15,11 @@ are recorded in `docs/G1_BACKLOG.md` (BL-13, BL-15) and
 | G2-BL-06 | P3 | Package import records `contentDigest`/`revisionHash` but cannot recompute them: the manifest carries the sanitized export paths, not the stored entry file names, so the content-set and revision-integrity inputs cannot be rebuilt from the ZIP alone. Import verifies manifest ↔ `SHA256SUMS.txt` ↔ bytes instead. Revisit only if the package format starts storing original entry names | Q02/Q06 | Accepted; conservative by design |
 | G2-BL-07 | P3 | Import is verification-only: a verified package is never adopted, restored or written to the repository. Automatic adoption would cross the no-auto-execution / no-unconsented-write constraints; an explicit, guarded adoption flow is out of G2 scope | Q04/Q06 | Accepted; matches the QA order's safety requirement |
 | G2-BL-08 | P3 | A dependency whose target artifact was deleted after capture resolves to `missing` in traceability; the edge is kept (history is not rewritten) and the workspace marks it. No repair flow exists | Q05 | Accepted; history-first semantics |
+
+## P1 correction round (FIX-01~03)
+
+| ID | Severity | Item | Owner | Status |
+| --- | --- | --- | --- | --- |
+| G2-BL-09 | P3 | The Haruhi `validates` edge proves the stored Takane revision carries the same source text; it does not prove the generated tests were executed successfully. Execution evidence is not stored and is not implied by the edge | Q01/Q03 | Accepted; relation and outcome are separate facts |
+| G2-BL-10 | P3 | The project export writes a verified ZIP download but registers no per-artifact export row. Traceability `REQ-G2-03/04` still lifts only on a per-artifact package export; contained single packages are re-verified on import | Q03/Q04 | Accepted; avoids claiming per-artifact evidence the project archive does not record |
+| G2-BL-11 | P3 | Project export uses each selected artifact's current revision with a matching validation record; selecting an older revision for the project archive is not offered | Q04 | Accepted; keeps the written set provably validated |
