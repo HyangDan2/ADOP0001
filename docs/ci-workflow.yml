@@ -1,23 +1,26 @@
 # Reference copy of the enforced CI/CD gate.
 #
 # Phase 5A (FIX-001) moved this file's definition into
-# .github/workflows/deploy.yml. The workflow now runs on every pull request and
-# on every push to main; Pages deploy is limited to a push to main after the
-# gate is green. This copy is kept for review and for the QA tests that read the
-# full gate from docs/.
+# .github/workflows/deploy.yml. This copy is kept identical to the live gate
+# for review and for the QA tests that read the full gate from docs/.
 #
 # Gate order:
 #   1 dependency installation      2 TypeScript typecheck
 #   3 Vitest unit/integration      4 generated-code compile, run and Jest execution
-#   5 Vite production build        6 Playwright E2E
-#   7 result artifacts upload      8 GitHub Pages build + deploy (main only)
+#   5 generated-code QA            6 project-language QA
+#   7 Vite production build        8 Playwright E2E (chromium project)
+#   9 result artifacts upload     10 verified dist artifact (manual release only)
+#  11 GitHub Pages deploy (manual dispatch from main with deploy=true)
+#
+# A push to main never publishes: merge approval and release approval are
+# separate events. The deploy job is the only job granted pages/id-token write.
 #
 # A missing optional toolchain is reported as SKIP with its reason by the QA
 # runner; a check that could run and failed fails the job. Toolchains named in
 # QA_REQUIRED_TOOLCHAINS are installed below and fail the gate when absent;
-# an all-skipped generated project is SKIP/artifact, never PASS. There is no
+# QA_LANGUAGE_REQUIRED does the same for project-language fixtures. An
+# all-skipped generated project is SKIP/artifact, never PASS. There is no
 # continue-on-error anywhere, and `deploy` needs `build`.
-
 name: ADOP0001 quality gate
 
 on:
@@ -25,25 +28,33 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: Publish the verified dist to GitHub Pages
+        type: boolean
+        default: false
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 env:
+  # The E2E specs keep their fixtures next to the run instead of the sandbox path.
   E2E_DOWNLOADS: ${{ github.workspace }}/qa-artifacts
   JUNIT_VERSION: 1.11.3
   QA_JUNIT_JAR: ${{ github.workspace }}/.qa-tools/junit-platform-console-standalone.jar
   QA_REQUIRED_TOOLCHAINS: python3,pytest,gcc,g++,go,javac,junit,jest
+  # C# (Roslyn) is not installed in CI and stays an explicit SKIP there.
+  QA_LANGUAGE_REQUIRED: c,cpp,java,typescript,javascript,python,go
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -52,15 +63,19 @@ jobs:
           node-version: 22
           cache: npm
 
+      # 1. Dependency installation
       - name: Install dependencies
         run: npm ci
 
+      # 2. TypeScript typecheck
       - name: TypeScript typecheck
         run: npx tsc --noEmit
 
+      # 3. Vitest unit/integration tests
       - name: Vitest
         run: npm test
 
+      # 4. Generated-code QA toolchains (QA-001: QA-B syntax + QA-C execution)
       - name: Install generated-code QA toolchains
         run: |
           sudo apt-get update
@@ -84,17 +99,27 @@ jobs:
           go version
           echo "Toolchains in QA_REQUIRED_TOOLCHAINS must be present; the QA runner fails the gate otherwise."
 
+      # 5. Generated-code QA: typecheck, Vitest, Jest execution, Pytest, JUnit,
+      #    Go, and C/C++/MCU compile. A missing toolchain is SKIP, never PASS.
       - name: Generated-code QA
         run: npm run qa:generated
 
+      # 6. Project-language QA: fixed fixtures compiled by the installed tools.
+      #    This proves the fixtures, not the generated artifacts from step 5.
+      - name: Project language QA
+        run: npm run qa:languages
+
+      # 7. Production build
       - name: Build
         run: npm run build
 
+      # 8. Playwright E2E against the production build
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Playwright E2E
-        run: npm run test:e2e
+        run: npm run test:e2e -- --project=chromium
 
+      # 9. Result artifacts (kept even when the gate fails)
       - name: Upload QA evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -106,22 +131,34 @@ jobs:
             qa-artifacts
           if-no-files-found: ignore
 
-      - name: Configure Pages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/configure-pages@v5
-      - name: Upload Pages artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@v3
+      # 10. Keep the verified dist for an explicitly approved deploy.
+      - name: Upload verified dist
+        if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
         with:
+          name: rc-dist
           path: dist
+          retention-days: 3
 
+  # 11. GitHub Pages deploy: manual dispatch from main, release approval only.
   deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rc-dist
+          path: dist
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
       - id: deployment
         uses: actions/deploy-pages@v4

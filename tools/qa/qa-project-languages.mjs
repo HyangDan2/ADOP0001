@@ -152,7 +152,19 @@ results.push(csharpResult());
 }
 
 const report = { generatedBy: 'tools/qa/qa-project-languages.mjs', results };
-writeFileSync(join(outRoot, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
+const required = new Set(
+  (process.env.QA_LANGUAGE_REQUIRED ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean),
+);
+for (const entry of results) {
+  if (required.has(entry.language) && entry.status === 'SKIP') {
+    entry.status = 'FAIL';
+    entry.detail = `必須ツールチェーンがありません: ${entry.detail}`;
+  }
+}
+writeFileSync(join(outRoot, 'report.json'), `${JSON.stringify({ ...report, required: [...required] }, null, 2)}\n`);
 for (const entry of results) console.log(`${entry.status.padEnd(4)} ${entry.language.padEnd(10)} ${entry.tool.padEnd(16)} ${entry.detail}`);
 const failed = results.filter((entry) => entry.status === 'FAIL');
 console.log(`\nPASS ${results.filter((entry) => entry.status === 'PASS').length} / SKIP ${results.filter((entry) => entry.status === 'SKIP').length} / FAIL ${failed.length}`);
