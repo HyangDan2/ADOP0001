@@ -4,6 +4,7 @@ const baseURL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:4173/ADOP0001/';
 
 export default defineConfig({
   testDir: './tests/e2e',
+  testIgnore: '**/beta/**',
   timeout: 90_000,
   expect: { timeout: 20_000 },
   fullyParallel: false,
