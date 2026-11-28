@@ -37,16 +37,29 @@ import {
 } from './ExportGuard';
 
 export const DELETED_ARTIFACT_MESSAGE = '成果物は削除されています。';
+export const REVISION_CHANGED_MESSAGE =
+  '選択したリビジョンが変更されています。再選択してください。';
 
-export interface StoredExportInput {
+export interface StoredExportAuthorityInput {
   artifactId: string;
-  plans: readonly ExportFilePlan[];
-  write: (bytes: Uint8Array, fileName: string) => void | Promise<void>;
+  /** The revision the caller selected; a pointer advance after selection refuses. */
+  expectedRevisionId?: string;
   /** Presence requests the labelled debug path; the reason must be non-empty. */
   debug?: { reason?: string };
   repository?: ReturnType<typeof artifactRepository>;
   registry?: Parameters<typeof validateArtifactRevision>[0]['registry'];
   policy?: ValidateRevisionOptions['policy'];
+}
+
+export interface StoredExportAuthority {
+  artifact: ArtifactRecord;
+  revision: ArtifactRevision;
+  decision: ExportDecision;
+}
+
+export interface StoredExportInput extends StoredExportAuthorityInput {
+  plans: readonly ExportFilePlan[];
+  write: (bytes: Uint8Array, fileName: string) => void | Promise<void>;
 }
 
 export interface StoredExportResult {
@@ -66,13 +79,47 @@ function asBytes(payload: Uint8Array | string): Uint8Array {
   return typeof payload === 'string' ? new TextEncoder().encode(payload) : payload;
 }
 
-export async function guardStoredExport(input: StoredExportInput): Promise<StoredExportResult> {
-  if (!input.plans.length) throw new Error(NO_ARTIFACT_MESSAGE);
+/**
+ * The shared stored-export authority: writability, the current pointer, the
+ * selected revision and the validation policy. A project export calls this
+ * for every selected artifact before it is written.
+ */
+async function resolveStoredExportAuthority(
+  input: StoredExportAuthorityInput,
+): Promise<StoredExportAuthority> {
   const repository = input.repository ?? artifactRepository();
   const artifact = await repository.getArtifact(input.artifactId);
   assertWritable(artifact);
   const revision = await repository.getCurrentRevision(artifact.artifactId);
   if (!revision) throw new Error(NO_ARTIFACT_MESSAGE);
+  if (input.expectedRevisionId && revision.revisionId !== input.expectedRevisionId) {
+    throw new Error(REVISION_CHANGED_MESSAGE);
+  }
+
+  const decision = await validationDecisionForRevision({
+    artifact,
+    revision,
+    context: validationContextForRevision(revision),
+    repository,
+    ...(input.policy ? { policy: input.policy } : {}),
+    ...(input.registry ? { registry: input.registry } : {}),
+    ...(input.debug ? { debug: input.debug } : {}),
+  });
+  if (!decision.allowed) throw new Error(decisionMessage(decision));
+  return { artifact, revision, decision };
+}
+
+/** Read-only eligibility check with the same policy and pointer rules. */
+export async function assertStoredExportEligible(
+  input: StoredExportAuthorityInput,
+): Promise<StoredExportAuthority> {
+  return resolveStoredExportAuthority(input);
+}
+
+export async function guardStoredExport(input: StoredExportInput): Promise<StoredExportResult> {
+  if (!input.plans.length) throw new Error(NO_ARTIFACT_MESSAGE);
+  const repository = input.repository ?? artifactRepository();
+  const { artifact, revision, decision } = await resolveStoredExportAuthority(input);
 
   for (const plan of input.plans) {
     assertRegisteredExportFormat({
@@ -85,16 +132,6 @@ export async function guardStoredExport(input: StoredExportInput): Promise<Store
   const payloads: Uint8Array[] = [];
   for (const plan of input.plans) payloads.push(asBytes(await plan.payload()));
 
-  const decision = await validationDecisionForRevision({
-    artifact,
-    revision,
-    context: validationContextForRevision(revision),
-    repository,
-    ...(input.policy ? { policy: input.policy } : {}),
-    ...(input.registry ? { registry: input.registry } : {}),
-    ...(input.debug ? { debug: input.debug } : {}),
-  });
-  if (!decision.allowed) throw new Error(decisionMessage(decision));
   const kind: ExportRecord['kind'] = decision.kind === 'debug' ? 'debug' : 'normal';
 
   const prepared = await Promise.all(

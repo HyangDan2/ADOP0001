@@ -479,10 +479,13 @@ test('G2-E2E-04: project export bundles selected revisions and verifies on impor
   await boxes[1].check();
   await expect(run).toBeEnabled();
 
+  const exportsBefore = rows<ExportRow>(await dump(page), 'exports').length;
   const [download] = await Promise.all([
     page.waitForEvent('download'),
     run.click(),
   ]);
+  // The project guard is read-only: no export row is registered for the archive.
+  expect(rows<ExportRow>(await dump(page), 'exports')).toHaveLength(exportsBefore);
   await expect(page.getByTestId('artifact-workspace-notice')).toHaveAttribute('data-kind', 'ok');
   const file = path.join(OUT, 'g2-project.package.zip');
   await download.saveAs(file);

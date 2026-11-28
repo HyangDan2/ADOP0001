@@ -15,8 +15,10 @@ import {
 } from '../../../src/lib/artifacts/capture';
 import { buildArtifactPackage, packageFileName } from '../../../src/lib/artifacts/package';
 import {
+  assertStoredExportEligible,
   DELETED_ARTIFACT_MESSAGE,
   guardStoredExport,
+  REVISION_CHANGED_MESSAGE,
   mutationGuardFor,
   restoreRevisionWithValidation,
   revalidateCurrentRevision,
@@ -262,6 +264,78 @@ describe('workspace guard', () => {
     expect(writes).toHaveLength(0);
     const exports = await repo.listExports({ artifactId });
     expect(exports).toHaveLength(0);
+  });
+
+  it('applies the stored export authority to a project selection', async () => {
+    const { repo, capture } = await fixture();
+    const first = await capture();
+    const artifactId = first.artifact!.artifactId;
+    const revisionId = first.revision!.revisionId;
+
+    const allowed = await assertStoredExportEligible({
+      artifactId,
+      expectedRevisionId: revisionId,
+      repository: repo,
+    });
+    expect(allowed.decision.kind).toBe('normal');
+    expect(allowed.revision.revisionId).toBe(revisionId);
+
+    const asRecord = (status: 'invalid' | 'blocked', suffix: string, at: string) => ({
+      ...first.validation!,
+      recordId: `val_${suffix}`,
+      status,
+      validatedAt: at,
+    });
+    await repo.commitValidation({
+      artifactId,
+      revisionId,
+      record: asRecord('blocked', 'blocked', '2999-01-01T00:00:00.000Z'),
+      guard: mutationGuardFor((await repo.getArtifact(artifactId))!),
+    });
+    await expect(
+      assertStoredExportEligible({ artifactId, repository: repo }),
+    ).rejects.toThrow(/検証ブロック/);
+
+    await repo.commitValidation({
+      artifactId,
+      revisionId,
+      record: asRecord('invalid', 'invalid', '2999-01-02T00:00:00.000Z'),
+      guard: mutationGuardFor((await repo.getArtifact(artifactId))!),
+    });
+    await expect(
+      assertStoredExportEligible({ artifactId, repository: repo }),
+    ).rejects.toThrow(/検証エラー/);
+  });
+
+  it('refuses a project selection whose revision advanced or lost its record', async () => {
+    const { repo, capture } = await fixture();
+    const first = await capture();
+    const artifactId = first.artifact!.artifactId;
+    const selectedRevisionId = first.revision!.revisionId;
+    await capture({
+      context: context('b'.repeat(64)),
+      contents: [{ ...CONTENTS[0], payload: '# Spec v2\n' }],
+      inputRevision: 2,
+    });
+
+    await expect(
+      assertStoredExportEligible({
+        artifactId,
+        expectedRevisionId: selectedRevisionId,
+        repository: repo,
+      }),
+    ).rejects.toThrow(REVISION_CHANGED_MESSAGE);
+
+    // An untracked append leaves the new current revision without a record.
+    const before = (await repo.getArtifact(artifactId))!;
+    await repo.appendRevision({
+      artifactId,
+      guard: guard(before.currentRevisionId),
+      draft: draft({ text: '# Untracked\n' }),
+    });
+    await expect(
+      assertStoredExportEligible({ artifactId, repository: repo }),
+    ).rejects.toThrow(/検証記録なし/);
   });
 
   it('restores a revision by appending and validating a new one', async () => {

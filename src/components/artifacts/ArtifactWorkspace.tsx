@@ -40,6 +40,7 @@ import {
 import { artifactRepository } from '../../lib/artifacts/capture';
 import { downloadBlob } from '../../lib/util';
 import {
+  assertStoredExportEligible,
   guardStoredExport,
   mutationGuardFor,
   restoreRevisionWithValidation,
@@ -321,6 +322,15 @@ export function ArtifactWorkspace(props: { open: boolean; onClose: () => void })
       includeSource,
       baseName: 'project',
     });
+    // The project archive is only written after every selected artifact passes
+    // the stored-revision guard: same policy as a single export, and the
+    // selected revision must still be the current one.
+    for (const item of selected) {
+      await assertStoredExportEligible({
+        artifactId: item.artifact.artifactId,
+        expectedRevisionId: item.revision.revisionId,
+      });
+    }
     const fileName = projectPackageFileName(built.fileNameStem);
     downloadBlob(fileName, built.zipBytes, 'application/zip');
     return `プロジェクトパッケージ ${fileName} を書き出しました（${selected.length} 成果物 / SHA-256 ${built.zipHash.slice(0, 12)}… / manifest ${built.manifestHash.slice(0, 12)}…）`;

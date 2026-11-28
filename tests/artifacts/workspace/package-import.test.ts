@@ -124,7 +124,11 @@ function renameEntry(bytes: Uint8Array, from: string, to: string): Uint8Array {
   }
 }
 
-async function rebuiltPackage(manifest: PackageManifest, files: Record<string, string>) {
+async function rebuiltPackage(
+  manifest: PackageManifest,
+  files: Record<string, string>,
+  compression: 'STORE' | 'DEFLATE' = 'STORE',
+) {
   const manifestText = canonicalJson(manifest);
   const manifestHash = await sha256Hex(new TextEncoder().encode(manifestText));
   const sums = [
@@ -136,7 +140,7 @@ async function rebuiltPackage(manifest: PackageManifest, files: Record<string, s
   zip.file(PACKAGE_MANIFEST_FILE, manifestText);
   zip.file(PACKAGE_SUMS_FILE, sumsText);
   for (const [path, text] of Object.entries(files)) zip.file(path, text);
-  return zip.generateAsync({ type: 'uint8array' });
+  return zip.generateAsync({ type: 'uint8array', compression });
 }
 
 describe('package import verification', () => {
@@ -333,4 +337,102 @@ describe('package import verification', () => {
     expect(isSelectablePackageSize(PACKAGE_LIMITS.maxTotalBytes)).toBe(true);
     expect(isSelectablePackageSize(PACKAGE_LIMITS.maxTotalBytes + 1)).toBe(false);
   });
+
+  it(
+    'stops decompression when the produced entry passes the cap',
+    async () => {
+      const { manifest } = await packageBytes();
+      const big = 'a'.repeat(PACKAGE_LIMITS.maxEntryBytes + 1024 * 1024);
+      const bigBytes = new TextEncoder().encode(big);
+      const bigPath = 'oversized.bin';
+      const bigManifest = {
+        ...manifest,
+        files: [
+          ...manifest.files,
+          {
+            contentId: 'content_oversized',
+            path: bigPath,
+            sha256: await sha256Hex(bigBytes),
+            byteLength: bigBytes.byteLength,
+          },
+        ],
+      } as PackageManifest;
+      const files: Record<string, string> = {};
+      for (const file of manifest.files) files[file.path] = '# Spec\n';
+      files[bigPath] = big;
+      const honest = await rebuiltPackage(bigManifest, files);
+      // The header lies about the size: the manifest and preflight see 1 KiB,
+      // so only the streaming cap can stop the 40 MiB+ inflation.
+      const lied = patchCentralDirectory(honest, { name: bigPath, uncompressedSize: 1024 });
+      const verdict = await inspectArtifactPackage(lied);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.manifest).not.toBeNull();
+      expect(verdict.errors.join('\n')).toMatch(/exceeds \d+ bytes while decompressing/);
+    },
+    30_000,
+  );
+
+  it(
+    'stops decompression when the produced total passes the cap',
+    async () => {
+      const { manifest } = await packageBytes();
+      const size = 26 * 1024 * 1024;
+      const stored = 'r'.repeat(size);
+      const inflated = 's'.repeat(size);
+      const paths = ['bulk-a.bin', 'bulk-b.bin'];
+      const payloads = [stored, inflated];
+      const extra = await Promise.all(
+        paths.map(async (path, index) => ({
+          contentId: `content_bulk_${index}`,
+          path,
+          sha256: await sha256Hex(new TextEncoder().encode(payloads[index])),
+          byteLength: new TextEncoder().encode(payloads[index]).byteLength,
+        })),
+      );
+      const bulkManifest = {
+        ...manifest,
+        files: [...manifest.files, ...extra],
+      } as PackageManifest;
+      const manifestText = canonicalJson(bulkManifest);
+      const manifestHash = await sha256Hex(new TextEncoder().encode(manifestText));
+      const contentFiles: Record<string, string> = {};
+      for (const file of manifest.files) contentFiles[file.path] = '# Spec\n';
+      paths.forEach((path, index) => {
+        contentFiles[path] = payloads[index];
+      });
+      const sumsText = `${
+        (
+          await Promise.all(
+            Object.entries(contentFiles).map(async ([path, text]) => ({
+              path,
+              sha256: await sha256Hex(new TextEncoder().encode(text)),
+            })),
+          )
+        )
+          .map((entry) => `${entry.sha256}  ${entry.path}`)
+          .join('\n')
+      }\n${manifestHash}  ${PACKAGE_MANIFEST_FILE}\n`;
+      const zip = new JSZip();
+      zip.file(PACKAGE_MANIFEST_FILE, manifestText);
+      zip.file(PACKAGE_SUMS_FILE, sumsText);
+      for (const file of manifest.files) zip.file(file.path, contentFiles[file.path]);
+      // The first bulk entry is stored honestly, so its size probe passes; the
+      // second stays compressed but declares 1 KiB, letting the produced-byte
+      // cap fire mid-entry before the archive finishes decompressing.
+      zip.file(paths[0], stored, { compression: 'STORE' });
+      zip.file(paths[1], inflated, { compression: 'DEFLATE' });
+      const honest = await zip.generateAsync({ type: 'uint8array' });
+      const lied = patchCentralDirectory(honest, {
+        name: paths[1],
+        uncompressedSize: 1024,
+      });
+      const verdict = await inspectArtifactPackage(lied);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.manifest).not.toBeNull();
+      expect(verdict.errors.join('\n')).toMatch(
+        /Unpacked bytes exceed \d+ while decompressing/,
+      );
+    },
+    30_000,
+  );
 });

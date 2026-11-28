@@ -45,6 +45,77 @@ export function isSelectablePackageSize(byteLength: number): boolean {
   return byteLength > 0 && byteLength <= PACKAGE_LIMITS.maxTotalBytes;
 }
 
+interface InternalStreamHelper {
+  on(event: 'data', callback: (chunk: Uint8Array) => void): InternalStreamHelper;
+  on(event: 'end', callback: () => void): InternalStreamHelper;
+  on(event: 'error', callback: (error: unknown) => void): InternalStreamHelper;
+  resume(): InternalStreamHelper;
+  pause(): InternalStreamHelper;
+}
+
+interface InternalStreamEntry {
+  internalStream(type: 'uint8array'): InternalStreamHelper;
+}
+
+interface ExtractionBudget {
+  total: number;
+}
+
+/**
+ * Inflate one entry and refuse the moment the produced bytes pass the cap.
+ * The stream is paused on refusal, so the check happens during decompression,
+ * not after the whole entry has been materialised.
+ */
+async function inflateCapped(
+  entry: JSZip.JSZipObject,
+  maxBytes: number,
+  budget: ExtractionBudget,
+  label: string,
+): Promise<Uint8Array> {
+  const stream = (entry as unknown as InternalStreamEntry).internalStream('uint8array');
+  return await new Promise<Uint8Array>((resolve, reject) => {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    let settled = false;
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      stream.pause();
+      reject(error);
+    };
+    stream
+      .on('data', (chunk) => {
+        if (settled) return;
+        size += chunk.byteLength;
+        if (size > maxBytes) {
+          fail(new Error(`${label} exceeds ${maxBytes} bytes while decompressing`));
+          return;
+        }
+        if (budget.total + size > PACKAGE_LIMITS.maxTotalBytes) {
+          fail(new Error(`Unpacked bytes exceed ${PACKAGE_LIMITS.maxTotalBytes} while decompressing`));
+          return;
+        }
+        chunks.push(chunk);
+      })
+      .on('error', (cause) => {
+        fail(cause instanceof Error ? cause : new Error(`${label} could not be decompressed`));
+      })
+      .on('end', () => {
+        if (settled) return;
+        settled = true;
+        budget.total += size;
+        const bytes = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        resolve(bytes);
+      })
+      .resume();
+  });
+}
+
 export interface PackageSumsEntry {
   path: string;
   sha256: string;
@@ -459,9 +530,17 @@ export async function inspectArtifactPackage(bytes: Uint8Array): Promise<Package
     return result;
   }
 
-  const manifestBytes = await manifestEntry.async('uint8array');
-  if (manifestBytes.byteLength > PACKAGE_LIMITS.maxManifestBytes) {
-    errors.push(`${manifestPath} exceeds ${PACKAGE_LIMITS.maxManifestBytes} bytes`);
+  const budget: ExtractionBudget = { total: 0 };
+  let manifestBytes: Uint8Array;
+  try {
+    manifestBytes = await inflateCapped(
+      manifestEntry,
+      PACKAGE_LIMITS.maxManifestBytes,
+      budget,
+      manifestPath,
+    );
+  } catch (cause) {
+    errors.push(cause instanceof Error ? cause.message : `${manifestPath} could not be decompressed`);
     return result;
   }
   const manifestText = new TextDecoder('utf-8', { fatal: true }).decode(manifestBytes);
@@ -490,9 +569,11 @@ export async function inspectArtifactPackage(bytes: Uint8Array): Promise<Package
     validateArtifactManifest(manifest as PackageManifest, errors);
   }
 
-  const sumsBytes = await sumsEntry.async('uint8array');
-  if (sumsBytes.byteLength > PACKAGE_LIMITS.maxSumsBytes) {
-    errors.push(`${sumsPath} exceeds ${PACKAGE_LIMITS.maxSumsBytes} bytes`);
+  let sumsBytes: Uint8Array;
+  try {
+    sumsBytes = await inflateCapped(sumsEntry, PACKAGE_LIMITS.maxSumsBytes, budget, sumsPath);
+  } catch (cause) {
+    errors.push(cause instanceof Error ? cause.message : `${sumsPath} could not be decompressed`);
     return result;
   }
   const sums = parseSums(new TextDecoder('utf-8', { fatal: true }).decode(sumsBytes), errors);
@@ -529,20 +610,17 @@ export async function inspectArtifactPackage(bytes: Uint8Array): Promise<Package
     if (!expectedSums.has(name)) errors.push(`The archive holds an unlisted file: ${JSON.stringify(name)}`);
   }
 
-  let total = 0;
   for (const [path, file] of manifestFiles) {
     const entry = zip.file(path);
     if (!entry) {
       errors.push(`The archive is missing ${path}`);
       continue;
     }
-    const entryBytes = await entry.async('uint8array');
-    total += entryBytes.byteLength;
-    if (entryBytes.byteLength > PACKAGE_LIMITS.maxEntryBytes) {
-      errors.push(`${path} exceeds ${PACKAGE_LIMITS.maxEntryBytes} bytes`);
-    }
-    if (total > PACKAGE_LIMITS.maxTotalBytes) {
-      errors.push(`Unpacked bytes exceed ${PACKAGE_LIMITS.maxTotalBytes}`);
+    let entryBytes: Uint8Array;
+    try {
+      entryBytes = await inflateCapped(entry, PACKAGE_LIMITS.maxEntryBytes, budget, path);
+    } catch (cause) {
+      errors.push(cause instanceof Error ? cause.message : `${path} could not be decompressed`);
       break;
     }
     const digest = await sha256Hex(entryBytes);
@@ -579,7 +657,18 @@ async function verifyNestedPackages(
       errors.push(`The project archive is missing ${artifact.packageManifestPath}`);
       continue;
     }
-    const bytes = await entry.async('uint8array');
+    let bytes: Uint8Array;
+    try {
+      bytes = await inflateCapped(
+        entry,
+        PACKAGE_LIMITS.maxManifestBytes,
+        { total: 0 },
+        artifact.packageManifestPath,
+      );
+    } catch (cause) {
+      errors.push(cause instanceof Error ? cause.message : `${artifact.packageManifestPath} could not be decompressed`);
+      continue;
+    }
     const digest = await sha256Hex(bytes);
     if (digest !== artifact.packageManifestHash) {
       errors.push(`${artifact.packageManifestPath} hash does not match the project manifest`);
