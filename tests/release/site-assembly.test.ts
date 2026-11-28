@@ -230,12 +230,12 @@ describe('site assembly preserves the non-target channel (WO-OPS-01D)', () => {
 describe('site discovery and live verification', () => {
   it('keeps discovered paths on the configured origin and base path', () => {
     const paths = discoverPaths(
-      '<a href="../outside.html">x</a><img src="https://evil.example/x.png"><script src="/ADOP0001/assets/a.js"></script><link href="./b.css">',
+      '<a href="../outside.html">x</a><img src="https://evil.example/x.png"><script src="/ADOP0001/assets/a.js"></script><link href="./b.css"><meta http-equiv="Content-Security-Policy" content="default-src none; img-src * data:"><meta property="og:image" content="/ADOP0001/og.png">',
       'https://hyangdan2.github.io/ADOP0001/index.html',
       'https://hyangdan2.github.io/ADOP0001/',
       'html',
     );
-    expect(paths).toEqual(['/ADOP0001/assets/a.js', '/ADOP0001/b.css']);
+    expect(paths).toEqual(['/ADOP0001/assets/a.js', '/ADOP0001/b.css', '/ADOP0001/og.png']);
   });
 
   it('captures a served site and verifies the deployed bytes', async () => {

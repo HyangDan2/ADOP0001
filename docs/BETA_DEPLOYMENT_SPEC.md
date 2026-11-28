@@ -168,6 +168,12 @@ Removal never touches production files or browser data.
 
 ## 9. Mandatory QA status (WO-OPS-01F)
 
+Non-deploy dry run against the real site (no upload): captured
+`https://hyangdan2.github.io/ADOP0001/` (11 production files), assembled a beta
+overlay from the beta build (11 beta files), and compared hashes — production
+diff `[]`, beta 0 → 11. Manifest recorded `sourceSha 2533b9e`, approval
+`DRY-RUN-NO-DEPLOY`, artifact SHA `bae794ec…`.
+
 Verified without deploying:
 
 1. Production and beta URLs — production live; beta local preview under the real

@@ -241,7 +241,14 @@ export function discoverPaths(text, fromUrl, baseUrl, kind) {
     refs.add(url.pathname);
   };
   if (kind === 'html') {
-    for (const match of text.matchAll(/(?:src|href|content)\s*=\s*["']([^"']+)["']/gi)) push(match[1]);
+    for (const match of text.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/gi)) push(match[1]);
+    // Only URL-bearing meta tags; `content` on any meta also carries CSP text.
+    for (const tag of text.matchAll(/<meta\b[^>]*>/gi)) {
+      const key = tag[0].match(/(?:property|name)\s*=\s*["']([^"']+)["']/i)?.[1]?.toLowerCase();
+      if (key !== 'og:image' && key !== 'twitter:image') continue;
+      const content = tag[0].match(/content\s*=\s*["']([^"']+)["']/i)?.[1];
+      if (content) push(content);
+    }
   } else if (kind === 'css') {
     for (const match of text.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/gi)) push(match[1]);
   } else if (kind === 'json') {
