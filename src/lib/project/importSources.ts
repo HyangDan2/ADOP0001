@@ -35,7 +35,7 @@ export function isSupportedProjectPath(path: string): boolean {
 
 /** Rejects traversal, absolute and NUL-bearing paths before anything is read. */
 export function safeProjectPath(path: string): string {
-  if (!path || path.includes('\0')) throw new Error('Unsafe project path');
+  if (!path || /[\u0000-\u001f\u007f\u2028\u2029]/.test(path)) throw new Error('Unsafe project path');
   if (/^[A-Za-z]:/.test(path) || path.startsWith('/') || path.startsWith('\\')) {
     throw new Error(`Unsafe project path: ${path}`);
   }

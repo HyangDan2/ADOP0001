@@ -247,10 +247,32 @@ export function braceColumn(line: string): number {
 
 export function collectCalls(bodyText: string, lang: Lang): string[] {
   const calls = new Set<string>();
-  const re = /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*\(/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(bodyText))) {
-    const name = match[1];
+  const length = bodyText.length;
+  const isStart = (code: number) =>
+    (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95 || code === 36;
+  const isWord = (code: number) => isStart(code) || (code >= 48 && code <= 57);
+  const isSpace = (code: number) => code === 32 || code === 9 || code === 10 || code === 13 || code === 12 || code === 11;
+
+  // A hand-written scanner: the regex form backtracked over every position of a
+  // long string literal, which made one 200k-character line take ~70 seconds.
+  for (let i = 0; i < length; i += 1) {
+    if (!isStart(bodyText.charCodeAt(i))) continue;
+    let end = i + 1;
+    while (end < length && isWord(bodyText.charCodeAt(end))) end += 1;
+    let name = bodyText.slice(i, end);
+    let after = end;
+    if (bodyText.charCodeAt(after) === 46 && isStart(bodyText.charCodeAt(after + 1))) {
+      let tailEnd = after + 2;
+      while (tailEnd < length && isWord(bodyText.charCodeAt(tailEnd))) tailEnd += 1;
+      if (bodyText.charCodeAt(tailEnd) !== 46) {
+        name = `${name}.${bodyText.slice(after + 1, tailEnd)}`;
+        after = tailEnd;
+      }
+    }
+    let paren = after;
+    while (paren < length && isSpace(bodyText.charCodeAt(paren))) paren += 1;
+    i = after - 1;
+    if (bodyText.charCodeAt(paren) !== 40) continue;
     const head = name.split('.')[0];
     if (KEYWORDS.has(name) || KEYWORDS.has(head)) continue;
     if (lang === 'python' && PY_BUILTINS.has(name)) continue;

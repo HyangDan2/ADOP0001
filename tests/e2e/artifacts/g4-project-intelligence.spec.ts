@@ -82,3 +82,24 @@ test('imports a project ZIP, explores symbols and dependencies, and exports the 
   await expect(page.getByTestId('project-notice')).toContainText('再解析 1');
   await expect(page.getByTestId('project-notice')).toContainText('再利用 2');
 });
+
+test('keeps the project panel usable on a 375px viewport and closes with Escape', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 740 });
+  await page.goto('/');
+  await page.getByLabel('メニューを開く').click();
+  await page.getByTestId('project-intelligence-open').click();
+
+  await page.getByTestId('project-import-zip').setInputFiles({
+    name: 'project.zip',
+    mimeType: 'application/zip',
+    buffer: await projectZip(),
+  });
+  await expect(page.getByTestId('project-summary')).toContainText('ファイル 3');
+  await expect(page.getByTestId('project-panel')).toBeInViewport();
+
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(overflow, 'the document must not scroll horizontally on a phone viewport').toBeLessThanOrEqual(2);
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('project-panel')).toHaveCount(0);
+});

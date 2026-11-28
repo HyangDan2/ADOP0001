@@ -29,6 +29,12 @@ export interface ProjectSnapshot {
   selection: ProjectContextSelection;
 }
 
+/** A fence longer than any backtick run in the excerpt, so source cannot close it. */
+function fenceFor(text: string): string {
+  const longest = [...text.matchAll(/`+/g)].reduce((max, match) => Math.max(max, match[0].length), 0);
+  return '`'.repeat(Math.max(3, longest + 1));
+}
+
 export function buildProjectSnapshot(index: ProjectIndex, selection: ProjectContextSelection): ProjectSnapshot {
   const lines: string[] = [
     `# ${PROJECT_SNAPSHOT_VERSION}`,
@@ -38,11 +44,12 @@ export function buildProjectSnapshot(index: ProjectIndex, selection: ProjectCont
     '',
   ];
   for (const file of selection.files) {
-    lines.push(`## FILE: ${file.path} (${file.language}) sha256=${file.sha256.slice(0, 12)}`);
+    lines.push('## FILE: ' + file.path + ' (' + file.language + ') sha256=' + file.sha256.slice(0, 12));
     lines.push(`<!-- reason=${file.reason}${file.truncated ? ' truncated' : ''} -->`);
-    lines.push('```' + file.language);
+    const fence = fenceFor(file.excerpt);
+    lines.push(fence + file.language);
     lines.push(file.excerpt);
-    lines.push('```', '');
+    lines.push(fence, '');
   }
   for (const entry of selection.excluded) {
     lines.push(`<!-- excluded: ${entry.path} (${entry.reason}) -->`);
@@ -86,7 +93,8 @@ export function buildProjectToolBundle(
     '## ソース',
   ];
   for (const file of selection.files) {
-    sections.push(`### ${file.path}`, '```' + file.language, file.excerpt, '```', '');
+    const fence = fenceFor(file.excerpt);
+    sections.push(`### ${file.path}`, fence + file.language, file.excerpt, fence, '');
   }
   return sections.join('\n');
 }
