@@ -9,52 +9,34 @@
 import type { FunctionInfo, Lang, Param, ParsedModule, SourceDiagnostic } from './types';
 import { maskSource } from './tokenizer';
 import { parseJsLike } from './typescript';
-import { parsePython } from './python';
-import { parseJava } from './java';
-import { parseGo } from './go';
+import {
+  LANGUAGE_PARSERS,
+  extensionOf,
+  languageFromExtension,
+  languageLabel,
+  parserFor,
+} from './registry';
 import { appendDiagnostic } from './normalizer';
 
 export * from './types';
+export { LANGUAGE_PARSERS, extensionOf, languageLabel, parserFor } from './registry';
 
 export function detectLanguage(fileName: string, source: string): Lang {
-  const ext = (fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? '').toLowerCase();
-  switch (ext) {
-    case 'ts':
-    case 'tsx':
-    case 'mts':
-    case 'cts':
-      return 'typescript';
-    case 'js':
-    case 'jsx':
-    case 'mjs':
-    case 'cjs':
-      return 'javascript';
-    case 'py':
-      return 'python';
-    case 'java':
-      return 'java';
-    case 'go':
-      return 'go';
-    default:
-      break;
+  const extension = extensionOf(fileName);
+  // A bare .h header can hold either dialect; the content decides.
+  if (extension !== 'h') {
+    const fromExtension = languageFromExtension(fileName);
+    if (fromExtension) return fromExtension;
   }
-  if (/^\s*package\s+\w+/m.test(source) && /func\s+\w+\s*\(/.test(source)) return 'go';
-  if (/(^|\n)\s*(public|private|protected)\s+\w+[\w<>[\], ]*\s+\w+\s*\(/m.test(source)) return 'java';
-  if (/(^|\n)\s*(?:async\s+)?def\s+\w+\s*\(/m.test(source)) return 'python';
-  if (/interface\s+\w+|:\s*(string|number|boolean)\b/.test(source)) return 'typescript';
-  if (/(^|\n)\s*(const|let|var|function)\s/.test(source)) return 'javascript';
+  for (const parser of LANGUAGE_PARSERS) {
+    if (parser.language === 'cpp' && extension === 'h') {
+      if (parser.detect?.(source)) return 'cpp';
+      continue;
+    }
+    if (parser.detect?.(source)) return parser.language;
+  }
+  if (extension === 'h') return 'c';
   return 'unknown';
-}
-
-export function languageLabel(lang: Lang): string {
-  switch (lang) {
-    case 'typescript': return 'TypeScript';
-    case 'javascript': return 'JavaScript';
-    case 'python': return 'Python';
-    case 'java': return 'Java';
-    case 'go': return 'Go';
-    default: return 'Unknown';
-  }
 }
 
 export function parseSource(fileName: string, source: string): ParsedModule {
@@ -100,10 +82,9 @@ export function parseSource(fileName: string, source: string): ParsedModule {
   }
 
   try {
-    if (language === 'typescript' || language === 'javascript' || language === 'unknown') parseJsLike(module, mask, diagnostics);
-    else if (language === 'python') parsePython(module, mask, diagnostics);
-    else if (language === 'java') parseJava(module, mask, diagnostics);
-    else if (language === 'go') parseGo(module, mask, diagnostics);
+    const parser = parserFor(language);
+    if (parser) parser.parse(module, mask, diagnostics);
+    else parseJsLike(module, mask, diagnostics);
   } catch (cause) {
     appendDiagnostic(diagnostics, {
       code: 'parser-error',

@@ -39,6 +39,16 @@ const NODE_BUILTINS = new Set([
   'fs', 'path', 'os', 'http', 'https', 'crypto', 'util', 'events', 'stream', 'url', 'child_process',
 ]);
 
+const C_BUILTINS = new Set([
+  'printf', 'fprintf', 'sprintf', 'snprintf', 'malloc', 'calloc', 'realloc', 'free', 'memcpy',
+  'memset', 'strlen', 'strcmp', 'strcpy', 'fopen', 'fclose', 'fread', 'fwrite', 'assert', 'exit',
+  'std', 'size_t', 'nullptr', 'NULL', 'true', 'false', 'delete', 'new', 'sizeof', 'static_cast',
+  'dynamic_cast', 'reinterpret_cast', 'const_cast', 'move', 'forward', 'make_unique', 'make_shared',
+  'push_back', 'emplace_back', 'begin', 'end', 'cout', 'cerr', 'endl', 'Console', 'String',
+  'Math', 'List', 'Dictionary', 'Exception', 'ArgumentException', 'InvalidOperationException',
+  'Console.WriteLine', 'Convert',
+]);
+
 /** `<` that opens a generic list rather than a comparison. */
 export function isGenericOpen(text: string, index: number): boolean {
   let p = index - 1;
@@ -246,6 +256,8 @@ export function collectCalls(bodyText: string, lang: Lang): string[] {
     if (lang === 'python' && PY_BUILTINS.has(name)) continue;
     if (lang === 'java' && JAVA_BUILTINS.has(name)) continue;
     if (lang === 'go' && GO_BUILTINS.has(name)) continue;
+    if ((lang === 'c' || lang === 'cpp' || lang === 'csharp') && C_BUILTINS.has(name)) continue;
+    if ((lang === 'c' || lang === 'cpp' || lang === 'csharp') && C_BUILTINS.has(head)) continue;
     calls.add(name);
   }
   return [...calls];
@@ -320,10 +332,14 @@ export function parseParamList(raw: string, lang: Lang, diagnostics?: SourceDiag
       params.push({ name, type, defaultValue, optional: defaultValue !== undefined || variadic, variadic });
       continue;
     }
-    if (lang === 'java') {
+    if (lang === 'java' || lang === 'c' || lang === 'cpp' || lang === 'csharp') {
+      if (part.trim() === '...') {
+        params.push({ name: '...', optional: true, variadic: true });
+        continue;
+      }
       let cleaned = part.trim();
       cleaned = cleaned.replace(/^(@[\w.$]+(?:\([^)]*\))?\s*)+/, '');
-      cleaned = cleaned.replace(/^final\s+/, '');
+      cleaned = cleaned.replace(/^(?:final|const|volatile|register|in|out|ref|params)\s+/, '');
       let variadic = false;
       const eq = findAssignment(cleaned);
       if (eq >= 0) cleaned = cleaned.slice(0, eq).trim();

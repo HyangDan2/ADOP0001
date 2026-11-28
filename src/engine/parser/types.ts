@@ -3,7 +3,16 @@
  * Shape-compatible with the original `src/lib/source.ts` exports.
  */
 
-export type Lang = 'typescript' | 'javascript' | 'python' | 'java' | 'go' | 'unknown';
+export type Lang =
+  | 'typescript'
+  | 'javascript'
+  | 'python'
+  | 'java'
+  | 'go'
+  | 'c'
+  | 'cpp'
+  | 'csharp'
+  | 'unknown';
 
 export interface Param {
   name: string;
@@ -84,7 +93,7 @@ export interface ImportInfo {
   names: string[];
   line: number;
   external: boolean;
-  kind: 'esm' | 'require' | 'python' | 'java' | 'go';
+  kind: 'esm' | 'require' | 'python' | 'java' | 'go' | 'include' | 'using';
 }
 
 /**

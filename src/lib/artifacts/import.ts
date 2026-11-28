@@ -57,8 +57,10 @@ interface InternalStreamEntry {
   internalStream(type: 'uint8array'): InternalStreamHelper;
 }
 
-interface ExtractionBudget {
+export interface ExtractionBudget {
   total: number;
+  /** Defaults to the package total cap; project import supplies its own. */
+  maxTotal?: number;
 }
 
 /**
@@ -66,12 +68,13 @@ interface ExtractionBudget {
  * The stream is paused on refusal, so the check happens during decompression,
  * not after the whole entry has been materialised.
  */
-async function inflateCapped(
+export async function inflateCapped(
   entry: JSZip.JSZipObject,
   maxBytes: number,
   budget: ExtractionBudget,
   label: string,
 ): Promise<Uint8Array> {
+  const maxTotal = budget.maxTotal ?? PACKAGE_LIMITS.maxTotalBytes;
   const stream = (entry as unknown as InternalStreamEntry).internalStream('uint8array');
   return await new Promise<Uint8Array>((resolve, reject) => {
     const chunks: Uint8Array[] = [];
@@ -91,8 +94,8 @@ async function inflateCapped(
           fail(new Error(`${label} exceeds ${maxBytes} bytes while decompressing`));
           return;
         }
-        if (budget.total + size > PACKAGE_LIMITS.maxTotalBytes) {
-          fail(new Error(`Unpacked bytes exceed ${PACKAGE_LIMITS.maxTotalBytes} while decompressing`));
+        if (budget.total + size > maxTotal) {
+          fail(new Error(`Unpacked bytes exceed ${maxTotal} while decompressing`));
           return;
         }
         chunks.push(chunk);
