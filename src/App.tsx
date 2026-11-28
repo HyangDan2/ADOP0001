@@ -22,10 +22,11 @@ import { clearEngineCache } from './engine/core/runner';
 import { TakaneTool } from './tools/takane/TakaneTool';
 import { ArtifactWorkspace } from './components/artifacts/ArtifactWorkspace';
 import { ProjectIntelligencePanel } from './components/project/ProjectIntelligencePanel';
+import { BUILD_COMMIT, BUILD_TIME, BUILD_VERSION, IS_BETA_BUILD, storageKey } from './lib/channel';
 
 type Theme = 'dark' | 'light';
-const THEME_KEY = 'adop0001.theme';
-const RAIL_KEY = 'adop0001.workspace.open';
+const THEME_KEY = storageKey('adop0001.theme');
+const RAIL_KEY = storageKey('adop0001.workspace.open');
 
 const ZERO_COUNTS: Record<ToolId, number> = { shiori: 0, yayoi: 0, kozue: 0, haruhi: 0, kotoha: 0, takane: 0 };
 
@@ -64,6 +65,10 @@ export default function App() {
   const [fewShotVersion, setFewShotVersion] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (IS_BETA_BUILD) document.title = `[BETA] ${document.title}`;
+  }, []);
   const [resetBusy, setResetBusy] = useState(false);
   /** Bumped after an explicit draft reset so the open tool re-reads empty storage. */
   const [draftEpoch, setDraftEpoch] = useState(0);
@@ -220,6 +225,18 @@ export default function App() {
             <span>6-in-1 スイート</span>
           </span>
         </a>
+        {IS_BETA_BUILD ? (
+          <span
+            className="beta-badge"
+            data-testid="beta-badge"
+            title={`BETA ビルド · ${BUILD_VERSION} · ${BUILD_COMMIT} · ${BUILD_TIME}`}
+          >
+            BETA
+            <small>
+              v{BUILD_VERSION} · {BUILD_COMMIT.slice(0, 7)}
+            </small>
+          </span>
+        ) : null}
         <span className="brand-divider" aria-hidden="true" />
         <nav className="tool-switcher" aria-label="ツール切り替え">
           {TOOLS.map((item) => (

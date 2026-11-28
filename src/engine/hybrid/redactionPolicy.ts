@@ -16,9 +16,10 @@
  */
 import { stableFingerprint } from './canonical';
 import { hybridConfig } from './config';
+import { storageKey } from '../../lib/channel';
 import { redactText, redactionRegistry, unsafePatternReason, type CustomRedactionPattern, type RedactionOptions } from './redaction';
 
-export const REDACTION_POLICY_KEY = 'adop0001.hybrid.redaction.v1';
+export const REDACTION_POLICY_KEY = storageKey('adop0001.hybrid.redaction.v1');
 
 export interface RedactionPolicy {
   customPatterns: CustomRedactionPattern[];

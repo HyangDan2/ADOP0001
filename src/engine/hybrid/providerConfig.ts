@@ -13,13 +13,14 @@
  * worse than no profile at all.
  */
 import { hybridConfig } from './config';
+import { storageKey } from '../../lib/channel';
 import {
   providerRegistry,
   type ModelCapabilityOverride,
   type ProviderProfileInput,
 } from './providerProfiles';
 
-export const CUSTOM_PROFILES_KEY = 'adop0001.hybrid.providers.v1';
+export const CUSTOM_PROFILES_KEY = storageKey('adop0001.hybrid.providers.v1');
 
 export interface CustomProfileValidation {
   ok: boolean;

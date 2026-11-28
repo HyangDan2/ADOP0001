@@ -6,6 +6,7 @@ import { DOCX_FILE_ACCEPT } from '../../lib/fileKinds';
 import { takeFileInput } from '../../lib/fileInput';
 import { useOpenedFile } from '../../lib/fileBus';
 import { copyText, downloadBlob, sha256Hex } from '../../lib/util';
+import { storageKey } from '../../lib/channel';
 import { useRequestGate, type RequestHandle } from '../../lib/requestGate';
 import { type KotohaOutput } from './adapter';
 import { attributeSignature, parseBundleExport, withAttributes, type BundleAttributes, type KotohaBundle, type LossWarning } from './bundle';
@@ -45,7 +46,7 @@ import {
   guardExport,
 } from '../../components/artifacts/ExportGuard';
 import type { ArtifactSlotSnapshot } from '../../lib/artifacts/capture';
-const PRESET_KEY = 'adop0001.kotoha.presets';
+const PRESET_KEY = storageKey('adop0001.kotoha.presets');
 
 /** A document with warnings waits here, together with the request that produced it. */
 interface PendingApproval {

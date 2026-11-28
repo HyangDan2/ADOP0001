@@ -10,8 +10,9 @@
  * the text on screen until the write succeeds.
  */
 import type { ToolId } from '../adapters/types';
+import { storageKey } from './channel';
 
-const KEY_PREFIX = 'adop0001.prompt.';
+const KEY_PREFIX = storageKey('adop0001.prompt.');
 export const MAX_INSTRUCTION_LENGTH = 2000;
 
 export const PROMPT_PLACEHOLDER =

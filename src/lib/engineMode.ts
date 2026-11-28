@@ -16,10 +16,11 @@
  * orchestrator so a stale screen cannot send anything after the switch back.
  */
 import { useSyncExternalStore } from 'react';
+import { storageKey } from './channel';
 
 export type EngineMode = 'local' | 'hybrid';
 
-export const ENGINE_MODE_KEY = 'adop0001.engine.mode';
+export const ENGINE_MODE_KEY = storageKey('adop0001.engine.mode');
 
 export const DEFAULT_ENGINE_MODE: EngineMode = 'local';
 

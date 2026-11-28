@@ -1,9 +1,10 @@
 import type { ProjectIndex } from '../../engine/project/types';
 import { openIdbDatabase, requestToPromise, runIdbTransaction } from '../idb';
+import { databaseName } from '../channel';
 
 /** Persistent project index snapshots (WO-E01). One database per domain. */
 
-export const PROJECT_INDEX_DB = 'adop0001-project-index';
+export const PROJECT_INDEX_DB = databaseName('adop0001-project-index');
 export const PROJECT_INDEX_STORE = 'projects';
 
 export interface StoredProjectIndex {

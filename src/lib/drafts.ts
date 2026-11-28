@@ -28,11 +28,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ToolId } from '../adapters/types';
+import { databaseName, storageKey } from './channel';
 
 export const DRAFT_VERSION = 1;
 
-const LOCAL_PREFIX = 'adop0001.draft.';
-const DB_NAME = 'adop0001-drafts';
+const LOCAL_PREFIX = storageKey('adop0001.draft.');
+const DB_NAME = databaseName('adop0001-drafts');
 const STORE = 'drafts';
 
 /** Sources larger than this stay in IndexedDB only (localStorage quota is ~5 MB). */

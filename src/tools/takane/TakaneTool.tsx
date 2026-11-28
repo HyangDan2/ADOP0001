@@ -10,6 +10,7 @@ import { useToolDraft } from '../../lib/drafts';
 import { useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { EngineDiagnostics } from '../../components/EngineDiagnostics';
+import { storageKey } from '../../lib/channel';
 import type { EngineDiagnostic } from '../../adapters/types';
 import {
   LANGUAGE_EXTENSION,
@@ -41,7 +42,7 @@ import {
   composeCaptureFingerprint,
   getArtifactSlotSnapshot,
 } from '../../lib/artifacts/capture';
-const SHIORI_KEY = 'adop0001.shiori.latest';
+const SHIORI_KEY = storageKey('adop0001.shiori.latest');
 
 const LANGUAGES: { value: TakaneLanguage; label: string }[] = [
   { value: 'python', label: 'Python' },

@@ -11,6 +11,7 @@ import { assertArtifactRevision } from '../../lib/artifactRevision';
 import { errorMessage, useRequestGate } from '../../lib/requestGate';
 import { DraftStateBadge } from '../../components/DraftStateBadge';
 import { EngineDiagnostics } from '../../components/EngineDiagnostics';
+import { storageKey } from '../../lib/channel';
 import type { EngineDiagnostic } from '../../adapters/types';
 import { SAMPLE_BY_EXT } from '../samples';
 import { ALL_SECTIONS, type ShioriOutput, type SpecSection } from './adapter';
@@ -101,7 +102,7 @@ export function ShioriTool() {
       });
       try {
         localStorage.setItem(
-          'adop0001.shiori.latest',
+          storageKey('adop0001.shiori.latest'),
           JSON.stringify({ markdown: result.output.markdown, fileName: name, savedAt: new Date().toISOString() }),
         );
       } catch {

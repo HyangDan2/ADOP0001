@@ -16,8 +16,9 @@ import type {
 } from '../../engine/artifacts/types';
 import type { ArtifactStoreName } from '../../engine/artifacts/transactions';
 import { openIdbDatabase, type IdbOpenResult } from '../idb';
+import { databaseName } from '../channel';
 
-export const ARTIFACT_DB_NAME = 'adop0001-artifacts';
+export const ARTIFACT_DB_NAME = databaseName('adop0001-artifacts');
 export const ARTIFACT_DB_VERSION = 1;
 export const ARTIFACT_STORE_NAMES = [
   'artifacts',

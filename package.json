@@ -7,10 +7,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:beta": "ADOP_CHANNEL=beta npm run build",
     "preview": "vite preview --port 4173 --strictPort",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:beta": "playwright test -c playwright.beta.config.ts",
     "brand": "python3 tools/generate_brand_assets.py",
     "qa:generated": "node tools/qa/check-generated.mjs",
     "qa:languages": "node tools/qa/qa-project-languages.mjs"

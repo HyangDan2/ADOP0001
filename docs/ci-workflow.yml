@@ -1,25 +1,29 @@
 # Reference copy of the enforced CI/CD gate.
 #
 # Phase 5A (FIX-001) moved this file's definition into
-# .github/workflows/deploy.yml. This copy is kept identical to the live gate
-# for review and for the QA tests that read the full gate from docs/.
+# .github/workflows/deploy.yml. WO-OPS-01 made publishing an explicit
+# workflow_dispatch action; this copy is kept identical to the live gate for
+# review and for the QA tests that read the full gate from docs/.
 #
 # Gate order:
 #   1 dependency installation      2 TypeScript typecheck
 #   3 Vitest unit/integration      4 generated-code compile, run and Jest execution
 #   5 generated-code QA            6 project-language QA
-#   7 Vite production build        8 Playwright E2E (chromium project)
-#   9 result artifacts upload     10 verified dist artifact (manual release only)
-#  11 GitHub Pages deploy (manual dispatch from main with deploy=true)
+#   7 production build             8 Playwright E2E (chromium project)
+#   9 result artifacts upload
 #
-# A push to main never publishes: merge approval and release approval are
-# separate events. The deploy job is the only job granted pages/id-token write.
+# Publishing (workflow_dispatch with action != gate-only):
+#   verify source_sha/approval → CI evidence or full gate → channel build
+#   → capture live site → assemble one channel overlay
+#   → upload verified site → GitHub Pages deploy → verify deployed bytes
 #
-# A missing optional toolchain is reported as SKIP with its reason by the QA
-# runner; a check that could run and failed fails the job. Toolchains named in
+# A push to main never publishes. Production and beta deployments share one
+# concurrency lock, the untouched channel is hash-verified against its manifest,
+# and only the deploy job receives pages/id-token write.
+#
+# A missing optional toolchain is reported as SKIP with its reason; toolchains in
 # QA_REQUIRED_TOOLCHAINS are installed below and fail the gate when absent;
-# QA_LANGUAGE_REQUIRED does the same for project-language fixtures. An
-# all-skipped generated project is SKIP/artifact, never PASS. There is no
+# QA_LANGUAGE_REQUIRED does the same for project-language fixtures. There is no
 # continue-on-error anywhere, and `deploy` needs `build`.
 name: ADOP0001 quality gate
 
@@ -29,20 +33,42 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      deploy:
-        description: Publish the verified dist to GitHub Pages
-        type: boolean
-        default: false
+      action:
+        description: Deployment action
+        type: choice
+        default: gate-only
+        options:
+          - gate-only
+          - beta-deploy
+          - beta-rollback
+          - beta-remove
+          - production-deploy
+          - production-rollback
+      source_ref:
+        description: Source ref (branch, tag, or SHA) pinned to source_sha
+        type: string
+        required: false
+      source_sha:
+        description: Exact 40-character SHA to build and deploy
+        type: string
+        required: false
+      approval_reference:
+        description: PO approval ticket / reference for this deployment
+        type: string
+        required: false
+      artifact_run_id:
+        description: Frozen channel artifact run for a rollback (optional)
+        type: string
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: pages-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.action != 'gate-only' && 'pages-site' || format('gate-{0}', github.ref) }}
+  cancel-in-progress: false
 
 env:
-  # The E2E specs keep their fixtures next to the run instead of the sandbox path.
   E2E_DOWNLOADS: ${{ github.workspace }}/qa-artifacts
   JUNIT_VERSION: 1.11.3
   QA_JUNIT_JAR: ${{ github.workspace }}/.qa-tools/junit-platform-console-standalone.jar
@@ -55,8 +81,60 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
+    outputs:
+      evidence_run: ${{ steps.evidence.outputs.run_id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.action != 'gate-only' && inputs.source_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Pin and verify the deployment SHA
+        if: github.event_name == 'workflow_dispatch' && inputs.action != 'gate-only'
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          APPROVAL: ${{ inputs.approval_reference }}
+        run: |
+          set -eu
+          case "$SOURCE_SHA" in
+            (*[!0-9a-f]*|'') echo "source_sha must be a 40-character lowercase SHA" >&2; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40 || { echo "source_sha must be 40 characters" >&2; exit 1; }
+          test -n "$APPROVAL" || { echo "approval_reference is required for deployments" >&2; exit 1; }
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA" || { echo "checked-out HEAD is not source_sha" >&2; exit 1; }
+          if [ -n "$SOURCE_REF" ]; then
+            git fetch --no-tags origin "+refs/heads/*:refs/remotes/origin/*" "+refs/tags/*:refs/tags/*" >/dev/null 2>&1
+            RESOLVED=$(git rev-parse "$SOURCE_REF^{commit}")
+            test "$RESOLVED" = "$SOURCE_SHA" || { echo "source_ref $SOURCE_REF resolves to $RESOLVED, not source_sha" >&2; exit 1; }
+          fi
+          if case "${{ inputs.action }}" in production-*) true;; *) false;; esac; then
+            test "$GITHUB_REF" = "refs/heads/main" || { echo "production deployment must be dispatched from main" >&2; exit 1; }
+          fi
+          echo "deployment SHA verified: $SOURCE_SHA"
+
+      - name: Prior CI evidence for the SHA
+        id: evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.action != 'gate-only'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CURRENT_RUN: ${{ github.run_id }}
+        run: |
+          set -eu
+          FOUND=false
+          RUN_ID=""
+          for id in $(gh run list --workflow deploy.yml --commit "$SOURCE_SHA" --limit 20 --json databaseId,conclusion --jq '.[] | select(.conclusion == "success") | .databaseId'); do
+            if [ "$id" != "$CURRENT_RUN" ]; then FOUND=true; RUN_ID=$id; break; fi
+          done
+          echo "found=$FOUND" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          if [ "$FOUND" = true ]; then
+            echo "CI evidence: run $RUN_ID success on $SOURCE_SHA"
+          else
+            echo "No successful CI run recorded for $SOURCE_SHA; this run must pass the full gate."
+          fi
 
       - uses: actions/setup-node@v4
         with:
@@ -77,6 +155,7 @@ jobs:
 
       # 4. Generated-code QA toolchains (QA-001: QA-B syntax + QA-C execution)
       - name: Install generated-code QA toolchains
+        if: steps.evidence.outputs.found != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc g++ golang-go default-jdk-headless
@@ -86,6 +165,7 @@ jobs:
             "https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/${JUNIT_VERSION}/junit-platform-console-standalone-${JUNIT_VERSION}.jar"
 
       - name: Toolchain report
+        if: steps.evidence.outputs.found != 'true'
         run: |
           set -eu
           node --version
@@ -99,24 +179,28 @@ jobs:
           go version
           echo "Toolchains in QA_REQUIRED_TOOLCHAINS must be present; the QA runner fails the gate otherwise."
 
-      # 5. Generated-code QA: typecheck, Vitest, Jest execution, Pytest, JUnit,
-      #    Go, and C/C++/MCU compile. A missing toolchain is SKIP, never PASS.
+      # 5. Generated-code QA (skipped only when a successful CI run already covers this SHA).
       - name: Generated-code QA
+        if: steps.evidence.outputs.found != 'true'
         run: npm run qa:generated
 
       # 6. Project-language QA: fixed fixtures compiled by the installed tools.
-      #    This proves the fixtures, not the generated artifacts from step 5.
       - name: Project language QA
+        if: steps.evidence.outputs.found != 'true'
         run: npm run qa:languages
 
-      # 7. Production build
+      # 7. Production build (the gate always builds the production base).
       - name: Build
+        env:
+          ADOP_COMMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.action != 'gate-only' && inputs.source_sha || github.sha }}
         run: npm run build
 
-      # 8. Playwright E2E against the production build
+      # 8. Playwright E2E against the production build (skipped with CI evidence).
       - name: Install Chromium
+        if: steps.evidence.outputs.found != 'true'
         run: npx playwright install --with-deps chromium
       - name: Playwright E2E
+        if: steps.evidence.outputs.found != 'true'
         run: npm run test:e2e -- --project=chromium
 
       # 9. Result artifacts (kept even when the gate fails)
@@ -131,34 +215,105 @@ jobs:
             qa-artifacts
           if-no-files-found: ignore
 
-      # 10. Keep the verified dist for an explicitly approved deploy.
-      - name: Upload verified dist
-        if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
+      # 10. Beta channel build for a beta deployment (production dist is kept).
+      - name: Build beta channel
+        if: github.event_name == 'workflow_dispatch' && (inputs.action == 'beta-deploy' || inputs.action == 'beta-rollback') && inputs.artifact_run_id == ''
+        env:
+          ADOP_CHANNEL: beta
+          ADOP_COMMIT: ${{ inputs.source_sha }}
+        run: npx vite build --outDir dist-beta
+
+      # 11. Freeze the channel dist for deployment and future rollback.
+      - name: Upload channel dist
+        if: github.event_name == 'workflow_dispatch' && inputs.action != 'gate-only' && inputs.action != 'beta-remove' && inputs.artifact_run_id == ''
         uses: actions/upload-artifact@v4
         with:
-          name: rc-dist
-          path: dist
-          retention-days: 3
+          name: channel-dist-${{ inputs.source_sha }}
+          path: ${{ (inputs.action == 'beta-deploy' || inputs.action == 'beta-rollback') && 'dist-beta' || 'dist' }}
+          retention-days: 90
 
-  # 11. GitHub Pages deploy: manual dispatch from main, release approval only.
+  # 12. Channel deployment: assemble the live site plus one overlay, then publish.
   deploy:
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.action != 'gate-only' && (startsWith(inputs.action, 'beta-') || github.ref == 'refs/heads/main')
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      contents: read
+      actions: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Checkout source SHA
+        uses: actions/checkout@v4
         with:
-          name: rc-dist
-          path: dist
+          ref: ${{ inputs.source_sha }}
+          path: source
+      - name: Checkout deployment tooling
+        uses: actions/checkout@v4
+        with:
+          path: tooling
+
+      - name: Download channel dist
+        if: inputs.action != 'beta-remove' && inputs.artifact_run_id == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: channel-dist-${{ inputs.source_sha }}
+          path: channel-dist
+
+      - name: Download frozen rollback artifact
+        if: inputs.action != 'beta-remove' && inputs.artifact_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "${{ inputs.artifact_run_id }}" -n "channel-dist-${{ inputs.source_sha }}" -D channel-dist
+
+      - name: Capture live site and assemble candidate
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          APPROVAL: ${{ inputs.approval_reference }}
+          CI_RUN: ${{ needs.build.outputs.evidence_run }}
+        run: |
+          set -eu
+          BASE="https://hyangdan2.github.io/ADOP0001/"
+          ACTION="${{ inputs.action }}"
+          if [ "$ACTION" != "beta-remove" ] && [ ! -f channel-dist/index.html ]; then
+            echo "channel dist index.html missing" >&2; exit 1
+          fi
+          mkdir -p live archive
+          node tooling/tools/release/site.mjs capture --base "$BASE" --out live
+          node tooling/tools/release/site.mjs assemble \
+            --action "$ACTION" \
+            --live live \
+            --dist channel-dist \
+            --out site \
+            --sha "$SOURCE_SHA" \
+            --approval "$APPROVAL" \
+            --ci "${CI_RUN:-none}"
+          cp site/site-manifest.json "archive/manifest-${ACTION}-$SOURCE_SHA.json"
+
+      - name: Upload site candidate and manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-candidate-${{ inputs.source_sha }}
+          path: site
+          retention-days: 30
+
+      - name: Upload deployment manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-manifest-${{ inputs.action }}-${{ github.run_id }}
+          path: archive
+          retention-days: 90
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: site
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Verify deployed bytes
+        run: |
+          node tooling/tools/release/site.mjs verify --base https://hyangdan2.github.io/ADOP0001/ --manifest archive/manifest-${{ inputs.action }}-${{ inputs.source_sha }}.json --attempts 24 --delay 5000

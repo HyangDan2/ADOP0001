@@ -9,8 +9,9 @@
  */
 
 import { normaliseBundle, type BundleAttributes, type KotohaBundle } from './bundle';
+import { databaseName } from '../../lib/channel';
 
-const DB_NAME = 'adop0001-kotoha';
+const DB_NAME = databaseName('adop0001-kotoha');
 const STORE = 'bundles';
 const LATEST_KEY = 'latest';
 const DRAFT_KEY = 'draft';

@@ -16,12 +16,13 @@
  */
 
 import type { PromptStrategy } from '../../adapters/types';
+import { storageKey } from '../../lib/channel';
 import type { HybridSettings } from './contracts';
 import { HybridError } from './errors';
 import { OpenAiCompatibleProvider } from './openAiCompatible';
 import { resolveEndpoint, validateModelId, type Transport } from './transport';
 
-export const CONNECTION_SETTINGS_KEY = 'adop0001.hybrid.connection';
+export const CONNECTION_SETTINGS_KEY = storageKey('adop0001.hybrid.connection');
 
 export interface ConnectionSettings {
   baseUrl: string;

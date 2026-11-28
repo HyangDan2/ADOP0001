@@ -6,12 +6,13 @@
  * private-browsing sessions still work. Nothing here performs a network call.
  */
 import type { FewShotExample, PromptStrategy, ToolId } from '../adapters/types';
+import { databaseName, storageKey } from './channel';
 
-export const FEW_SHOT_DB_NAME = 'adop0001_fewshot_v1';
+export const FEW_SHOT_DB_NAME = databaseName('adop0001_fewshot_v1');
 export const FEW_SHOT_OBJECT_STORE = 'examples';
 export const FEW_SHOT_BUNDLE_KIND = 'adop0001.fewshot';
 export const FEW_SHOT_BUNDLE_VERSION = 1;
-const LOCAL_STORAGE_KEY = 'adop0001.fewshot.v1';
+const LOCAL_STORAGE_KEY = storageKey('adop0001.fewshot.v1');
 
 export type FewShotStorage = 'indexeddb' | 'localstorage' | 'memory';
 
