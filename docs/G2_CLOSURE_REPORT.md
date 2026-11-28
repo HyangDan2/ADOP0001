@@ -238,3 +238,18 @@ New backlog entries: `G2-BL-09` (edge ≠ execution success), `G2-BL-10` (projec
 export registers no per-artifact export row), `G2-BL-11` (project export uses
 current validated revisions only). No main merge, no production deploy, no
 Phase 5E.
+
+## 12. Final P1 corrections — project-export guard and streaming extraction
+
+The Supervisor accepted CI `45943084923` and FIX-03, and ordered the two
+remaining FIX-01/02 contracts. Correction commit: `c6b6fb2`.
+
+| Contract | Change | Evidence |
+| --- | --- | --- |
+| Project export uses the stored Validation Policy and Export Guard | `WorkspaceGuard` now exposes one stored-export authority (`resolveStoredExportAuthority` / `assertStoredExportEligible`) that `guardStoredExport` also uses: writability, revision-bound validation record effectiveness, and the policy decision. The project export resolves every selected artifact through it after the ZIP is built and before anything is written, so invalid/blocked/stale records refuse the normal export, and an advanced pointer (`expectedRevisionId`) refuses instead of silently re-targeting. The check is read-only; no export row is registered (`G2-BL-10`) | `workspace-guard.test.ts` +3: allowed selection; newest invalid and blocked records refuse (`検証ブロック` / `検証エラー`); advanced revision refuses (`REVISION_CHANGED_MESSAGE`) and an untracked append refuses as `検証記録なし`; `G2-E2E-04` proves the export row count is unchanged |
+| Import caps output bytes during decompression | `inspectArtifactPackage` no longer materialises an entry before checking: every entry (manifest, sums, content, nested manifest) is inflated through `inflateCapped`, which listens to the chunk stream and rejects the moment produced bytes pass the per-entry cap or the run total, pausing the stream. Declared-size preflight and post-extraction checks remain as additional layers | `package-import.test.ts` +2: a header lying about a 40 MiB+ entry (declared 1 KiB) is stopped `while decompressing`; two 26 MiB entries (one declared 1 KiB) are stopped at the run total `while decompressing` before the second entry finishes |
+
+Focused verification on `c6b6fb2`: `npx tsc --noEmit` pass;
+`npx vitest run tests/artifacts` **27 files / 265 tests pass**;
+`npm run build` pass; `g2-workspace.spec.ts` 4/4 and
+`g1-closure-artifact-export.spec.ts` 13/13. No main merge, no deploy, no Phase 5E.
