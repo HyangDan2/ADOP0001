@@ -15,7 +15,8 @@
 | G3 | `docs/G3_PROJECT_FOUNDATION_REPORT.md`, `2bd1ddd` | 46100454201 success |
 | G4 | `docs/G4_PROJECT_INTELLIGENCE_REPORT.md`, `43367d7` | 46100703377 success |
 | G5 | `docs/G5_VERIFICATION_FOUNDATION_REPORT.md`, `b129a41` | 46100968731 success |
-| G6 | `docs/G6_ENGINEERING_QUALIFICATION_REPORT.md`, `bde4614` | 46102217701 (this package) |
+| G6 | `docs/G6_ENGINEERING_QUALIFICATION_REPORT.md`, `bde4614` | 46102217701 success |
+| G7 | this document, `b8153c8` | 46102265975 success (deploy job skipped, non-main branch) |
 
 Full local qualification at G6: `tsc` clean; 99 unit files / 980 tests passed; 91 Playwright tests passed; `qa:generated` 54 PASS / 0 FAIL / 8 SKIP; `qa:languages` 7 PASS / 1 SKIP (Go absent) / 0 FAIL; production build 1,048 kB JS.
 
@@ -88,6 +89,6 @@ Limitations:
 
 Before approval the following must be true (checked at hand-off):
 
-- CI for the RC commit is green on `deploy.yml`.
+- CI for the RC commit is green on `deploy.yml` (46102217701 on ; 46102265975 on the evidence tip).
 - Working tree contains no uncommitted code or secrets; `.qa-out/` remains ignored.
 - No merge to `main`, no deploy, no Live call has been performed.
