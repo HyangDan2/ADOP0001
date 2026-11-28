@@ -89,6 +89,6 @@ Limitations:
 
 Before approval the following must be true (checked at hand-off):
 
-- CI for the RC commit is green on `deploy.yml` (46102217701 on ; 46102265975 on the evidence tip).
+- CI for the RC commit is green on `deploy.yml` (46102217701 on `bde4614`; 46102265975 on the evidence tip).
 - Working tree contains no uncommitted code or secrets; `.qa-out/` remains ignored.
 - No merge to `main`, no deploy, no Live call has been performed.
