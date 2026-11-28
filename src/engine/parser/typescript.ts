@@ -172,7 +172,8 @@ export function parseJsLike(module: ParsedModule, mask: Masked, diagnostics: Sou
       docBuffer = [];
       continue;
     }
-    const requireMatch = codeLine.match(/^\s*(?:const|let|var)\s+(\w+)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)/);
+    // The specifier lives in a string literal, which `code` blanks.
+    const requireMatch = line.match(/^\s*(?:const|let|var)\s+(\w+)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)/);
     if (requireMatch) {
       module.imports.push({
         module: requireMatch[2],

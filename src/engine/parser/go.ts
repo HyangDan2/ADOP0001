@@ -36,7 +36,8 @@ export function parseGo(module: ParsedModule, mask: Masked, diagnostics: SourceD
       i = j;
       continue;
     }
-    const singleImport = code[i].match(/^\s*import\s+(?:([\w.]+)\s+)?"([^"]+)"/);
+    // The import path lives in a string literal, which `code` blanks.
+    const singleImport = lines[i].match(/^\s*import\s+(?:([\w.]+)\s+)?"([^"]+)"/);
     if (singleImport) {
       module.imports.push({
         module: singleImport[2],

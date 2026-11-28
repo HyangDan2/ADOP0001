@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "brand": "python3 tools/generate_brand_assets.py",
-    "qa:generated": "node tools/qa/check-generated.mjs"
+    "qa:generated": "node tools/qa/check-generated.mjs",
+    "qa:languages": "node tools/qa/qa-project-languages.mjs"
   },
   "dependencies": {
     "jszip": "3.10.1",
