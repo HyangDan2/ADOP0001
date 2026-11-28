@@ -252,4 +252,7 @@ remaining FIX-01/02 contracts. Correction commit: `c6b6fb2`.
 Focused verification on `c6b6fb2`: `npx tsc --noEmit` pass;
 `npx vitest run tests/artifacts` **27 files / 265 tests pass**;
 `npm run build` pass; `g2-workspace.spec.ts` 4/4 and
-`g1-closure-artifact-export.spec.ts` 13/13. No main merge, no deploy, no Phase 5E.
+`g1-closure-artifact-export.spec.ts` 13/13. CI `46089303774` on `c6b6fb2` —
+**success** (93 Vitest files, generated QA **59 PASS · 0 FAIL · 5 SKIP**,
+Playwright **89 passed**, deploy skipped). Docs `e1b6a31`. No main merge, no
+deploy, no Phase 5E.
